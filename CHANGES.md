@@ -1,3 +1,116 @@
+## v1.17.1（正式版 + Lite 共存版 + 兼容版 · 2026-10-01）
+
+> 在 v1.17.0（内核 0.2.0-rc.2）基础上**删除自研定时任务功能**：0.2.0 内核自带了定时任务，
+> 两套并存没有意义。versionCode **50**，内核仍 **DSH 0.2.0-rc.2**。
+
+### 🗑️ 移除自研定时任务（让位给内核自带的）
+
+- **为什么删**：0.2.0 内核新增了 `@deepseek-ai/dsh-schedule`（「主机级持久提醒」，
+  支持 at / after / daily / weekly / cron / every，到点作为 follow-up 投递回**原会话**），
+  配套还有 `ui-schedule` 任务页与 `time-context`。我们此前那套（`android_schedule` 工具 +
+  AlarmManager + 到点自动拉起引擎执行）与它功能重叠，且能力更弱（没有 cron/每周、结果不回原会话）。
+- **删了什么**（四份源码全部同步）：
+  - 工具 `android_schedule`（`dsh-tool-shizuku`）
+  - `AlarmReceiver.java` + `ScheduleExecutor.java`（整文件删除）
+  - `MainActivity`：`/schedule` 路由、定时任务持久化、到点自动执行、以及**只服务于它的那套自研 DSH RPC**
+    （`createSession` / `sendPrompt` / `rpcCall` / `escapeJson`）
+  - `EngineService`：`scheduledTask` extra 处理
+  - `AndroidManifest.xml`：`SCHEDULE_EXACT_ALARM` 权限 + `.AlarmReceiver` 声明
+  - `build.sh`：javac 清单里的两个文件
+  - UI 文案里提到「定时任务」的地方（权限页通知说明、插件页描述）
+- **内核那套怎么用**：它是**可选 bundle**（`dsh-experimental-schedule-bundle`，含 schedule + ui-schedule +
+  time-context），**默认不启用**（`profiles/web` 的 bundles 仍只有 `dsh-base` + `dsh-web-app`）。
+  需要时在**控制台 → 插件**里启用该 bundle 即可，或让 AI 自己开。
+
+### 📝 顺带订正
+
+- 插件页描述与实际能力对齐：`tool-android` 原写「用量统计 / 悬浮窗 / 剪贴板 / 定时任务」，
+  改为「用量统计 / 悬浮窗 / 装包 / 应用与设置 / 截图 / 输入」；`tool-shizuku` 补上「通知 / 剪贴板」。
+
+### 已知限制（本轮实测确认，未变）
+
+- **语音输入**：0.2.0 的本地语音（`dsh-experimental-voice-input-bundle` → SenseVoice）**在 Android 上不可用** ——
+  上游的平台白名单只有 `darwin-arm64/x64`、`linux-arm64/x64`、`win32-x64`，`android-arm64` 被**硬排除**，
+  报错原文即 `Local speech is unavailable for android-arm64`；且底层 `sherpa-onnx-node` 是**原生模块**，
+  与本项目「payload 不带原生模块」的红线冲突。该能力**不是我们能修的**，需上游支持。
+  同 bundle 里的**云端 STT**（`api-speech-to-text`）是纯 JS、理论可用，但需要外部语音服务凭据，本轮未启用。
+- **老 WebView（Chromium ≤93）纯白**（issue #38）：本轮仍未修，已单独排期（要动构建链路的 esbuild target + polyfill）。
+
+## v1.17.0（正式版 + Lite 共存版 + 兼容版 · 2026-10-01）
+
+> **内核升级：DSH 0.1.7-rc.1 → 0.2.0-rc.2**（上游当前 latest），并修两个社区报告的缺陷 +
+> 适配 0.2.0 变更过的 RPC 协议。versionCode **49**。
+
+### ⬆️ 内核升级到 0.2.0-rc.2
+
+- **做法**：沿用项目既有「旧法」——另起一棵树解析依赖闭包（530 包）后组装，不就地换包。
+  新树 253 MB、`@deepseek-ai` 287 包 + 第三方 145 包、**原生模块 0**（红线守住）。
+- **补丁面（12 个文件）**：8 个文件上游逐字节未变、直接沿用；4 个上游有改动，用三方合并重打
+  （合并后与上游差异**恰好等于我们原本的改动量**，说明上游改动全保留）。
+- **0.2.0 新增的兼容性闸门**：内核开始校验插件的 `peerDependencies`。我们 4 个自研插件原先写的是
+  `@deepseek-ai/dsh-tools: ^0.1.0-rc.6`（semver 里 `^0.x` 只覆盖 `0.1.x`）→ 0.2.0 判定不兼容，
+  **把 4 个插件静默禁用**（引擎照常启动，但 31 个安卓工具全部消失）。已改为 `>=0.1.0-rc.6`。
+- **验证**（本地真实内核树）：`--profile web` **零警告、零 pending**；`session/create` 返回
+  `{"ok":true,"value":{"sessionId":…,"agentPreset":"standard"}}` —— 即 `sandbox → ptc-runtime →
+  workflow` 这条链在 0.2.0 上仍然通（正是 v1.15.1 那个 P0 的复检点）。
+
+### 🐛 定时任务「发送提示词」在 0.2.0 上必然失败（RPC 协议变更）
+
+- **根因**：0.2.0 的 RPC 线上形状与 0.1.x **完全不同**，四处都变了：
+  ① endpoint 必须是**两段式** `a/b`（`/api/session/create`，旧的是 `/api/session.create`）；
+  ② body 里的 `method` 必须与 endpoint 逐字一致；③ payload 必须**包一层 `args`**；
+  ④ `args` 内字段要匹配内核的 descriptor（`session/create` 要 `request`，`session/prompt` 还要
+  `requestId` + `mode` + `content`）。
+  写错的报错分别是 `404 not found` / `method … does not match endpoint …` /
+  `Remote payload must contain exactly one plain-object args field` / `args fields do not match the descriptor`。
+- **影响面**：`ScheduleExecutor.rpc()` 用的是 0.1.x 形状 → 升级后**定时任务的「发送提示词」100% 404**。
+- **修法**：按实测形状重写 `rpc()`（自动把 `session.create` 转成 `session/create`、包 `args`），
+  并按 0.2.0 要求补 **`session/prompt` 的 `requestId` / `mode` / `content`** 字段。
+- **顺带修掉一个历史欠账**：`/api/*` **一直需要浏览器鉴权 cookie**，而定时任务从来没带过
+  （交接文档里登记过「大概率一直失败」）。现在会从引擎日志里取本端口的 token →
+  `GET /?token=` 换 `dsh-auth-*` cookie（30 天）→ 缓存复用；401 时自动清缓存重取。
+
+### 🐛 虚拟屏「闪一下就没」（issue #36）
+
+- **现象**：点小鲸鱼面板的「虚拟屏」，屏幕闪出一块黑色窗口约 0.4 秒后自动关闭，反复多次都一样；
+  社区在 Redmi（Android 14/16，HyperOS）、OPPO（Android 14）上均复现。
+- **根因（社区取证 + 代码定位一致）**：该入口**只做「把已收起的预览窗叫回来」，从不发
+  `/vscreen/create`**。而预览轮询每轮都会查 `/vscreen/status`，看到 `displayId < 0` 就调
+  `hidePreviewWindow()` **自己把窗收掉** —— 于是「建窗 → 下一轮轮询发现没屏 → 自己 removeView」，
+  正好是 0.4 秒闪退；没有虚拟屏的用户永远进不去。
+- **修法**：入口语义改成幂等的「**确保虚拟屏可用**」：① 核心没跑就拉起（带上构建指纹校验）；
+  ② 没有屏就自动发一次 `/vscreen/create`（默认竖屏 1008×1792）；③ 成功才显示预览窗；
+  ④ **任何一步失败都如实提示原因**（以前是静默闪退，什么都看不到）。
+  同时加守卫：**建屏进行中轮询不收窗**（否则新逻辑同样会闪）。
+  全程在后台线程 —— 报告人日志里那条 `Slow Binder: IRemoteProcess.waitFor()` 1~8 秒就是
+  同步等 Shizuku 拉进程，放主线程会 ANR。
+- **顺带澄清**：这与 Android 15/16 的 MediaProjection 新限制**无关** —— 本 App 是 targetSdk 28，
+  且从 v1.10 起虚拟屏走的就是「特权进程 + `DisplayManager.createVirtualDisplay` + ImageReader」，
+  根本没有用 MediaProjection。
+
+### 🐛 平板分屏拖动分隔条导致界面白闪、重放启动页（issue #37）
+
+- **现象**：平板左右分屏时，每次拖动中间分隔条调整比例，DSH 这边白闪一次并重放启动页；
+  **会话进度没有中断**（引擎没被杀），纯粹是界面重新加载了一遍。
+- **根因**：`MainActivity` 的 `android:configChanges` 只有 `orientation|screenSize|keyboardHidden`，
+  **缺 `screenLayout` 与 `smallestScreenSize`**。分屏/自由窗口拖分隔条时系统下发的正是
+  `CONFIG_SCREEN_LAYOUT + CONFIG_SMALLEST_SCREEN_SIZE`；没声明就不归 App 处理 → 系统**销毁重建**
+  Activity → 新建 WebView 重新 `loadUrl` + 启动页盖上来。真机 `dumpsys` 实证 `configChanges=0x4a3`，
+  确实不含 `0x100`/`0x800`。
+- **修法**：① `configChanges` 补 `smallestScreenSize|screenLayout`；② 新增
+  `onConfigurationChanged()`，只重贴「不会自己更新」的状态栏/导航栏底色（WebView 是
+  `MATCH_PARENT`，框架会按新尺寸自动重排，无需手动布局，更不需要重建）。
+- **⚠️ 故意不加** `uiMode` / `density` / `fontScale` —— 跟随系统深浅色、显示大小、字体大小正是靠
+  「重建 → `onCreate` 的 `setTheme()` 重新生效」，加进去反而会让主题不再跟随。
+
+### 已知限制（未变）
+
+- 无编译工具链，**含 C 扩展的 Python 包（numpy/pandas…）仍装不了**，纯 Python 包正常。
+- PNG 有完整的纯 JS 编解码与损坏检测；**JPEG/WebP/GIF 仍是原样透传**（不缩小、不做像素级校验）。
+- headless / sdk profile 仍未在真机上跑通。
+- 虚拟屏 `8998/8999` 三变体共用：正式版与 Lite 同时开虚拟屏只能二选一。
+- 老 WebView（Chromium ≤93）纯白问题（issue #38）**本轮未修**，已单独排期。
+
 ## v1.16.1（正式版 + Lite 共存版 + 兼容版 · 2026-09-26）
 
 > 修 v1.16.0 上线后真机实测暴露的三个问题：**pip 不可用、npm 装出的 CLI 无法执行、npm 全局前缀不可写**。
