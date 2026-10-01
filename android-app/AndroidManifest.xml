@@ -2,8 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     package="com.deepseek.harness"
-    android:versionCode="48"
-    android:versionName="1.16.1">
+    android:versionCode="50"
+    android:versionName="1.17.1">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="28" />
 
@@ -21,7 +21,6 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- 定时任务：精确闹钟（Android 12+ 需要；setAlarmClock 不受此权限限制，双保险） -->
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
     <application
@@ -39,12 +38,27 @@
         <!-- 原来写的是 unspecified（=「不表态，系统看着办」），真机表现为沿用当前屏幕旋转：
              从横屏的游戏/视频切回来仍是横屏（跟随的是上一个应用，而不是系统设置）。
              fullUser：系统「自动旋转」开着 → 跟随重力感应（含反向横竖屏）；
-             关着（锁定方向）→ 跟随用户锁定。 -->
+             关着（锁定方向）→ 跟随用户锁定。
+
+             configChanges 补齐 smallestScreenSize|screenLayout（issue #37，社区 @zf-666888 报告）：
+             原为 orientation|screenSize|keyboardHidden，缺这两项时，平板分屏 / 自由窗口拖动
+             分隔条调整比例 → 系统下发的正是 CONFIG_SCREEN_LAYOUT + CONFIG_SMALLEST_SCREEN_SIZE
+             → 没声明就不归 App 处理 → 系统直接销毁重建 MainActivity
+             （新建 WebView 重新 loadUrl + 启动页盖上来 = 用户看到的「白闪一下 + 重放启动页」）。
+             引擎是独立 node 进程 + EngineService 保活，所以重建杀不到它，
+             表现为「会话进度没断、只是界面闪」。
+             真机实证（OnePlus OPD2413 / ColorOS 16 / Android 16）：dumpsys 里 configChanges=0x4a3
+             （= ORIENTATION|SCREEN_SIZE|KEYBOARD_HIDDEN，确实不含 SCREEN_LAYOUT 0x100 /
+             SMALLEST_SCREEN_SIZE 0x800）；logcat 里 ActivityRecordExtImpl: hookShouldRelaunchLocked
+             reason: adjustedChanges={CONFIG_ORIENTATION, CONFIG_SCREEN_LAYOUT,
+             CONFIG_SMALLEST_SCREEN_SIZE}。
+             ⚠️ 故意**不**加 uiMode / density / fontScale —— 跟随系统深浅色、显示大小、字体大小
+             正是靠「重建 → onCreate 的 setTheme() 重新生效」，加进去反而会让主题不再跟随。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:screenOrientation="fullUser"
-            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
             android:theme="@style/AppTheme">
             <!-- 原主题 Theme.Black.NoTitleBar.Fullscreen 会隐藏状态栏，
                  部分 ROM（如 ColorOS）还会把窗口整体下移，顶部露出一块黑条。
@@ -61,11 +75,6 @@
             android:name=".EngineService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
-
-        <!-- 定时任务闹钟接收器（⑥）：AI 设置定时后由系统闹钟唤醒，即使 App 被杀也能触发 -->
-        <receiver
-            android:name=".AlarmReceiver"
-            android:exported="false" />
 
         <!-- 小鲸鱼悬浮窗（含引擎状态显示） -->
         <service
