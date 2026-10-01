@@ -406,12 +406,6 @@ public class MainActivity extends Activity {
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (prefs.getBoolean("setup_done", false)) {
-            // 定时任务自动执行：闹钟到点可能带着 scheduledTask extra 启动本 Activity
-            Intent in = getIntent();
-            if (in != null) {
-                String task = in.getStringExtra("scheduledTask");
-                if (task != null && !task.isEmpty()) pendingScheduledTask = task;
-            }
             showEngineScreen();
             // v1.12：冷启动先停在控制台；切屏回来/任务恢复（savedInstanceState != null）直接进主界面。
             if (savedInstanceState == null) {
@@ -424,8 +418,31 @@ public class MainActivity extends Activity {
         }
     }
 
-    // 定时任务自动执行：闹钟到点带来的任务文本（引擎就绪后自动 prompt 执行）
-    private String pendingScheduledTask = null;
+    /**
+     * issue #37（社区 @zf-666888 报告）：平板分屏 / 自由窗口拖动分隔条只改窗口尺寸，不该重建界面。
+     *
+     * manifest 的 configChanges 已补齐 screenLayout|smallestScreenSize（见 AndroidManifest.xml 里
+     * 那段注释，含真机 logcat 实证）。此前这两项未声明 → 系统直接销毁重建 MainActivity
+     * → 新建 WebView 重新 loadUrl + 启动页盖上来 = 用户看到的「白闪一下 + 重放启动页」
+     * （引擎是独立 node 进程 + EngineService 保活，所以会话进度不丢，纯粹是界面闪）。
+     *
+     * 这里只补做「跟着窗口尺寸走、又不会自动更新」的原生装饰：
+     * 状态栏 / 导航栏底色依赖主题与页面实测底色，重建后不会自己变，重新贴一遍。
+     * 其余都不用管：WebView 是 MATCH_PARENT，框架会按新尺寸自动重排；
+     * 控制台/启动页那套视图是代码建的、px 固定，尺寸变化不影响可用性。
+     *
+     * 注意：只有「已声明的」配置项变化才会进本方法。uiMode（系统深浅色）/ density（显示大小）
+     * / fontScale（字体大小）故意**不**声明 —— 它们继续走重建，由 onCreate 的 setTheme() 重新定主题。
+     */
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        try {
+            applyStatusBar();
+        } catch (Throwable t) {
+            Log.w(TAG, "onConfigurationChanged: applyStatusBar failed", t);
+        }
+    }
 
     // ============ WebView 兼容检测（老安卓 WebView 缺失/过旧） ============
     /** DSH 前端是 Vite 构建的现代应用（<script type="module"> + 可选链/nullish），
@@ -1066,7 +1083,7 @@ public class MainActivity extends Activity {
 
         GuidePage p8 = new GuidePage();
         p8.title = "通知权限"; p8.actionLabel = "去授权";
-        p8.desc = "接收 AI 完成、定时提醒等通知，人不在应用里也能知道任务跑完了。\n\n不给的话收不到这些提醒（其它功能不受影响）。";
+        p8.desc = "接收 AI 完成任务等通知，人不在应用里也能知道任务跑完了。\n\n不给的话收不到这些提醒（其它功能不受影响）。";
         p8.provider = new StatusProvider() { @Override public boolean granted() {
             if (Build.VERSION.SDK_INT < 33) return true;
             return checkSelfPermission("android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED;
@@ -2372,8 +2389,6 @@ public class MainActivity extends Activity {
                         respBody = handleSettingRequest(body.toString());
                     } else if (path.startsWith("/clipboard")) {
                         respBody = handleClipboardRequest(body.toString());
-                    } else if (path.startsWith("/schedule")) {
-                        respBody = handleScheduleRequest(body.toString());
                     } else if (path.startsWith("/usage")) {
                         respBody = handleUsageRequest(path, body.toString());
                     } else if (path.startsWith("/overlay")) {
@@ -2746,188 +2761,6 @@ public class MainActivity extends Activity {
             if (ch < '0' || ch > '9') return false;
         }
         return true;
-    }
-
-    // ============ ⑥ 定时任务（半自动版）============
-    /** 处理 /schedule：AI 设置定时提醒 → AlarmManager 注册系统闹钟。
-     *  到点系统唤醒 AlarmReceiver（即使 App 被杀也能触发）→ 推送通知提醒。
-     *  若 App 仍在后台（保活生效），点通知可回 App 继续执行。 */
-    private String handleScheduleRequest(String raw) {
-        try {
-            String text = jsonField(raw, "text");
-            if (text.isEmpty()) text = queryField(raw, "text");
-            String when = jsonField(raw, "when");
-            if (when.isEmpty()) when = queryField(raw, "when");
-            // 重复模式（Kun 式调度）：once 一次性（默认）| daily 每天 | interval 每隔 N 分钟
-            String repeat = jsonField(raw, "repeat");
-            if (repeat.isEmpty()) repeat = queryField(raw, "repeat");
-            if (repeat.isEmpty()) repeat = "once";
-            int intervalMin = 0;
-            String im = jsonField(raw, "intervalMin");
-            if (im.isEmpty()) im = queryField(raw, "intervalMin");
-            if (!im.isEmpty()) { try { intervalMin = Math.max(1, Integer.parseInt(im.trim())); } catch (Exception ignored) {} }
-            if (!repeat.equals("once") && !repeat.equals("daily") && !repeat.equals("interval")) {
-                return "{\"ok\":false,\"error\":\"repeat 仅支持 once/daily/interval\"}";
-            }
-            if (repeat.equals("interval") && intervalMin <= 0) {
-                return "{\"ok\":false,\"error\":\"interval 模式需要 intervalMin（分钟）参数\"}";
-            }
-            if (text.isEmpty()) return "{\"ok\":false,\"error\":\"缺少 text 参数\"}";
-            if (when.isEmpty()) {
-                // interval 模式允许省略 when（默认 1 分钟后首次触发）
-                if (repeat.equals("interval")) when = "60";
-                else return "{\"ok\":false,\"error\":\"缺少 when 参数（ISO 时间或相对秒数）\"}";
-            }
-
-            long triggerAt;
-            // 支持两种格式：纯数字 = 相对秒数；否则按 ISO 时间解析
-            if (isNumeric(when)) {
-                triggerAt = System.currentTimeMillis() + Long.parseLong(when) * 1000L;
-            } else {
-                // 兼容 "2026-08-21 08:00:00" / "2026-08-21T08:00:00" / "08:00"（今天）
-                String w = when.trim().replace("T", " ").replace("Z", "");
-                java.text.SimpleDateFormat fmt;
-                long at;
-                if (w.length() <= 5) {
-                    fmt = new java.text.SimpleDateFormat("HH:mm", Locale.US);
-                    java.util.Date d = fmt.parse(w);
-                    java.util.Calendar cal = java.util.Calendar.getInstance();
-                    cal.set(java.util.Calendar.HOUR_OF_DAY, d.getHours());
-                    cal.set(java.util.Calendar.MINUTE, d.getMinutes());
-                    cal.set(java.util.Calendar.SECOND, 0);
-                    at = cal.getTimeInMillis();
-                    if (at <= System.currentTimeMillis()) at += 24 * 3600 * 1000L; // 已过 → 明天
-                } else if (w.length() <= 16) {
-                    fmt = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US);
-                    at = fmt.parse(w).getTime();
-                } else {
-                    fmt = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
-                    at = fmt.parse(w).getTime();
-                }
-                triggerAt = at;
-            }
-            if (triggerAt <= System.currentTimeMillis()) {
-                // interval 模式：when 已过则从 1 分钟后起算（避免报错打断循环任务）
-                if (repeat.equals("interval")) {
-                    triggerAt = System.currentTimeMillis() + 60 * 1000L;
-                } else {
-                    return "{\"ok\":false,\"error\":\"触发时间已过，请设置未来的时间\"}";
-                }
-            }
-
-            android.app.AlarmManager am = (android.app.AlarmManager) getSystemService(Context.ALARM_SERVICE);
-            // 存任务到文件（AlarmReceiver 到点时读取并自动执行）
-            String taskId = "task-" + System.currentTimeMillis();
-            saveScheduledTask(taskId, text, triggerAt, repeat, intervalMin);
-            Intent i = new Intent(this, AlarmReceiver.class);
-            i.putExtra("task", text);
-            i.putExtra("taskId", taskId);
-            i.putExtra("repeatType", repeat);
-            i.putExtra("intervalMin", intervalMin);
-            i.putExtra("triggerAt", triggerAt);
-            android.app.PendingIntent pi = android.app.PendingIntent.getBroadcast(this, 0, i,
-                    android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
-            // 用 setAlarmClock（系统最高优先级闹钟，无需特殊权限、Doze 也触发）最可靠；
-            // 失败则降级 setExactAndAllowWhileIdle / set
-            try {
-                if (Build.VERSION.SDK_INT >= 21) {
-                    Intent show = new Intent(this, MainActivity.class);
-                    show.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
-                    android.app.PendingIntent showPi = android.app.PendingIntent.getActivity(this, 1, show,
-                            android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
-                    am.setAlarmClock(new android.app.AlarmManager.AlarmClockInfo(triggerAt, showPi), pi);
-                } else {
-                    am.setExact(android.app.AlarmManager.RTC_WAKEUP, triggerAt, pi);
-                }
-            } catch (Throwable t) {
-                try {
-                    if (Build.VERSION.SDK_INT >= 23) {
-                        am.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, triggerAt, pi);
-                    } else {
-                        am.setExact(android.app.AlarmManager.RTC_WAKEUP, triggerAt, pi);
-                    }
-                } catch (Throwable t2) {
-                    am.set(android.app.AlarmManager.RTC_WAKEUP, triggerAt, pi);
-                }
-            }
-            long secs = (triggerAt - System.currentTimeMillis()) / 1000;
-            String whenStr = secs >= 3600
-                    ? (secs / 3600) + "小时" + ((secs % 3600) / 60) + "分钟后"
-                    : (secs / 60) + "分钟后";
-            String repStr;
-            if (repeat.equals("daily")) repStr = "每天";
-            else if (repeat.equals("interval")) repStr = "每" + intervalMin + "分钟";
-            else repStr = "一次性";
-            return "{\"ok\":true,\"at\":\"" + whenStr + "\",\"repeat\":\"" + repStr
-                    + "\",\"hint\":\"到点会自动拉起引擎执行任务（无需操作），完成后推送通知；重复任务到点后自动安排下一次；若 App 被杀，闹钟仍会触发并自动启动\"}";
-        } catch (Throwable t) {
-            return "{\"ok\":false,\"error\":\"" + String.valueOf(t.getMessage()).replace("\"", "'") + "\"}";
-        }
-    }
-
-    // ============ 定时任务持久化 ============
-    /** 任务文件：内部私有目录（AlarmReceiver 与 MainActivity 都能读） */
-    private File scheduledTasksFile() { return new File(getFilesDir(), "scheduled-tasks.json"); }
-    /** 执行记录日志：任务到点/执行/通知都追加，防止丢失 */
-    private File scheduledLogFile() { return new File(getFilesDir(), "scheduled-log.txt"); }
-
-    /** 保存一条定时任务到文件（jsonl 格式：taskId|triggerAt|repeatType|intervalMin|text）。
-     *  repeatType: once=一次性 daily=每天 interval=每隔 N 分钟（intervalMin>0）。 */
-    private void saveScheduledTask(String taskId, String text, long triggerAt, String repeatType, int intervalMin) {
-        try {
-            File f = scheduledTasksFile();
-            String line = taskId + "|" + triggerAt + "|" + repeatType + "|" + intervalMin + "|"
-                    + text.replace("|", " ").replace("\n", " ") + "\n";
-            FileOutputStream fos = new FileOutputStream(f, true);
-            fos.write(line.getBytes("UTF-8"));
-            fos.close();
-            logSchedule("任务已设置: " + text + " @ " + new java.text.SimpleDateFormat("MM-dd HH:mm:ss", Locale.US).format(new Date(triggerAt)));
-        } catch (Throwable t) {
-            Log.w(TAG, "saveScheduledTask error", t);
-        }
-    }
-
-    /** 读取所有已到点的任务（triggerAt <= now），并从未到点列表中删除它们（标记已处理）。 */
-    private List<String[]> takeDueScheduledTasks() {
-        List<String[]> due = new ArrayList<>();
-        try {
-            File f = scheduledTasksFile();
-            if (!f.exists()) return due;
-            long now = System.currentTimeMillis();
-            StringBuilder keep = new StringBuilder();
-            BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), "UTF-8"));
-            String line;
-            while ((line = r.readLine()) != null) {
-                if (line.trim().isEmpty()) continue;
-                String[] parts = line.split("\\|", 3);
-                if (parts.length < 3) continue;
-                try {
-                    long at = Long.parseLong(parts[1]);
-                    if (at <= now) {
-                        due.add(parts); // 到点：取走
-                    } else {
-                        keep.append(line).append("\n"); // 未到点：保留
-                    }
-                } catch (Exception ignored) {}
-            }
-            r.close();
-            FileOutputStream fos = new FileOutputStream(f, false);
-            fos.write(keep.toString().getBytes("UTF-8"));
-            fos.close();
-        } catch (Throwable t) {
-            Log.w(TAG, "takeDueScheduledTasks error", t);
-        }
-        return due;
-    }
-
-    /** 追加一条执行记录日志（防丢失）。 */
-    private void logSchedule(String msg) {
-        try {
-            FileOutputStream fos = new FileOutputStream(scheduledLogFile(), true);
-            String line = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date()) + " " + msg + "\n";
-            fos.write(line.getBytes("UTF-8"));
-            fos.close();
-        } catch (Throwable ignored) {}
     }
 
     /**
@@ -3855,8 +3688,7 @@ public class MainActivity extends Activity {
         // v1.13 修正：这里原来**硬编码** "com.deepseek.harness.beta"，而三版共用同一份源码 —— 正式版跑起来
         // 也在自称 beta，而 rish 要拿这个 appId 去 Shizuku 要授权，Shizuku 比对实际调用者的包名/uid
         // （正式版 uid ≠ beta uid）→ 门卫不认（用户回报：“SHIZUKU_APP_ID=…beta，但真正在跑的是 com.deepseek.harness”）。
-        // 按实际包名派生，与 ScheduleExecutor 的 ctx.getPackageName() 一致；
-        // 并写回 dsh_prefs，供无障碍服务/调度器等其它组件复用（同样不能信旧值）。
+        // 按实际包名派生；并写回 dsh_prefs，供无障碍服务等其它组件复用（同样不能信旧值）。
         final String selfAppId = getPackageName();
         env.put("SHIZUKU_APP_ID", selfAppId);
         try {
@@ -3969,7 +3801,7 @@ public class MainActivity extends Activity {
         long deadline = start + 90000;
         while (System.currentTimeMillis() < deadline) {
             if (engineStartAborted) return;   // v1.13：用户点了「停止」→ 立即收手，别再刷“已等待 N 秒”
-            if (healthOk()) { loadHome(); executePendingScheduledTask(); return; }
+            if (healthOk()) { loadHome(); return; }
             long waited = (System.currentTimeMillis() - start) / 1000;
             setStatus("正在启动 DeepSeek Harness…（已等待 " + waited + " 秒）");
             try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
@@ -4036,91 +3868,6 @@ public class MainActivity extends Activity {
                 try { Thread.sleep(3000); } catch (InterruptedException e) { return; }
             }
         }}, "engine-late-bloom").start();
-    }
-
-    /** 定时任务自动执行：闹钟到点后引擎就绪，把任务文本作为消息自动发送给 AI（无需用户操作）。 */
-    private void executePendingScheduledTask() {
-        final String task = pendingScheduledTask;
-        pendingScheduledTask = null; // 只执行一次
-        if (task == null || task.isEmpty()) return;
-        logSchedule("开始自动执行任务: " + task);
-        new Thread(new Runnable() {
-            @Override public void run() {
-                try {
-                    // 等引擎完全就绪（HTTP 200 后 API 可能还需一点时间）
-                    for (int i = 0; i < 20; i++) {
-                        if (healthOk()) break;
-                        Thread.sleep(1000);
-                    }
-                    // 调 DSH API：建会话 + 发消息（AI 自动执行任务）
-                    String sessionId = createSession();
-                    if (sessionId == null) {
-                        logSchedule("自动执行失败：无法创建会话（引擎未就绪或无 API Key？）");
-                        return;
-                    }
-                    boolean sent = sendPrompt(sessionId, task);
-                    logSchedule(sent ? "任务已发送给 AI 执行: " + task : "任务发送失败: " + task);
-                } catch (Throwable t) {
-                    logSchedule("自动执行异常: " + t.getMessage());
-                }
-            }
-        }, "scheduled-exec").start();
-    }
-
-    /** 调 DSH API 创建会话，返回 sessionId（失败返回 null）。 */
-    private String createSession() {
-        String json = rpcCall("session.create", "{}");
-        if (json == null) return null;
-        int i = json.indexOf("\"sessionId\":\"");
-        if (i >= 0) {
-            int q1 = i + "\"sessionId\":\"".length();
-            int q2 = json.indexOf('"', q1);
-            if (q2 > q1) return json.substring(q1, q2);
-        }
-        return null;
-    }
-
-    /** 调 DSH API 发送消息（AI 开始执行任务）。 */
-    private boolean sendPrompt(String sessionId, String text) {
-        String payload = "{\"sessionId\":\"" + sessionId + "\",\"mode\":\"queue\",\"content\":[{\"type\":\"text\",\"text\":\"" + escapeJson(text) + "\"}]}";
-        String json = rpcCall("session.prompt", payload);
-        return json != null && json.contains("\"ok\":true");
-    }
-
-    /** DSH RPC 调用：标准协议 {"type":"client-request","rpcId":"...","method":"...","payload":{...}} */
-    private String rpcCall(String method, String payloadJson) {
-        try {
-            URL url = new URL(homeUrl() + "/api/" + method);
-            HttpURLConnection c = (HttpURLConnection) url.openConnection();
-            c.setRequestMethod("POST");
-            c.setRequestProperty("Content-Type", "application/json");
-            c.setDoOutput(true);
-            c.setConnectTimeout(3000);
-            c.setReadTimeout(5000);
-            String rpcId = "sched-" + System.currentTimeMillis();
-            String body = "{\"type\":\"client-request\",\"rpcId\":\"" + rpcId + "\",\"method\":\"" + method
-                    + "\",\"payload\":" + (payloadJson == null || payloadJson.isEmpty() ? "{}" : payloadJson) + "}";
-            c.getOutputStream().write(body.getBytes("UTF-8"));
-            int code = c.getResponseCode();
-            if (code >= 200 && code < 300) {
-                InputStream in = c.getInputStream();
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                byte[] b = new byte[4096];
-                int n;
-                while ((n = in.read(b)) > 0) out.write(b, 0, n);
-                in.close();
-                c.disconnect();
-                return new String(out.toByteArray(), "UTF-8");
-            }
-            c.disconnect();
-        } catch (Throwable t) {
-            Log.w(TAG, "rpc " + method + " error", t);
-        }
-        return null;
-    }
-
-    private String escapeJson(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
     }
 
     /** node 看门狗：node 进程死亡且服务不可用时自动重启引擎并刷新页面 */
@@ -5311,7 +5058,7 @@ public class MainActivity extends Activity {
         col.addView(conBackRow("授予权限"));
         col.addView(cSep(dp(12)));
         addPermRow(col, "所有文件访问", "读写 /sdcard，AI 才能碰你的文件", "storage");
-        addPermRow(col, "通知", "AI 发通知、定时任务提醒", "notify");
+        addPermRow(col, "通知", "AI 发通知 / 提醒", "notify");
         addPermRow(col, "悬浮窗", "黑鲸鱼悬浮窗 / 虚拟屏预览", "overlay");
         addPermRow(col, "电池优化", "设为「不限制」，否则切后台引擎会被杀", "battery");
         addPermRow(col, "root（超级用户）", "替代 Shizuku 跑特权命令：装应用 / 改设置 / 虚拟屏点击 / 任意 shell", "root");
@@ -5456,8 +5203,8 @@ public class MainActivity extends Activity {
     private static final String[][] CON_PLUGINS = {
         {"tool-vscreen", "虚拟屏：建屏 / 看图 / 点击 · 8 个工具"},
         {"tool-accessibility", "无障碍读屏 / 手势 / 截图理解"},
-        {"tool-android", "用量统计 / 悬浮窗 / 剪贴板 / 定时任务"},
-        {"tool-shizuku", "特权 shell（root 或 Shizuku 任一）"},
+        {"tool-android", "用量统计 / 悬浮窗 / 装包 / 应用与设置 / 截图 / 输入"},
+        {"tool-shizuku", "特权 shell / 通知 / 剪贴板（root 或 Shizuku 任一）"},
         {"llm-pi-ai", "第三方供应商适配（关掉则「添加提供方」不可用）"},
         {"session-telemetry-otel", "遥测上报 · Android 上不需要"},
         {"session-log-download", "会话日志导出按钮（右上角）"},
