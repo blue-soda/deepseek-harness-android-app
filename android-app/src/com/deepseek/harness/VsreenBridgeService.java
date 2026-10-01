@@ -64,6 +64,12 @@ public class VsreenBridgeService extends Service {
     private static final int CORE_PORT = 8998;
     /** 特权服务端主类。 */
     private static final String CORE_MAIN = "com.deepseek.harness.vscreen.Main";
+    /**
+     * issue #36：小鲸鱼入口自动建屏时用的默认尺寸（竖屏 9:16，与插件 android_vscreen_create
+     * 不传 orientation 时的默认一致）。核心收到 w/h=0 才用它自己的默认值，这里显式传更确定。
+     */
+    private static final int DEFAULT_VSCREEN_W = 1008;
+    private static final int DEFAULT_VSCREEN_H = 1792;
 
     /**
      * 期望的服务端构建指纹（必须与 vscreen/Main.java 的 BUILD 一致）。
@@ -112,7 +118,19 @@ public class VsreenBridgeService extends Service {
      */
     public static volatile boolean sVscreenRunning = false;
 
-    /** 小鲸鱼面板「虚拟屏」按钮：重新打开预览窗（配合「收起到小鲸鱼」）。 */
+    /**
+     * issue #36：正在「确保虚拟屏可用」（拉起核心 / 建屏）中。
+     * 这段窗口期内预览轮询**不能收窗** —— 否则窗口刚建好就被轮询收掉，
+     * 正是用户看到的「闪一下（约 0.4 秒）就没了」。
+     */
+    private volatile boolean vscreenEnsureInFlight = false;
+
+    /**
+     * 小鲸鱼面板「虚拟屏」按钮。
+     *
+     * issue #36：语义从「把已收起的预览窗叫回来」改成「**确保虚拟屏可用**」——
+     * 核心没起就拉起、没屏就建屏，成功才显示预览窗。详见 ensureVscreenThenShowPreview()。
+     */
     public static void showPreviewFromWhale() {
         VsreenBridgeService s = instance;
         if (s != null) s.doShowPreviewFromWhale();
@@ -366,11 +384,79 @@ public class VsreenBridgeService extends Service {
 
     private void doShowPreviewFromWhale() {
         try {
+            // 用户这次是主动要用虚拟屏 → 清掉「用户主动关掉过」与「收起到小鲸鱼」两个标记
             previewDismissedDisplayId = Integer.MIN_VALUE;
             previewCollapsedToWhale = false;
             OverlayService.pinForVscreen(false);
-            showPreviewWindow();
+            ensureVscreenThenShowPreview();
         } catch (Throwable ignored) {}
+    }
+
+    /**
+     * issue #36：小鲸鱼面板那个「虚拟屏」按钮的入口语义修复。
+     *
+     * 旧行为（社区实测与代码对得上）：该入口只调 showPreviewWindow()，**从不发 /vscreen/create**。
+     * 而预览轮询每轮都看一次 /vscreen/status，
+     * 发现 displayId < 0 就调 hidePreviewWindow() 自己把窗收掉 →
+     * 用户看到的就是「黑窗闪一下（约 0.4 秒）就没了、大约每 2 秒重试一次、始终进不去」。
+     * 所以它以前只适合“预览窗已被收起到小鲸鱼，点它叫回来”的场景。
+     *
+     * 新行为（幂等的“确保可用”）：
+     *   ① 核心没跑 → 拉起（8998 的 /vscreen/ping 带构建指纹校验）；
+     *   ② /vscreen/status 显示没屏 → 发一次 /vscreen/create（默认竖屏 1008x1792）；
+     *   ③ 成功才显示预览窗；**任何一步失败都如实 toast 报错**（不再静默闪一下）。
+     *
+     * ⚠️ 全程必须在后台线程：ensureCoreServer() 里会 waitShizuku（最长 20 秒）并同步等
+     * Shizuku 起进程（报告人日志里那条 Slow Binder: IRemoteProcess.waitFor() 1~8s 就是它），
+     * 在主线程做会 ANR。
+     */
+    private void ensureVscreenThenShowPreview() {
+        if (vscreenEnsureInFlight) return;
+        vscreenEnsureInFlight = true;
+        new Thread(new Runnable() { @Override public void run() {
+            String err = null;
+            try {
+                // ① 确保特权核心在跑
+                if (!coreAlive()) {
+                    ensureCoreServer();
+                    if (!coreAlive()) {
+                        err = "虚拟屏服务未就绪：请确认 Shizuku 正在运行且已授权本应用（控制台 → 权限）";
+                    }
+                }
+                // ② 没有虚拟屏就建一块
+                if (err == null) {
+                    String st = coreGet("/vscreen/status", 3000);
+                    if (jsonInt(st, "displayId", -1) < 0) {
+                        String cr = coreGet("/vscreen/create?w=" + DEFAULT_VSCREEN_W + "&h=" + DEFAULT_VSCREEN_H, 20000);
+                        if (cr == null) {
+                            err = "建屏失败：虚拟屏服务无响应（可看控制台日志）";
+                        } else if (!cr.contains("\"ok\":true")) {
+                            err = "建屏失败：" + clip(cr, 120);
+                        } else {
+                            Log.i(TAG, "issue#36: 已自动建屏 " + DEFAULT_VSCREEN_W + "x" + DEFAULT_VSCREEN_H);
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                err = "虚拟屏启动异常：" + t.getMessage();
+            } finally {
+                vscreenEnsureInFlight = false;
+            }
+            final String ferr = err;
+            previewHandler.post(new Runnable() { @Override public void run() {
+                try {
+                    if (ferr != null) { toast(ferr); return; }   // 如实报错，不再静默
+                    showPreviewWindow();
+                } catch (Throwable ignored) {}
+            }});
+        }}, "vscreen-ensure").start();
+    }
+
+    /** 把特权服务端的 JSON 响应截成一小段，供 toast 显示（失败时不要再让人去猜）。 */
+    private static String clip(String s, int max) {
+        if (s == null) return "null";
+        String t = s.replace('\n', ' ').replace('\r', ' ').trim();
+        return t.length() <= max ? t : t.substring(0, max) + "…";
     }
 
     /** 浮层上的短提示（预览窗是 FLAG_NOT_FOCUSABLE，弹不出对话框）。 */
@@ -426,7 +512,9 @@ public class VsreenBridgeService extends Service {
                                 if (!previewWindowVisible && id != previewDismissedDisplayId) showPreviewWindow();
                             } else {
                                 if (id < 0) previewDismissedDisplayId = Integer.MIN_VALUE;   // 虚拟屏已销毁 → 下次重建照常弹预览
-                                if (previewWindowVisible) hidePreviewWindow();
+                                // issue #36：正在「确保虚拟屏可用」（拉核心 / 建屏）时不能收窗 ——
+                                // 否则用户点小鲸鱼「虚拟屏」后，窗刚建好就被这里收掉 = 闪一下就没。
+                                if (previewWindowVisible && !vscreenEnsureInFlight) hidePreviewWindow();
                             }
                         }
                         sinceStatus--;
