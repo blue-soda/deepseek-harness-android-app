@@ -207,15 +207,26 @@ docs/开发指南.md            项目开发指南（架构/常用命令/注意�
 
 ## 🔨 构建说明
 
-详见 `docs/开发指南.md` 第六节「常用命令」与第七节「注意事项」。
+**一条命令从零构建**（推荐）：
+
+```bash
+bash tools/build-apk.sh
+```
+
+它会自动下载上游 Release APK、从中提取 node 运行时与已打补丁的 DSH 内核树、组装构建所需的
+devhome、调用 `android-app/build.sh` 出包，并校验补丁链完整性与签名。
+**完整前置条件、参数、排错见 [BUILD.md](BUILD.md)。**
+
+也可以手工构建 —— 详见 `docs/开发指南.md` 第六节「常用命令」与第七节「注意事项」。
 
 关键点：
 - `targetSdk` 必须保持 **28**（≥29 会导致 node 二进制 EACCES 起不来）
-- 需准备 `runtime/`（node v26 + 依赖库）和 `dshroot/`（DSH 内核）才能打完整 APK
+- 手工构建需自备 `runtime/`（node v26 + 依赖库）和 `dshroot/`（DSH 内核）；
+  用 `tools/build-apk.sh` 则不需要，它会从上游 APK 自动取得
 - `build.sh` 会自动注入 mobile.css/mobile.js，并做 API Key 安全检查
 
 > ⚠️ 这是源码与配置仓库，**不含 APK 二进制、签名密钥（release.jks）、node 运行时、payload.zip、凭证文件**。
-> 📦 安装包（DeepSeekHarness.apk）、node 运行时与 DSH 内核分块包见 [Releases](https://github.com/woaiys3/deepseek-harness-android-app/releases)；构建源码前需准备 runtime/ 与 dshroot/（分块包合并方法见 Release 说明）。
+> 📦 安装包见 [Releases](https://github.com/woaiys3/deepseek-harness-android-app/releases)。
 
 ## 💬 交流讨论
 

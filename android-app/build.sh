@@ -21,8 +21,8 @@ APKSIGNER="apksigner"
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*) CP_SEP=";"; D8="d8.bat"; APKSIGNER="apksigner.bat" ;;
 esac
-# 签名密钥（自行准备，不入仓库）
-KEY="$P/release.jks"
+# 签名密钥（自行准备，不入仓库）。DSH_KEYSTORE 可覆盖，便于一键脚本用缓存里的密钥。
+KEY="${DSH_KEYSTORE:-$P/release.jks}"
 
 echo "== 0/7 组装 payload =="
 # 移动端适配注入（mobile.css，不覆盖原生 index.html，DSH 更新后也自动重新注入）

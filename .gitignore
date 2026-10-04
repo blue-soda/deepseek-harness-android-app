@@ -16,3 +16,7 @@ payload.zip
 *.bak-*
 # 本机构建产物（桩 devhome 等）
 /build/
+# 一键构建脚本的缓存（上游 APK、devhome、本地调试密钥）
+/.cache/
+# 每次构建生成的信息文件
+*.build-info.txt
