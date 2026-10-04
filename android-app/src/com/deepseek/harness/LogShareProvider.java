@@ -62,9 +62,21 @@ public class LogShareProvider extends ContentProvider {
         }
     }
 
+    /**
+     * 按扩展名给 MIME（原来是固定 text/plain）。
+     * 日志仍是 text/plain（接收方按文本处理）；主题包/备份是 zip，给 application/zip
+     * 才会被网盘、邮件、文件管理器当成压缩包而不是一段文本。
+     */
     @Override
     public String getType(Uri uri) {
-        return "text/plain";
+        String n = (uri == null || uri.getLastPathSegment() == null)
+                ? "" : uri.getLastPathSegment().toLowerCase(java.util.Locale.US);
+        if (n.endsWith(".zip")) return "application/zip";
+        if (n.endsWith(".png")) return "image/png";
+        if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return "image/jpeg";
+        if (n.endsWith(".webp")) return "image/webp";
+        if (n.endsWith(".md") || n.endsWith(".txt") || n.endsWith(".log")) return "text/plain";
+        return "application/octet-stream";
     }
 
     /** 多数分享目标（邮件/网盘/IM）会查 DISPLAY_NAME 与 SIZE 来显示文件名和大小。 */

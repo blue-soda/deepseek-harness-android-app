@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "name": "海边的夜（示例主题）",
+  "author": "示例 · 可直接改",
+  "app": "1.17.3+",
+
+  "appearance": {
+    "dark": "dark",
+    "perScheme": {
+      "dark":  { "bg": "#0a0d12", "card": "#141a23", "text": "#f2f6ff", "sub": "#a9b4c6", "line": "#26303f" },
+      "light": { "bg": "#f7f9fc", "card": "#ffffff", "text": "#101724", "sub": "#6b7686", "line": "#e3e8ef" }
+    },
+    "colors": {
+      "accent": "#2dd4bf",
+      "green": "#31c48d",
+      "red": "#f05252",
+      "track": "#1c2530",
+      "statusBar": "auto"
+    },
+    "fontScale": 1.05,
+    "radius": 20,
+    "mono": false,
+    "cardsAlpha": 0.82,
+    "background": {
+      "image": "bg.jpg",
+      "fit": "cover",
+      "anchor": "center",
+      "opacity": 0.9,
+      "dim": 0.28,
+      "blur": 0,
+      "parallax": false
+    }
+  },
+
+  "layout": {
+    "order": ["extract", "engine", "rescue", "perm", "plugins", "log", "update"],
+    "hidden": ["update"],
+    "defaultPage": 0,
+    "detailOpen": false,
+    "compact": false
+  },
+
+  "text": {
+    "title.brand": "DEEPSEEK HARNESS",
+    "card.extract": "文件",
+    "card.engine": "引擎",
+    "btn.engine.start": "点火",
+    "btn.engine.restart": "重启",
+    "btn.engine.stop": "停",
+    "btn.extract.run": "重新解压",
+    "status.ready": "已就绪"
+  }
+}

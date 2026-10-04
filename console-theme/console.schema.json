@@ -1,0 +1,573 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/woaiys3/deepseek-harness-android-app/console-theme/console.schema.json",
+  "title": "DeepSeek Harness 安卓控制台主题 (console.json)",
+  "description": "放在 /sdcard/<包名目录>/console/console.json：控制 App 冷启动那个原生控制台的外观、布局与文案。深色/浅色两套配色（perScheme 优先于 colors）。所有字段可省，省略=内置默认。v1 生效：schema/appearance/layout(order,hidden,defaultPage)/text；带 ⏭ 的字段是已定义但下一轮才生效（校验器只警告不报错）。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "type": "integer",
+      "const": 1,
+      "description": "规范版本，当前必须为 1"
+    },
+    "name": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "主题名（显示在主题页）"
+    },
+    "author": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "app": {
+      "type": "string",
+      "description": "要求的 App 版本下限，如 \"1.17.3+\"；运行时只作提示，不强制"
+    },
+    "appearance": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "外观：配色 / 字号 / 圆角 / 图标 / 背景图",
+      "properties": {
+        "dark": {
+          "enum": [
+            "follow",
+            "light",
+            "dark"
+          ],
+          "default": "follow",
+          "description": "控制台自身的深浅色；follow=跟随系统"
+        },
+        "colors": {
+          "$ref": "#/$defs/colorSet",
+          "description": "单一套色（深浅共用）；被 perScheme 覆盖"
+        },
+        "perScheme": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "深浅两套色，优先级高于 colors",
+          "properties": {
+            "light": {
+              "$ref": "#/$defs/colorSet"
+            },
+            "dark": {
+              "$ref": "#/$defs/colorSet"
+            }
+          }
+        },
+        "fontScale": {
+          "type": "number",
+          "minimum": 0.8,
+          "maximum": 1.4,
+          "default": 1.0,
+          "description": "控制台所有文字整体缩放"
+        },
+        "radius": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32,
+          "default": 14,
+          "description": "卡片/按钮圆角（dp）"
+        },
+        "mono": {
+          "type": "boolean",
+          "default": false,
+          "description": "日志页用等宽字体"
+        },
+        "logo": {
+          "$ref": "#/$defs/imageRef",
+          "description": "可选：左上品牌图标（相对 console/ 的文件名）"
+        },
+        "cardsAlpha": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1.0,
+          "description": "卡片/按钮底色不透明度；放背景图时调低才看得见图"
+        },
+        "background": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "控制台背景图",
+          "properties": {
+            "image": {
+              "$ref": "#/$defs/imageRef"
+            },
+            "fit": {
+              "enum": [
+                "cover",
+                "contain",
+                "stretch",
+                "tile",
+                "center"
+              ],
+              "default": "cover"
+            },
+            "anchor": {
+              "enum": [
+                "center",
+                "top",
+                "bottom",
+                "left",
+                "right",
+                "topLeft",
+                "topRight",
+                "bottomLeft",
+                "bottomRight"
+              ],
+              "default": "center"
+            },
+            "opacity": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.4,
+              "description": "图片自身透明度（叠在 colors.bg 之上）"
+            },
+            "dim": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.25,
+              "description": "再压一层暗色，保证文字可读"
+            },
+            "blur": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 25,
+              "default": 0,
+              "description": "模糊半径；仅 Android 12+ 生效，低版本忽略（会如实告知）"
+            },
+            "parallax": {
+              "type": "boolean",
+              "default": false,
+              "description": "滚动时背景是否跟随"
+            }
+          }
+        }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "布局：① 简写 order/hidden 调内置卡片；② 全写 pages 自己拼整页（⏭ 下一轮生效）",
+      "properties": {
+        "order": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/cardId"
+          },
+          "description": "卡片顺序（未列出的按内置顺序排在后面）"
+        },
+        "hidden": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/cardId"
+          },
+          "description": "不想显示的卡片"
+        },
+        "defaultPage": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9,
+          "default": 0,
+          "description": "默认落在哪一页：0 控制台 / 1 权限 / 2 插件 / 3 日志 / 4 主题"
+        },
+        "detailOpen": {
+          "type": "boolean",
+          "default": false,
+          "description": "「已解压」详情默认展开"
+        },
+        "compact": {
+          "type": "boolean",
+          "default": false,
+          "description": "紧凑模式（间距减半）"
+        },
+        "pages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/page"
+          },
+          "description": "⏭ 声明式控件树：整页自拼（与 order/hidden 互斥，写了它就以它为准）"
+        }
+      }
+    },
+    "text": {
+      "type": "object",
+      "description": "文案覆盖：键 → 新文案。未给的用内置中文。键名见 SPEC 的文案键表（card.* / btn.* / title.* / status.*）",
+      "propertyNames": {
+        "pattern": "^(card|btn|title|status|desc)\\.[a-zA-Z0-9_.]+$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 40
+      }
+    },
+    "behavior": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "⏭ 下一轮生效",
+      "properties": {
+        "autoExtract": {
+          "type": "boolean",
+          "default": true,
+          "description": "冷启动自动解压"
+        },
+        "autoStartEngine": {
+          "type": "boolean",
+          "default": false,
+          "description": "解压完成后自动启动引擎"
+        },
+        "enterMainUi": {
+          "type": "boolean",
+          "default": false,
+          "description": "引擎就绪后直接进主界面（跳过控制台）"
+        },
+        "hideButtons": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "restart",
+              "stop",
+              "verify",
+              "export",
+              "import",
+              "safeMode",
+              "update",
+              "resetTheme"
+            ]
+          }
+        },
+        "doubleBackExit": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "description": "✅ 已生效（v1.17.7）：自定义按钮 —— 主控台会多出一张「自定义按钮」卡片；shell 可执行（点击时先弹确认），http/intent/prompt 还没接执行",
+      "items": {
+        "$ref": "#/$defs/action"
+      }
+    }
+  },
+  "$defs": {
+    "color": {
+      "type": "string",
+      "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+      "description": "#rgb / #rrggbb / #aarrggbb"
+    },
+    "colorSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bg": {
+          "$ref": "#/$defs/color",
+          "description": "页面底色"
+        },
+        "card": {
+          "$ref": "#/$defs/color",
+          "description": "卡片/按钮底色"
+        },
+        "text": {
+          "$ref": "#/$defs/color",
+          "description": "主文字"
+        },
+        "sub": {
+          "$ref": "#/$defs/color",
+          "description": "次要文字"
+        },
+        "line": {
+          "$ref": "#/$defs/color",
+          "description": "分割线/描边"
+        },
+        "accent": {
+          "$ref": "#/$defs/color",
+          "description": "强调色（主按钮、进度条）"
+        },
+        "green": {
+          "$ref": "#/$defs/color"
+        },
+        "red": {
+          "$ref": "#/$defs/color"
+        },
+        "track": {
+          "$ref": "#/$defs/color",
+          "description": "进度条轨道"
+        },
+        "statusBar": {
+          "oneOf": [
+            {
+              "const": "auto"
+            },
+            {
+              "$ref": "#/$defs/color"
+            }
+          ],
+          "default": "auto",
+          "description": "状态栏/导航栏底色"
+        }
+      }
+    },
+    "imageRef": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^([^/\\\\]+\\.(png|jpg|jpeg|webp)|/sdcard/.+)$",
+      "description": "主题包内的文件名（推荐，如 bg.jpg）或 /sdcard/… 绝对路径"
+    },
+    "cardId": {
+      "enum": [
+        "extract",
+        "engine",
+        "rescue",
+        "actions",
+        "perm",
+        "plugins",
+        "log",
+        "update",
+        "theme"
+      ],
+      "description": "内置卡片 id。⚠ rescue（救援）与 theme（主题页）不可移除：写进 hidden 会被忽略并给 warning"
+    },
+    "page": {
+      "type": "object",
+      "required": [
+        "id",
+        "children"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{0,23}$"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 12
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node"
+          },
+          "maxItems": 200
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "row",
+            "column",
+            "card",
+            "text",
+            "button",
+            "image",
+            "spacer",
+            "divider",
+            "builtin"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "description": "builtin 时为积木 id（extract.block / engine.status / rescue.buttons / theme.card / perm.list / plugin.list / log.actions / log.view / update.button / version.label / brand.label …）"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "size": {
+          "type": "number",
+          "minimum": 8,
+          "maximum": 28
+        },
+        "color": {
+          "type": "string",
+          "description": "text|sub|accent|green|red 或 #rrggbb"
+        },
+        "align": {
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ]
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2000
+        },
+        "visible": {
+          "type": "boolean",
+          "default": true
+        },
+        "style": {
+          "enum": [
+            "primary",
+            "normal",
+            "ghost"
+          ]
+        },
+        "action": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/action"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/action"
+              },
+              "maxItems": 8
+            }
+          ]
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node"
+          },
+          "maxItems": 200
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "按钮标识（可选，便于 AI 自己引用）"
+        },
+        "icon": {
+          "type": "string",
+          "maxLength": 4,
+          "description": "按钮前面的图标字符（可选，如 ⟳ 📄）"
+        },
+        "type": {
+          "enum": [
+            "engine.start",
+            "engine.restart",
+            "engine.stop",
+            "engine.openUi",
+            "extract.run",
+            "extract.verify",
+            "perm.open",
+            "log.share",
+            "log.clear",
+            "theme.reload",
+            "theme.export",
+            "theme.import",
+            "theme.reset",
+            "shell",
+            "url",
+            "intent",
+            "prompt",
+            "http",
+            "clipboard",
+            "toast",
+            "settings"
+          ],
+          "description": "shell/http/intent/prompt 属于「可执行动作」：导入时必须用户逐个确认，默认不启用"
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 24
+        },
+        "confirm": {
+          "type": "boolean",
+          "default": true,
+          "description": "shell 类动作执行前是否二次确认"
+        },
+        "continueOnError": {
+          "type": "boolean",
+          "default": false,
+          "description": "动作数组里该项失败是否继续"
+        },
+        "cmd": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "shell: 命令"
+        },
+        "privileged": {
+          "type": "boolean",
+          "default": false,
+          "description": "shell: 走特权通道（Shizuku/root）"
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "external": {
+          "type": "boolean",
+          "default": true,
+          "description": "url: 用外部浏览器打开"
+        },
+        "action": {
+          "type": "string",
+          "description": "intent: android.intent.action.*"
+        },
+        "data": {
+          "type": "string",
+          "description": "intent: data uri"
+        },
+        "package": {
+          "type": "string",
+          "description": "intent: 目标包名"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "prompt: 发给 DSH 的提示词；clipboard/toast: 文本"
+        },
+        "copy": {
+          "const": "token",
+          "description": "clipboard: 复制 API Key"
+        },
+        "session": {
+          "type": "string",
+          "description": "prompt: 目标会话（省略=新会话）"
+        },
+        "mode": {
+          "type": "string",
+          "description": "prompt: 发送模式（省略=默认）"
+        },
+        "method": {
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE"
+          ],
+          "default": "GET"
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

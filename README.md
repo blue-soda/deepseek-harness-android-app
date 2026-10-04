@@ -164,14 +164,17 @@
 ```
 CHANGES.md              版本改动记录（含 @Suyi222 贡献的 v1.1.1 稳定基线）
 
-android-app/             APK 构建工程
+android-app/             APK 构建工程（正式版源码；Lite = 同一份源码改包名）
 ├── build.sh             一键打包脚本
 ├── env.sh               编译工具链环境（可 export PREFIX 覆盖）
 ├── AndroidManifest.xml  包名/targetSdk(28)/横竖屏自由旋转/Shizuku 声明
 ├── libs/                Shizuku 官方 aar（api/provider/aidl 13.1.5）
 ├── res/                 图标 + 字符串资源
 ├── sdk/                 放 platform android.jar（见 sdk/README.md）
-└── src/.../MainActivity.java   Android 原生壳（权限引导页/加载页/引擎启动）
+├── compat/              **兼容版差异文件**（内嵌 GeckoView）：只放与上面不同的 4 个文件 + 说明 → compat/README.md
+└── src/.../             原生壳：MainActivity（权限引导/控制台/引擎启停）、ConsoleTheme（主题包解析）、
+                         AccessibilityService（无障碍）、OverlayService（鲸鱼悬浮球）、
+                         VsreenBridgeService（虚拟屏桥）、EngineService、LogShareProvider（日志分享）等
 
 mobile-patch/            移动端适配（注入 DSH 前端，不覆盖原生代码）
 ├── inject.sh            注入脚本（mobile.css + mobile.js 到 dist）

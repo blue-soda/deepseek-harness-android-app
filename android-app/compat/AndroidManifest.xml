@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    package="com.deepseek.harness"
+    package="com.deepseek.harness.compat"
     android:versionCode="52"
-    android:versionName="1.17.3">
+    android:versionName="1.17.3-compat">
 
-    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="28" />
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="28" />
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
@@ -102,7 +102,7 @@
 
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
-            android:authorities="com.deepseek.harness.shizuku"
+            android:authorities="com.deepseek.harness.compat.shizuku"
             android:multiprocess="false"
             android:enabled="true"
             android:exported="true"
@@ -112,7 +112,7 @@
              本项目无 androidx，故自实现最小只读 ContentProvider，只暴露 cache/share 下的文件） -->
         <provider
             android:name=".LogShareProvider"
-            android:authorities="com.deepseek.harness.logshare"
+            android:authorities="com.deepseek.harness.compat.logshare"
             android:exported="false"
             android:grantUriPermissions="true" />
     </application>

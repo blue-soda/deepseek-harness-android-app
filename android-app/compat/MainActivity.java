@@ -1,4 +1,4 @@
-package com.deepseek.harness;
+package com.deepseek.harness.compat;
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -29,11 +29,14 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.webkit.WebSettings;
+// v1.17.3：compat 变体改用内嵌 GeckoView 渲染（不再依赖系统 WebView）。
+// 仍保留 android.webkit.WebView：checkWebViewCompat() 里对它的引用保留为文档性代码（该方法在 compat 已早退）。
 import android.webkit.WebView;
-import android.webkit.WebChromeClient;
-import android.webkit.ValueCallback;
-import android.webkit.WebViewClient;
+import org.mozilla.geckoview.GeckoResult;
+import org.mozilla.geckoview.GeckoRuntime;
+import org.mozilla.geckoview.GeckoRuntimeSettings;
+import org.mozilla.geckoview.GeckoSession;
+import org.mozilla.geckoview.GeckoView;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -161,7 +164,8 @@ public class MainActivity extends Activity {
     // 由 onStart/onStop 维护；OverlayService 启动时按此标志决定初始可见性。
     public static volatile boolean overlayForeground = true;
 
-    private WebView webView;
+    // v1.17.3：compat 用内嵌 GeckoView（GvWebView 是它的适配层，见文件末尾），不再用系统 WebView。
+    private GvWebView webView;
     /** v1.13.11：页面实测背景色（0 = 还没取到，壳底色用 cBg() 兜底）。见 refreshPageBackground()。 */
     private volatile int pageBgColor = 0;
 
@@ -210,8 +214,9 @@ public class MainActivity extends Activity {
             if (conTick != null) conTick.postDelayed(this, 1000);
         }
     };
-    // 网页 <input type="file"> 选完文件后的回调（见 onShowFileChooser）
-    private ValueCallback<Uri[]> fileChooserCallback;
+    // 网页 <input type="file"> 选完文件后的回填句柄（v1.17.3：由 GeckoView 的 onFilePrompt 提供）
+    private GeckoResult<GeckoSession.PromptDelegate.PromptResponse> gvFileResult;
+    private GeckoSession.PromptDelegate.FilePrompt gvFilePrompt;
     private TextView statusView;
     private ProgressBar progressBar;
     private ImageView splashLogo;
@@ -273,108 +278,16 @@ public class MainActivity extends Activity {
         checkBatteryOptimization(); // ④ 电池优化引导：被限制时提示（挂后台可能被杀）
         // v1.12：不再在启动时自动检查更新（用户要求）；改为控制台底部的「检查更新」手动触发。
 
-        webView = new WebView(this);
-        WebSettings ws = webView.getSettings();
-        ws.setJavaScriptEnabled(true);
-        ws.setDomStorageEnabled(true);
-        ws.setAllowFileAccess(true);
-        ws.setDatabaseEnabled(true);
-        ws.setUseWideViewPort(true);
-        ws.setLoadWithOverviewMode(true);
-        ws.setSupportZoom(false);
-        ws.setBuiltInZoomControls(false);
-        ws.setDisplayZoomControls(false);
-        ws.setTextZoom(100);
-        webView.setBackgroundColor(chromeBg()); // v1.13.11：跟随主题（浅色模式下不再是深色闪屏）
-        checkWebViewCompat(); // WebView 兼容检测：老内核提示引导（DSH 前端需 Chromium 80+）
-        webView.setWebViewClient(new android.webkit.WebViewClient() {
-            private int errorRetries = 0;
-
-            @Override
-            public void onReceivedError(WebView view, android.webkit.WebResourceRequest request,
-                                         android.webkit.WebResourceError error) {
-                // 主框架加载失败（如 ERR_CONNECTION_REFUSED）时自动重试，直到服务器就绪
-                if (request != null && request.isForMainFrame() && errorRetries < 120) {
-                    errorRetries++;
-                    final WebView wv = view;
-                    view.postDelayed(new Runnable() {
-                        @Override public void run() { wv.loadUrl(webHomeUrl()); }
-                    }, 2500L);
-                }
-            }
-
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                errorRetries = 0;
-                // v1.13.11：页面底色决定状态栏/导航栏颜色（前端主题可独立于系统设置），
-                // 且主题可能在页面挂载后才被前端插件应用 → 多试几次，取到即刷新。
-                final int[] delays = {0, 700, 2000, 5000};
-                for (int i = 0; i < delays.length; i++) {
-                    final int d = delays[i];
-                    view.postDelayed(new Runnable() {
-                        @Override public void run() { refreshPageBackground(); }
-                    }, d);
-                }
-                // v1.13.12：让页面把底色变化主动推给壳（用户在前端里切深浅色时状态栏能跟着变，
-                // 不再只靠页面加载时的几次采样）。注入 MutationObserver，主题 class/属性一变就上报。
-                try {
-                    view.evaluateJavascript(
-                        "(function(){try{if(window.__dshBgWatch)return;window.__dshBgWatch=1;"
-                        + "function opaque(s){return s&&!/rgba?\\([^)]*,\\s*0\\s*\\)/.test(s);}"
-                        + "function cur(){var b='';try{b=getComputedStyle(document.body).backgroundColor||''}catch(e){}"
-                        + "if(opaque(b))return b;var h='';try{h=getComputedStyle(document.documentElement).backgroundColor||''}catch(e){}"
-                        + "return opaque(h)?h:b;}"
-                        + "function push(){try{if(window.dshshell&&dshshell.onBg)dshshell.onBg(cur())}catch(e){}}"
-                        + "var t=null;function soon(){if(t)return;t=setTimeout(function(){t=null;push()},250);}"
-                        + "try{new MutationObserver(soon).observe(document.documentElement,"
-                        + "{attributes:true,attributeFilter:['class','style','data-theme','color-scheme']})}catch(e){}"
-                        + "document.addEventListener('transitionend',soon,true);"
-                        + "push();setTimeout(push,800);setTimeout(push,2500);}catch(e){}})()",
-                        null);
-                } catch (Throwable ignored) {}
-            }
-        });
-
-        // v1.13.12：页面 → 壳的底色上报通道（配合上面注入的观察器；只暴露一个只读回调）
-        try {
-            webView.addJavascriptInterface(new Object() {
-                @android.webkit.JavascriptInterface
-                public void onBg(String css) {
-                    final int c = parseCssColor(css);
-                    if (c == 0) return;
-                    ui.post(new Runnable() { @Override public void run() {
-                        if (c == pageBgColor) return;
-                        pageBgColor = c;
-                        applyStatusBar();
-                        if (engineRoot != null) engineRoot.setBackgroundColor(c);
-                        if (webView != null) webView.setBackgroundColor(c);
-                    }});
-                }
-            }, "dshshell");
-        } catch (Throwable ignored) {}
-
-        // 附件/文件选择：官方前端用 <input type="file"> 选文件，Android WebView 必须实现
-        // onShowFileChooser 才会弹系统文件选择器，否则点「添加附件」没有任何反应。
-        webView.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
-                                             FileChooserParams params) {
-                if (fileChooserCallback != null) {
-                    fileChooserCallback.onReceiveValue(null);
-                }
-                fileChooserCallback = callback;
-                try {
-                    Intent intent = params.createIntent();
-                    intent.addCategory(Intent.CATEGORY_OPENABLE);
-                    startActivityForResult(intent, REQ_FILE_CHOOSER);
-                    return true;
-                } catch (Throwable t) {
-                    Log.w(TAG, "file chooser failed", t);
-                    fileChooserCallback = null;
-                    return false;
-                }
-            }
-        });
+        // ==================== v1.17.3：compat 改用内嵌 GeckoView ====================
+        // 为什么改：系统 WebView 的版本决定 DSH 前端能不能跑（Chromium 94 起才有 static{} 语法），
+        // 91~93 的老设备无论怎么升级 App 都只能白屏。compat 现在自带 GeckoView 渲染，
+        // 彻底不依赖系统 WebView；打包链路（geckoview R 类 / manifest 合并 / 13 个 .so）已随 v1.17.2 验证通过。
+        // 适配层见文件末尾的 GvWebView —— 本文件其余调用面（loadUrl / canGoBack / onResume …）保持不变。
+        webView = new GvWebView(this);
+        webView.setBackgroundColor(chromeBg()); // 跟随主题（浅色模式下不再是深色闪屏）
+        // 系统 WebView 版本检测在本变体已无意义（见 checkWebViewCompat 顶部的说明），
+        // 保留这一行只是为了让四份源码的结构继续对齐。
+        checkWebViewCompat();
 
         statusView = new TextView(this);
         statusView.setText("正在启动 DeepSeek Harness…");
@@ -492,8 +405,15 @@ public class MainActivity extends Activity {
     private static final int WEBVIEW_MIN_CHROME = 94;
 
     private void checkWebViewCompat() {
+        // v1.17.3：compat 已改用内嵌 GeckoView 渲染（GvWebView），**不再依赖系统 WebView**，
+        // 所以「系统 WebView 太旧导致白屏」这件事在本变体不再成立 —— 91~93 的老设备也能正常渲染。
+        // 下面的检测/引导代码有意保留（另外三份源码用的是同一份实现，保留便于对照同步），
+        // 但本变体直接早退：不会再弹「请更新 Android System WebView」。
+        if (true) return;
         try {
-            int chrome = parseChromeMajor(webView.getSettings().getUserAgentString());
+            // v1.17.3：compat 的 webView 是 GeckoView 适配层，没有 getSettings()；
+            // 本方法在 compat 已早退，这里直接给「拿不到版本」（0）——保留对照代码能编译即可。
+            int chrome = parseChromeMajor("");
             // UA 无 Chrome 标记时（部分 ROM 魔改 UA），API 26+ 用 WebView 包版本兜底
             if (chrome <= 0 && Build.VERSION.SDK_INT >= 26) {
                 try {
@@ -701,24 +621,14 @@ public class MainActivity extends Activity {
      * 所以只能从页面实际渲染结果里取，不能靠猜。
      */
     private void refreshPageBackground() {
-        if (webView == null) return;
-        try {
-            // body 透明（全透明底）时退回 <html> 的底色 —— 有些前端把底色画在根元素上
-            webView.evaluateJavascript(
-                "(function(){try{function op(s){return s&&!/rgba?\\([^)]*,\\s*0\\s*\\)/.test(s);}"
-                + "var b=getComputedStyle(document.body).backgroundColor||'';if(op(b))return b;"
-                + "var h=getComputedStyle(document.documentElement).backgroundColor||'';return op(h)?h:''}catch(e){return ''}})()",
-                new android.webkit.ValueCallback<String>() {
-                    @Override public void onReceiveValue(String v) {
-                        final int c = parseCssColor(v);
-                        if (c == 0 || c == pageBgColor) return;
-                        pageBgColor = c;
-                        applyStatusBar();
-                        if (engineRoot != null) engineRoot.setBackgroundColor(c);
-                        if (webView != null) webView.setBackgroundColor(c);
-                    }
-                });
-        } catch (Throwable ignored) {}
+        // v1.17.3 退化说明（有意为之，不是漏改）：
+        // 旧实现靠 WebView.evaluateJavascript 读页面实测底色，但**这一版 GeckoView 已经移除了 JS 求值接口**
+        // （GeckoSession 上既没有 evaluateJS，也没有对应的替代 API；类文件里搜 evaluateJS 命中 0）。
+        // 因此 compat 暂时读不到页面底色 → 状态栏/导航栏/壳底色统一跟随 **App 主题**（chromeBg()），
+        // 页面内部的深浅色仍由 DSH 前端自己渲染，不受影响。
+        // 想把「状态栏跟随页面主题」做回来，得走 WebExtension + GeckoSession.setMessageDelegate 这条路
+        //（上游 GeckoView 的标准做法），留给后续版本。
+        if (true) return;
     }
 
     /** 解析 "rgb(r, g, b)" / "rgba(r, g, b, a)"；透明或解析失败返回 0（交给主题底色兜底）。 */
@@ -1471,7 +1381,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (requestCode == REQ_FILE_CHOOSER) {
-            if (fileChooserCallback != null) {
+            // v1.17.3：文件选择改由 GeckoView 的 onFilePrompt 驱动（见 handleFilePrompt），
+            // 这里只把系统选择器的结果回填给那一次 prompt（GeckoView 用 GeckoResult 收结果）。
+            if (gvFileResult != null && gvFilePrompt != null) {
                 Uri[] picked = null;
                 if (resultCode == RESULT_OK && data != null) {
                     if (data.getClipData() != null) {
@@ -1482,8 +1394,13 @@ public class MainActivity extends Activity {
                         picked = new Uri[]{data.getData()};
                     }
                 }
-                fileChooserCallback.onReceiveValue(picked);
-                fileChooserCallback = null;
+                GeckoSession.PromptDelegate.PromptResponse resp =
+                        (picked != null && picked.length > 0)
+                                ? gvFilePrompt.confirm(this, picked)
+                                : gvFilePrompt.dismiss();
+                gvFileResult.complete(resp);
+                gvFileResult = null;
+                gvFilePrompt = null;
             }
             return;
         }
@@ -4035,7 +3952,7 @@ public class MainActivity extends Activity {
                             lastRespawnAt = now;
                             Log.w(TAG, "node died, respawning engine");
                             spawnNode(new File(getFilesDir(), "payload"));
-                            final WebView wv = webView;
+                            final GvWebView wv = webView;
                             ui.post(new Runnable() {
                                 @Override public void run() { wv.loadUrl(webHomeUrl()); }
                             });
@@ -8330,5 +8247,166 @@ public class MainActivity extends Activity {
             return;
         }
         confirmExit();
+    }
+
+    // ==================== v1.17.3：compat 的 GeckoView 适配层 ====================
+    // 设计：把内嵌 GeckoView 包成「像 WebView 一样」的一层，只实现本文件真正用到的那几个方法
+    //（loadUrl / canGoBack / goBack / onResume / onPause / destroy / setBackgroundColor），
+    // 于是 MainActivity 其余 6000 多行**一行都不用改**。
+    // ⚠️ 这一版 GeckoView 已移除 JS 求值接口（类文件里搜 evaluateJS 命中 0），
+    //    所以适配层**没有** evaluateJavascript —— 页面底色取样因此退化，见 refreshPageBackground()。
+
+    /** 进程级单例：GeckoRuntime 整个进程只能建一次（多建会各起一套 Gecko，白屏/内存翻倍）。 */
+    private static GeckoRuntime geckoRuntimeSingleton = null;
+
+    private static synchronized GeckoRuntime geckoRuntime(Context ctx) {
+        if (geckoRuntimeSingleton == null) {
+            GeckoRuntimeSettings.Builder b = new GeckoRuntimeSettings.Builder()
+                    .javaScriptEnabled(true)   // DSH 前端是 SPA，必须要
+                    .consoleOutput(true);      // 页面 console → logcat（排查白屏/脚本报错时救命）
+            geckoRuntimeSingleton = GeckoRuntime.create(ctx.getApplicationContext(), b.build());
+        }
+        return geckoRuntimeSingleton;
+    }
+
+    private final class GvWebView extends FrameLayout {
+        final GeckoView view;
+        final GeckoSession session;
+        private volatile boolean canGoBack = false;
+        private int errorRetries = 0;
+
+        GvWebView(Context ctx) {
+            super(ctx);
+            view = new GeckoView(ctx);
+            addView(view, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+            session = new GeckoSession();
+            session.open(geckoRuntime(ctx));
+
+            // 加载完成/失败：等价于旧 WebViewClient 的 onPageFinished / onReceivedError
+            session.setProgressDelegate(new GeckoSession.ProgressDelegate() {
+                @Override public void onPageStop(GeckoSession s, boolean success) {
+                    if (success) {
+                        errorRetries = 0;
+                        onPageReady();
+                    }
+                }
+            });
+            session.setNavigationDelegate(new GeckoSession.NavigationDelegate() {
+                @Override public void onCanGoBack(GeckoSession s, boolean value) {
+                    canGoBack = value;
+                }
+                @Override public GeckoResult<String> onLoadError(final GeckoSession s, String uri,
+                                                                 org.mozilla.geckoview.WebRequestError error) {
+                    // 引擎还没监听（ERR_CONNECTION_REFUSED）时自动重试，直到服务器就绪。
+                    // 返回 GeckoResult<String> = 让 GeckoView 改载这个 URL；返回 null = 用它自己的错误页。
+                    if (errorRetries < 120) {
+                        errorRetries++;
+                        final GeckoResult<String> retry = new GeckoResult<>();
+                        ui.postDelayed(new Runnable() {
+                            @Override public void run() { retry.complete(webHomeUrl()); }
+                        }, 2500L);
+                        return retry;
+                    }
+                    return null;
+                }
+            });
+            session.setPromptDelegate(new GeckoSession.PromptDelegate() {
+                @Override public GeckoResult<GeckoSession.PromptDelegate.PromptResponse> onFilePrompt(
+                        GeckoSession s, GeckoSession.PromptDelegate.FilePrompt prompt) {
+                    return handleFilePrompt(prompt);
+                }
+            });
+            view.setSession(session);
+        }
+
+        /** 页面渲染成功后的收尾（旧 onPageFinished 的对应物；底色取样已退化，见 refreshPageBackground）。 */
+        private void onPageReady() {
+            Log.i(TAG, "GeckoView page loaded");
+            ui.post(new Runnable() {
+                @Override public void run() {
+                    // 正常由 loadHome() 收起浮层；引擎重试成功后这里兜底一次，
+                    // 避免「页面已经好了，启动浮层还盖着」。
+                    if (consoleVisible) return;
+                    if (statusView != null && statusView.getVisibility() == View.VISIBLE) {
+                        statusView.setVisibility(View.GONE);
+                        if (splashLogo != null) splashLogo.setVisibility(View.GONE);
+                        if (splashBrand != null) splashBrand.setVisibility(View.GONE);
+                        if (progressBar != null) progressBar.setVisibility(View.GONE);
+                    }
+                }
+            });
+        }
+
+        void loadUrl(String url) {
+            try {
+                session.setActive(true);
+                session.loadUri(url);
+            } catch (Throwable t) {
+                Log.w(TAG, "GeckoView loadUri failed", t);
+            }
+        }
+
+        boolean canGoBack() { return canGoBack; }
+
+        void goBack() {
+            try { session.goBack(); } catch (Throwable ignored) {}
+        }
+
+        void onResume() {
+            try { session.setActive(true); } catch (Throwable ignored) {}
+        }
+
+        void onPause() {
+            try { session.setActive(false); } catch (Throwable ignored) {}
+        }
+
+        void destroy() {
+            try { session.close(); } catch (Throwable ignored) {}
+            try { view.releaseSession(); } catch (Throwable ignored) {}
+        }
+
+        @Override public void setBackgroundColor(int color) {
+            super.setBackgroundColor(color);
+            try { view.setBackgroundColor(color); } catch (Throwable ignored) {}
+        }
+    }
+
+    /**
+     * GeckoView 的文件选择（等价于旧 WebChromeClient.onShowFileChooser）：
+     * 把页面 &lt;input type="file"&gt; 的请求转成系统选择器，结果在 onActivityResult 里回填。
+     */
+    private GeckoResult<GeckoSession.PromptDelegate.PromptResponse> handleFilePrompt(
+            final GeckoSession.PromptDelegate.FilePrompt prompt) {
+        final GeckoResult<GeckoSession.PromptDelegate.PromptResponse> result = new GeckoResult<>();
+        ui.post(new Runnable() {
+            @Override public void run() {
+                // 同一时刻只允许一个在飞的选择器：有旧的先 dismiss（否则那一次页面请求会一直挂着）
+                if (gvFileResult != null && gvFilePrompt != null) {
+                    try { gvFileResult.complete(gvFilePrompt.dismiss()); } catch (Throwable ignored) {}
+                    gvFileResult = null;
+                    gvFilePrompt = null;
+                }
+                gvFileResult = result;
+                gvFilePrompt = prompt;
+                try {
+                    Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    String[] mimes = prompt.mimeTypes;
+                    intent.setType(mimes != null && mimes.length == 1 && mimes[0] != null && !mimes[0].isEmpty()
+                            ? mimes[0] : "*/*");
+                    if (prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE) {
+                        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                    }
+                    startActivityForResult(intent, REQ_FILE_CHOOSER);
+                } catch (Throwable t) {
+                    Log.w(TAG, "GeckoView file prompt failed", t);
+                    gvFileResult = null;
+                    gvFilePrompt = null;
+                    try { result.complete(prompt.dismiss()); } catch (Throwable ignored) {}
+                }
+            }
+        });
+        return result;
     }
 }
