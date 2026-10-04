@@ -14,3 +14,5 @@ android-app/assets/
 payload.zip
 *.bak
 *.bak-*
+# 本机构建产物（桩 devhome 等）
+/build/
