@@ -77,18 +77,100 @@ APK 内的完整条目（21 个）：`AndroidManifest.xml`、`classes.dex`、
 
 ---
 
-## 三、真实构建还缺什么
+## 三、真实构建：从官方 APK 提取 payload（推荐，已实测）
+
+**不要自己重建 runtime 与 dshroot。** 官方 APK 里的 `assets/payload.zip` 就是一份
+**已打完 13 个补丁、开箱可用**的 devhome，而且它与出货逐字节一致。
+
+```bash
+# 1) 下载官方 APK（发布页有 md5，可自行核对）
+#    https://github.com/woaiys3/deepseek-harness-android-app/releases/download/v1.17.3/DeepSeekHarness-official-v1.17.3.apk
+#    实测 md5 = 1341959ce4e347f8fc5e761966bbf3bd（与发布页一致）
+
+# 2) 从 APK 里取出 payload.zip
+unzip -o DeepSeekHarness-official-v1.17.3.apk assets/payload.zip -d x/
+
+# 3) 解压成 devhome（32,539 条目 / 438.9 MB）
+mkdir -p devhome && cd devhome
+unzip -q ../x/assets/payload.zip
+mv dshhome .dsh                       # ← payload 叫 dshhome，build.sh 要的是 .dsh
+
+# 4) ⚠️ 唯一的结构差异：payload 把 git 主程序放在 bin/git，devhome 要 git/bin/git
+mkdir -p git/bin && mv bin/git git/bin/git
+
+# 5) 补一个工具链 env.sh（payload 里没有）
+mkdir -p build && cat > build/env.sh <<'EOF'
+export JAVA_HOME="${JAVA_HOME:-/c/Programs/jdk-21}"
+export PATH="$JAVA_HOME/bin:$PATH"
+export APK_TOOLS="${APK_TOOLS:-$LOCALAPPDATA/Android/Sdk/build-tools/35.0.0}"
+export PATH="$APK_TOOLS:$PATH"
+EOF
+```
+
+然后照第二节的命令构建，把 `DSH_DEV_HOME` 指向这个 devhome 即可。
+
+### 实测结果（2026-10-04）
+
+```
+BUILD OK -> android-app/DeepSeekHarness.apk
+156,857,839 字节 —— 与官方 APK 大小完全相同
+21 个条目全部对上（无多、无少）
+其中 11 个条目与官方逐字节相同
+```
+
+差异全部可解释：
+
+| 条目 | 差异 | 原因 |
+|---|---|---|
+| `META-INF/*` | 内容不同 | **签名密钥不同**（本机构建用了自签调试密钥） |
+| `AndroidManifest.xml` | 内容不同 | aapt/build-tools 版本差异 |
+| `assets/vscreen_shizuku.jar` | 14716 vs 14714 | 本机 JDK 21 现场编译 vs 维护者环境 |
+| `assets/mobile.css` / `mobile.js` / `console-theme/console.example.json` | 略大 | **仓库当前版本与出货版有细微出入** |
+| `assets/dshroot_revision.txt` | 内容不同 | 构建时间戳 |
+| `assets/payload.zip` | 156,576,211 vs 156,576,168（+43 字节） | 上述差异的累积 |
+
+payload 内的 14 个补丁特征串**全部命中**（`isHardlinkUnsupported`、`noopBinding`、
+`js-fallback`、`DSH_ANDROID_PLUGIN_LOG`、`dsh-mobile-menu-btn`、`sandboxMode` …），
+说明提取到的是一棵**已经打好补丁的内核树**。
+
+### 这个 APK 能装吗
+
+能。它是**真实可用的 arm64 APK**（只差用你自己的密钥重签）。
+限制是 **arm64 only** —— x86_64 模拟器需要 `ndk_translation`，
+且按 `docs/开发指南.md` 第六节还要额外三步（`-writable-system` 启动、
+把 x86_64 的 `libz.so`/`libssl.so`/`libcrypto.so` 裸名库 push 进 `runtime/lib`、重拉 Shizuku）。
+
+> **想要 x86_64 原生运行时**（避开转译的这三个坑），官方不出这种制品 ——
+> 这时才需要走下面的"自己重建"路线。
+
+---
+
+## 四、自己重建（只在需要非 arm64 或自定义 node 时）
+
+官方只出 arm64，所以下面的场景才需要自己重建：
+
+- 要在 **x86_64 模拟器**上原生跑（不想用 `ndk_translation`）
+- 要换 node 版本
+- 不想再分发维护者的制品
+
+`deepseek-harness-banyan-mvp/runtime/node/build-android-node-runtime.py` 是现成的工具：
+从 Termux apt 抓包 → 解析 `Depends` 闭包 → 校验 SHA256 → 抽白名单文件 →
+`readelf` 校验 ELF machine 与 `NEEDED` → 出 tar + manifest。它支持
+`--target-platform android-x64` 与 `android-arm64`。
+
+两点要注意：① 它把内容相同的 `.so` 去重成**符号链接**，而 Android 上链接不可靠，
+最后仍需按 `LINKS.txt` 复制成实体（官方直接在构建期 `cp -L`，更省事）；
+② Termux 构建把 `OPENSSLDIR` 写死指向 Termux 路径，必须补官方那三个证书/配置补丁
+（`OPENSSL_CONF`、`GIT_EXEC_PATH`/`GIT_TEMPLATE_DIR`、`SSL_CERT_FILE`+`CURL_CA_BUNDLE`+`GIT_SSL_CAINFO`）。
+
+---
+
+## 五、还缺什么（自建 dshroot 时）
 
 | 缺什么 | 从哪来 | 备注 |
 |---|---|---|
-| `runtime/` | Termux aarch64/arm64 deb 解包出 `bin/node` + `lib/*.so` | 真机是 **arm64**；x86_64 模拟器用 `ndk_translation` |
-| `dshroot/` | npm 解析出 **hoisted** 闭包后组装（`nodeLinker: hoisted`） | 组装后须**剥离全部原生模块**（`find dshroot -name '*.node' -o -name '*.so'` 必须为 0） |
-| `.dsh/` | 跑一次 `dsh` 生成，或手工准备 | `build.sh` 从 `$H/.dsh/` 取，**不读仓库的 `config/`** |
-| `pnpm/` `git/` `python/` `npm/` | 各自从 Termux deb 解包（可选，缺了只是对应能力不可用） | 见 `build.sh` 第 142–316 行的注释 |
-| `rish/rish_shizuku.dex` | Shizuku 的 rish dex | 仓库的 `android-app-fix/` 或上游 Release |
-| `deploy-patches-*.sh` | **上游未提交，需自己写** | 把 `dsh-patches/overlay-020/` 的 13 个文件落到 `dshroot` 上 |
-
-**补齐顺序建议**：`runtime` → `dshroot`（含补丁重放）→ `.dsh` → 可选的 pnpm/git/python/npm → 真实构建。
+| `dshroot/` | npm 解析出 **hoisted** 闭包后组装 + 重放 `dsh-patches/overlay-020/` 的 13 个文件 | 组装后须剥离**全部**原生模块 |
+| `deploy-patches-*.sh` | **上游未提交，需自己写** | 见第 14 章的证据索引 |
 
 ---
 
