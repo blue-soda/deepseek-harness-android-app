@@ -178,6 +178,25 @@ if [ "$DO_CLEAN" = 1 ]; then
 fi
 mkdir -p "$CACHE"
 
+# 缓存状态摘要：让人一眼看出这次会复用哪些、跳过哪些
+cache_state() {  # $1=路径 $2=名称 $3=附加说明
+  if [ -e "$1" ]; then
+    printf '   %-14s 已有 %-7s %s\n' "$2" "$(du -sh "$1" 2>/dev/null | cut -f1)" "${3:-}"
+  else
+    printf '   %-14s （无）\n' "$2"
+  fi
+}
+echo "缓存状态（$CACHE）："
+if [ -n "$APK_IN" ]; then
+  echo "   上游 APK      使用 --apk 指定的本地文件（跳过下载与 md5 校验）"
+else
+  cache_state "$CACHE/$UPSTREAM_ASSET" "上游 APK"
+fi
+cache_state "$CACHE/payload.zip" "payload.zip" "$([ -f "$CACHE/.payload-from" ] && echo "标记 $(cat "$CACHE/.payload-from")")"
+cache_state "$CACHE/devhome" "devhome" "$([ -f "$CACHE/devhome/.assembled-from" ] && echo "标记 $(cat "$CACHE/devhome/.assembled-from")")"
+cache_state "$CACHE/local-debug.jks" "签名密钥"
+echo "   （缓存失效时自动重建；--clean 强制重建，但保留签名密钥）"
+
 # ── 1. 取上游 APK ─────────────────────────────────────────────────────────
 info "1/7 获取上游 APK（$UPSTREAM_TAG）"
 
@@ -250,15 +269,24 @@ if [ -n "$UPSTREAM_MD5" ]; then
   fi
   echo "   md5 校验通过：$GOT_MD5"
 fi
+# 用于判断下游缓存是否还有效（换 APK 必须重新解压/组装）
+SRC_MD5="$(file_md5 "$SRC_APK")"
+SRC_ID="$UPSTREAM_TAG@$SRC_MD5"
 
 # ── 2. 抽出 payload.zip ───────────────────────────────────────────────────
 info "2/7 从 APK 提取 assets/payload.zip"
 PAYLOAD="$CACHE/payload.zip"
-if [ ! -f "$PAYLOAD" ] || [ "$SRC_APK" -nt "$PAYLOAD" ]; then
+PAYLOAD_STAMP="$CACHE/.payload-from"
+if [ -f "$PAYLOAD" ] && [ -f "$PAYLOAD_STAMP" ] \
+   && [ "$(cat "$PAYLOAD_STAMP" 2>/dev/null)" = "$SRC_ID" ]; then
+  echo "   复用缓存（来自 $SRC_MD5）"
+else
   rm -f "$PAYLOAD"
   unzip -o -q "$SRC_APK" "assets/payload.zip" -d "$CACHE/apkx" || die "APK 里找不到 assets/payload.zip"
   mv -f "$CACHE/apkx/assets/payload.zip" "$PAYLOAD"
   rm -rf "$CACHE/apkx"
+  printf '%s\n' "$SRC_ID" > "$PAYLOAD_STAMP"
+  echo "   已提取"
 fi
 echo "   payload.zip：$(du -h "$PAYLOAD" | cut -f1)"
 
@@ -266,7 +294,9 @@ echo "   payload.zip：$(du -h "$PAYLOAD" | cut -f1)"
 info "3/7 组装 devhome（build.sh 需要的 runtime/dshroot/.dsh/rish 等）"
 H="$CACHE/devhome"
 STAMP="$H/.assembled-from"
-if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$UPSTREAM_TAG" ]; then
+if [ -f "$STAMP" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$SRC_ID" ]; then
+  echo "   复用缓存（$SRC_ID）—— 跳过 440MB 解压"
+else
   rm -rf "$H"; mkdir -p "$H"
   echo "   解压 payload（约 440MB，稍候）…"
   unzip -q -o "$PAYLOAD" -d "$H" || die "解压 payload.zip 失败"
@@ -282,10 +312,8 @@ if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$UPSTREAM_TAG" ]; th
   if [ -f "$H/bin/git" ] && [ ! -f "$H/git/bin/git" ]; then
     mkdir -p "$H/git/bin"; mv "$H/bin/git" "$H/git/bin/git"
   fi
-  printf '%s\n' "$UPSTREAM_TAG" > "$STAMP"
+  printf '%s\n' "$SRC_ID" > "$STAMP"
   echo "   组装完成：$H"
-else
-  echo "   命中已组装的 devhome（$UPSTREAM_TAG）"
 fi
 
 # 工具链 env.sh（build.sh 第 7 行 source 它）
