@@ -144,18 +144,19 @@ bash tools/build-apk.sh --keystore /secure/path/release.jks
 
 ### 构建很慢？先看分阶段耗时
 
-脚本结尾会打印各阶段耗时。缓存全命中时正常长这样：
+脚本结尾会打印各阶段耗时。缓存全命中、且已加杀软排除项时正常长这样：
 
 ```
 各阶段耗时：
-   预检                         3 秒
+   预检                         7 秒
    获取上游 APK               1 秒
    提取 payload.zip             0 秒
    组装 devhome                 0 秒
-   签名密钥                   0 秒
-   构建 APK                   510 秒     ← 全部时间在这里
+   签名密钥                   1 秒
+   构建 APK                    62 秒     ← 正常情况下全部时间在这里
    校验                         1 秒
-   记录构建信息             1 秒
+   记录构建信息             2 秒
+   总计                        74 秒
 ```
 
 除 `构建 APK` 之外全部命中缓存、几乎不耗时。**若 `构建 APK` 占了绝大部分时间，
@@ -163,20 +164,36 @@ bash tools/build-apk.sh --keystore /secure/path/release.jks
 
 `android-app/build.sh` 结尾有一条安全检查，要遍历 `staging/` 全部约 3.2 万个文件
 搜索 API Key。这条 `grep` 平时只要 **4 秒**，但在 **Windows Defender 实时保护开启**时，
-对**刚写出的** 440 MB 数据实测要 **456 秒**（占整个构建的 88%）。
+对**刚写出的** 440 MB 数据实测要 **456 秒**（占整个构建 88%）。
 
-验证与缓解：
+**实测对比（同一台机器、同一份缓存，仅此一项设置不同）：**
+
+| 阶段 | 未加排除项 | 加了排除项 |
+|---|---|---|
+| 构建 APK | **510 秒** | **62 秒** |
+| **总计** | **516 秒** | **74 秒** |
+
+**7 倍加速。** 也就是说：构建本身只要 1 分钟出头，之前的 8.5 分钟几乎全是杀软开销。
+
+验证与设置：
 
 ```powershell
-# 查看实时保护状态（管理员）
+# 查看实时保护状态（需管理员）
 Get-MpComputerStatus | Select RealTimeProtectionEnabled, OnAccessProtectionEnabled
-# 把构建目录加入排除项（管理员）—— 这是最有效的缓解
+# 把构建目录加入排除项（需管理员）
 Add-MpPreference -ExclusionPath 'C:\Workspace\deepseek-harness-android-app'
+# 撤销
+Remove-MpPreference -ExclusionPath 'C:\Workspace\deepseek-harness-android-app'
 ```
 
-Linux / CI 上没有这个问题，同样一次构建通常在 **1~2 分钟**量级。
+> **安全权衡**：加排除项意味着 Defender 不再扫描该目录。这是构建工作区（内含下载的
+> 上游 APK 与解压出的依赖），不存放用户文档，属可接受的取舍 —— 且与开发机上常见的
+> 做法一致（`~/.gradle`、Android SDK 等通常也在排除列表里）。
+> 若你的环境有更严格的策略，可以不加，代价就是每次多等约 7 分钟。
+
+Linux / CI 上没有这个问题，构建同样在 **1 分钟出头**量级。
 （脚本本身未改动这条检查 —— 试过改成扫 zip 流，实测无改善甚至略慢，
-因为二者都要读同一批刚写出的数据。）
+因为二者都要读同一批刚写出的数据，真正的解法是让杀软别扫。）
 
 ---
 
