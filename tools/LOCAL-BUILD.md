@@ -261,7 +261,7 @@ adb root && adb remount        # ← Play Store 镜像做不到这两步
 
 ---
 
-## 四、不要提交的东西
+## 七、不要提交的东西
 
 `.gitignore` 已覆盖：`*.apk`、`android-app/release.jks`、`android-app/sdk/android.jar`、
 `android-app/{staging,out,assets}/`、`payload.zip`、`.credentials.yaml`。
