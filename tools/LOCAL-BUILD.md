@@ -145,7 +145,94 @@ payload 内的 14 个补丁特征串**全部命中**（`isHardlinkUnsupported`�
 
 ---
 
-## 四、自己重建（只在需要非 arm64 或自定义 node 时）
+## 四、模拟器实测记录（x86_64 + ndk_translation，2026-10-04）
+
+本机构建出的 APK 装进 `Pixel_10_Pro`（`android-36.1 google_apis_playstore x86_64`）后，
+逐步推进到"引擎启动"，记录如下。
+
+### 走到哪一步了
+
+| 环节 | 结果 |
+|---|---|
+| 安装 / 启动 / 10 步权限向导 | ✅ 全部通过（向导用 `uiautomator` + `input tap` 自动跳过） |
+| 解压 payload | ✅ `extracted 2898 entries (mode=internal)` + `extracted 25787 entries (mode=dshroot)` |
+| 触发引擎 | ✅ 进入 `engine-boot`，SELinux `avc: granted { execute } for name="node"` |
+| **转译器加载** | ❌→✅ **已修复**（见下） |
+| **node 本体加载** | ❌ 仍失败 |
+
+### 已修复的坑：转译器要 x86_64 的裸名库
+
+首个失败：
+
+```
+F linker: CANNOT LINK EXECUTABLE "/system/bin/ndk_translation_program_runner_binfmt_misc_arm64":
+"/data/user/0/com.deepseek.harness/files/payload/runtime/lib/libz.so"
+is for EM_AARCH64 (183) instead of EM_X86_64 (62)
+```
+
+这正是 `docs/开发指南.md` 第六节第 2 条描述的现象 —— 转译器自己是 x86_64，它按**裸名**
+从 `LD_LIBRARY_PATH` 解析 `libz.so` / `libssl.so` / `libcrypto.so`，而 `build.sh` 第 95–107 行
+刚把这三个裸名实体化成了 arm64 副本。
+
+**本仓库已把该手工步骤做成构建期开关**（见 `android-app/build.sh`）：
+
+```bash
+# 从模拟器取 x86_64 的三个裸名库
+adb pull /system/lib64/libz.so      x64libs/
+adb pull /system/lib64/libssl.so    x64libs/
+adb pull /system/lib64/libcrypto.so x64libs/
+
+export DSH_X64_BARE_LIBS=$PWD/x64libs
+export DSH_X64_NO_LINKS=1     # 可选：清空 LINKS.txt，全部保留为实体文件
+bash android-app/build.sh
+```
+
+设置后 `build.sh` 会：把三个 x86_64 库复制进 `staging/runtime/lib/`，并从 `LINKS.txt`
+移除对应三条（否则 App 首次启动会按 `LINKS.txt` 把它们重建为指向 arm64 的链接，
+把注入的库覆盖掉）。**真机 arm64 不要设置这两个变量。**
+
+修复效果：转译器错误消失，错误前进一步。
+
+### 仍未解决的坑：node 本体找不到 `libz.so.1`
+
+```
+F linker: CANNOT LINK EXECUTABLE ".../runtime/bin/node":
+library "libz.so.1" not found: needed by main executable
+```
+
+`docs/开发指南.md` 第六节第 1 条把这条错误归因于「**ARM 库合并进 /system 的 overlay
+存在 AVD 里，默认启动不挂载**」，并给出解法：AVD 必须带 `-writable-system` 启动。
+**但仅加 `-writable-system` 不够** —— 实测还要 `adb remount` 把 overlay 挂上，而本机 AVD
+用的是 **Play Store 生产镜像**，两条路都被堵死：
+
+| 检查 | 结果 |
+|---|---|
+| `ro.build.type` | **`user`**（生产构建） |
+| `ro.debuggable` | **`0`** |
+| `adb root` | `adbd cannot run as root in production builds` |
+| `adb remount` | `remount: inaccessible or not found` |
+| `/system/lib64/arm64/` | 存在，**56 个** ARM64 系统库，**不含 `libz.so.1`** |
+| `/system/lib64/libz.so` | 只有裸名，**没有 `libz.so.1`** |
+
+也就是说：guest（arm64）加载器所在的 `/system/lib64/arm64` 是本镜像自带的精简集，
+没有 `libz.so.1`；而它显然没有从 `LD_LIBRARY_PATH`（payload 的 `runtime/lib`，里面
+**确实有** arm64 的 `libz.so.1`）解析出来。
+
+**结论：要用模拟器验证，需要换一个非 Play Store 的镜像**（`google_apis` 而非
+`google_apis_playstore`），使 `adb root` / `adb remount` 可用：
+
+```bash
+sdkmanager "system-images;android-36;google_apis;x86_64"
+avdmanager create avd -n dsh_test -k "system-images;android-36;google_apis;x86_64"
+emulator -avd dsh_test -writable-system
+adb root && adb remount        # ← Play Store 镜像做不到这两步
+```
+
+**或者直接用 arm64 真机**（那才是官方支持的目标环境，无需任何转译）。
+
+---
+
+## 五、自己重建（只在需要非 arm64 或自定义 node 时）
 
 官方只出 arm64，所以下面的场景才需要自己重建：
 
@@ -165,7 +252,7 @@ payload 内的 14 个补丁特征串**全部命中**（`isHardlinkUnsupported`�
 
 ---
 
-## 五、还缺什么（自建 dshroot 时）
+## 六、还缺什么（自建 dshroot 时）
 
 | 缺什么 | 从哪来 | 备注 |
 |---|---|---|

@@ -107,6 +107,34 @@ while IFS=$'\t' read -r _link _target; do
 done < LINKS.txt
 cd - >/dev/null
 
+# 模拟器调试可选开关（x86_64 + ndk_translation）：
+# 转译器 /system/bin/ndk_translation_program_runner_binfmt_misc_arm64 自己是 x86_64，
+# 它按「裸名」从 LD_LIBRARY_PATH 解析 libz.so / libssl.so / libcrypto.so。
+# 上面刚把这三个裸名实体化成了 arm64 副本 → 转译器报
+#   CANNOT LINK EXECUTABLE ... is for EM_AARCH64 (183) instead of EM_X86_64 (62)
+# 把 DSH_X64_BARE_LIBS 指向一个含 x86_64 版这三个库的目录即可在构建期一次做完
+#（docs/开发指南.md 第六节原本要求解压后手工 push 进设备，且每次重解压都要重做）。
+# 真机 arm64 不要设置这个变量；三个裸名库可从模拟器 /system/lib64/ 取。
+if [ -n "$DSH_X64_BARE_LIBS" ]; then
+  for _l in libz.so libssl.so libcrypto.so; do
+    [ -f "$DSH_X64_BARE_LIBS/$_l" ] || { echo "!! DSH_X64_BARE_LIBS 缺少 $_l：$DSH_X64_BARE_LIBS"; exit 1; }
+    cp -f "$DSH_X64_BARE_LIBS/$_l" "$P/staging/runtime/lib/$_l"
+  done
+  # 从 LINKS.txt 移除这三条：App 首次启动会按它把裸名重建为指向 arm64 的软链，
+  # 那样会覆盖掉刚注入的 x86_64 库。libz.so.1 等带版本号的条目保留（node 本体要 arm64）。
+  grep -v -E '^(libcrypto\.so|libssl\.so|libz\.so)[[:space:]]' \
+    "$P/staging/runtime/lib/LINKS.txt" > "$P/staging/runtime/lib/LINKS.txt.x64"
+  mv -f "$P/staging/runtime/lib/LINKS.txt.x64" "$P/staging/runtime/lib/LINKS.txt"
+  # 设置 DSH_X64_NO_LINKS=1 时进一步清空 LINKS.txt：App 会按它把实体文件重建为软链，
+  # 而 ndk_translation 环境下软链会导致 node 报 "library libz.so.1 not found"
+  #（即上面第 96-98 行注释描述的同一失败模式）。清空后全部按实体文件保留。
+  if [ -n "$DSH_X64_NO_LINKS" ]; then
+    : > "$P/staging/runtime/lib/LINKS.txt"
+    echo "  [模拟器] LINKS.txt 已清空（全部保留为实体文件）"
+  fi
+  echo "  [模拟器] 已注入 x86_64 裸名库并从 LINKS.txt 移除对应条目"
+fi
+
 mkdir -p "$P/staging/dshroot/lib"
 # 两个排除项：
 #   1) dsh 的 node_modules/.bin（原脚本即排除）
