@@ -139,7 +139,44 @@ bash tools/build-apk.sh --keystore /secure/path/release.jks
 | 安装报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE` | 与已装版本签名不同。先卸载：`adb uninstall com.deepseek.harness` |
 | 装上了但引擎起不来 | App 内「日志」页看 `dsh-web.log`；或见 [tools/LOCAL-BUILD.md](LOCAL-BUILD.md) |
 | 模拟器上 node 报 `CANNOT LINK ... EM_AARCH64` 或 `libz.so.1 not found` | 见第 6 节 |
-| 构建脚本报 `找不到 javac` | 设 `JAVA_HOME`，或把 `$JAVA_HOME/bin` 放进 `PATH` |
+| 构建脚本报 `找不到 javac` | 设 `JAVA_HOME`，或把 `$JAVA_HOME/bin` 放\进 `PATH` |
+| **构建很慢（Windows 上 8~10 分钟）** | 见下方说明 —— 是杀软实时扫描，不是脚本问题 |
+
+### 构建很慢？先看分阶段耗时
+
+脚本结尾会打印各阶段耗时。缓存全命中时正常长这样：
+
+```
+各阶段耗时：
+   预检                         3 秒
+   获取上游 APK               1 秒
+   提取 payload.zip             0 秒
+   组装 devhome                 0 秒
+   签名密钥                   0 秒
+   构建 APK                   510 秒     ← 全部时间在这里
+   校验                         1 秒
+   记录构建信息             1 秒
+```
+
+除 `构建 APK` 之外全部命中缓存、几乎不耗时。**若 `构建 APK` 占了绝大部分时间，
+先确认是不是杀软**：
+
+`android-app/build.sh` 结尾有一条安全检查，要遍历 `staging/` 全部约 3.2 万个文件
+搜索 API Key。这条 `grep` 平时只要 **4 秒**，但在 **Windows Defender 实时保护开启**时，
+对**刚写出的** 440 MB 数据实测要 **456 秒**（占整个构建的 88%）。
+
+验证与缓解：
+
+```powershell
+# 查看实时保护状态（管理员）
+Get-MpComputerStatus | Select RealTimeProtectionEnabled, OnAccessProtectionEnabled
+# 把构建目录加入排除项（管理员）—— 这是最有效的缓解
+Add-MpPreference -ExclusionPath 'C:\Workspace\deepseek-harness-android-app'
+```
+
+Linux / CI 上没有这个问题，同样一次构建通常在 **1~2 分钟**量级。
+（脚本本身未改动这条检查 —— 试过改成扫 zip 流，实测无改善甚至略慢，
+因为二者都要读同一批刚写出的数据。）
 
 ---
 

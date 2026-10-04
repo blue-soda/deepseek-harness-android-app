@@ -62,6 +62,16 @@ die()  { echo "!! $*" >&2; exit 1; }
 info() { echo "== $*"; }
 warn() { echo "   !! $*" >&2; }
 
+# 分阶段计时：构建结束后打印，便于在任意机器上一眼看出哪一步异常缓慢
+START_TS=$(date +%s)
+T0="$START_TS"
+TIMINGS=""
+mark() {  # $1=阶段名
+  local now; now=$(date +%s)
+  TIMINGS="${TIMINGS}$(printf '   %-26s %5d 秒' "$1" "$((now - T0))")"$'\n'
+  T0="$now"
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --upstream) UPSTREAM_TAG_OPT="${2:?}"; shift 2 ;;
@@ -198,6 +208,7 @@ cache_state "$CACHE/local-debug.jks" "签名密钥"
 echo "   （缓存失效时自动重建；--clean 强制重建，但保留签名密钥）"
 
 # ── 1. 取上游 APK ─────────────────────────────────────────────────────────
+mark "预检"
 info "1/7 获取上游 APK（$UPSTREAM_TAG）"
 
 # GitHub 的 release 直链以 github.com 开头。部分地区 github.com 不可达，
@@ -274,6 +285,7 @@ SRC_MD5="$(file_md5 "$SRC_APK")"
 SRC_ID="$UPSTREAM_TAG@$SRC_MD5"
 
 # ── 2. 抽出 payload.zip ───────────────────────────────────────────────────
+mark "获取上游 APK"
 info "2/7 从 APK 提取 assets/payload.zip"
 PAYLOAD="$CACHE/payload.zip"
 PAYLOAD_STAMP="$CACHE/.payload-from"
@@ -291,6 +303,7 @@ fi
 echo "   payload.zip：$(du -h "$PAYLOAD" | cut -f1)"
 
 # ── 3. 组装 devhome ───────────────────────────────────────────────────────
+mark "提取 payload.zip"
 info "3/7 组装 devhome（build.sh 需要的 runtime/dshroot/.dsh/rish 等）"
 H="$CACHE/devhome"
 STAMP="$H/.assembled-from"
@@ -342,6 +355,7 @@ if [ -f "$DSH_PKG" ]; then
 fi
 
 # ── 4. 签名密钥 ───────────────────────────────────────────────────────────
+mark "组装 devhome"
 info "4/7 签名密钥"
 if [ -z "$KEYSTORE" ]; then
   KEYSTORE="$CACHE/local-debug.jks"
@@ -368,6 +382,7 @@ echo "   指纹：$(keytool -list -v -keystore "$KEYSTORE" -storepass "$KEYSTORE
   | sed -n 's/.*SHA256: //p' | head -1)"
 
 # ── 5. 构建 ───────────────────────────────────────────────────────────────
+mark "签名密钥"
 info "5/7 构建 APK"
 export DSH_DEV_HOME="$H"
 export JAVA_BIN
@@ -398,6 +413,7 @@ fi
 echo "   产物：$OUT（$(du -h "$OUT" | cut -f1)）"
 
 # ── 6. 校验 ───────────────────────────────────────────────────────────────
+mark "构建 APK"
 if [ "$DO_VERIFY" = 1 ]; then
   info "6/7 校验"
   FAIL=0
@@ -454,6 +470,7 @@ else
 fi
 
 # ── 7. 构建信息 ───────────────────────────────────────────────────────────
+mark "校验"
 info "7/7 记录构建信息"
 INFO="$OUT.build-info.txt"
 {
@@ -488,6 +505,14 @@ if [ "$DO_SMOKE" = 1 ]; then
   fi
 fi
 
+mark "记录构建信息"
+
 echo
 echo "✅ 构建完成：$OUT"
 echo "   构建信息：$INFO"
+echo
+echo "各阶段耗时："
+printf '%s' "$TIMINGS"
+echo "   总计                        $(($(date +%s) - START_TS)) 秒"
+echo "   （若「构建 APK」异常缓慢，多半是杀软实时扫描刚写出的 payload ——"
+echo "     见 BUILD.md 第 5 节「构建很慢」）"
