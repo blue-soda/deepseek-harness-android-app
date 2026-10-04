@@ -193,12 +193,14 @@ bash android-app/build.sh
 
 修复效果：转译器错误消失，错误前进一步。
 
-### 仍未解决的坑：node 本体找不到 `libz.so.1`
+### 坑二（已解决）：node 本体找不到 `libz.so.1`
 
 ```
 F linker: CANNOT LINK EXECUTABLE ".../runtime/bin/node":
 library "libz.so.1" not found: needed by main executable
 ```
+
+**✅ 2026-10-04 已跑通：引擎监听 3080，WebView 渲染出 DSH Web UI。** 下面是完整机制与解法。
 
 **这里有两个彼此独立、极易被混为一谈的机制。**
 
@@ -264,19 +266,66 @@ guest 目录是 Android 的一份**精选子集**，不含 node/Termux 的库。
 > **准确表述**：Play Store 镜像**不是**"`libz.so.1` 缺失的原因"，而是
 > **"文档给出的解法无法执行的原因"**。缺库的根因是 guest 目录不含 Termux/node 的库。
 
-**结论：要用模拟器验证，需要换一个 `google_apis`（userdebug）镜像**，使 `adb root` /
-`adb remount` 可用，再把 node 缺的 arm64 库（连同其依赖闭包）装进 `/system/lib64/arm64/`：
+**结论：要用模拟器验证，必须换一个 userdebug 镜像**（`google_apis`，**不能**是
+`google_apis_playstore`），使 `adb root` / `adb remount` 可用，再把 node 缺的 arm64 库
+（连同其依赖闭包）装进 `/system/lib64/arm64/`。
+
+### ✅ 实测通过的操作步骤
 
 ```bash
-sdkmanager "system-images;android-36;google_apis;x86_64"
-avdmanager create avd -n dsh_test -k "system-images;android-36;google_apis;x86_64"
-emulator -avd dsh_test -writable-system
-adb root && adb remount
-adb push <arm64 libs> /system/lib64/arm64/ && adb shell chmod 644 /system/lib64/arm64/*.so*
+# 1) 用 userdebug 镜像。Android Studio 建 AVD 时 service 选 "Google APIs"，
+#    不要选 "Google Play"（playstore 版是生产构建，adb root/remount 全禁）
+emulator -avd Pixel_10_Pro -writable-system -no-snapshot
+
+# 2) 提权并挂载可写 /system。首次会 "Successfully disabled verity"，
+#    但此时 /system 仍是只读 —— 必须重启一次才生效
+adb root
+adb remount                       # → Successfully disabled verity
+adb reboot
+# 重启后 boot_completed=1，再执行一次：
+adb root && adb remount           # → Remounted /system as RW ... Using overlayfs for /system
+adb shell "touch /system/lib64/arm64/.t && echo WRITABLE && rm -f /system/lib64/arm64/.t"
+
+# 3) 推入库。⚠️ 只推这 20 个缺失的 soname，不要整目录覆盖 ——
+#    guest 目录里有 Android 自己的 libz.so / libcrypto.so / libc++.so 等
+adb push guestlibs/. /system/lib64/arm64/
+adb shell chmod 644 /system/lib64/arm64/*.so*
 ```
 
-**或者直接用 arm64 真机** —— 那才是官方支持的目标环境，**完全没有转译层**，
-上面两个机制都不存在，是成本最低、最可靠的验证方式。
+**必须补的 20 个库（54.3 MB，全部可从 payload 的 `runtime/lib` 直接取到）** —— 由
+`DT_NEEDED` 传递闭包减去 guest 目录已有文件得到：
+
+| 用途 | 库 |
+|---|---|
+| node 必需（10） | `libz.so.1` `libcares.so` `libsqlite3.so` `libffi.so` `libcrypto.so.3` `libssl.so.3` `libicui18n.so.78` `libicuuc.so.78` `libc++_shared.so` `libicudata.so.78` |
+| curl 额外 | `libcurl.so` `libnghttp2.so` `libnghttp3.so` `libngtcp2.so` `libngtcp2_crypto_ossl.so` `libssh2.so` |
+| git / rg 额外 | `libpcre2-8.so` `libiconv.so` |
+| python 额外 | `libandroid-support.so` `libpython3.14.so` |
+
+> 从任意二进制出发重算这个清单：读 ELF64 `.dynamic` 段的 `DT_NEEDED`，做 BFS 得到闭包，
+> 再减去 `/system/lib64/arm64/` 里已有的文件名即可。
+
+**同时仍然需要 `DSH_X64_BARE_LIBS`**（机制一）—— 两者解决的是不同问题，**缺一不可**。
+
+### 实测结果
+
+```
+$ adb shell "cd /data/local/tmp/rt && ./bin/node --version"
+v26.4.0                                    # ← 不设 LD_LIBRARY_PATH 也能跑
+
+# 装 APK 并走完权限向导后：
+tcp 0 0 127.0.0.1:3080 0.0.0.0:* LISTEN 4086/ndk_translation_program_runner_binfmt_misc_arm64
+tcp 0 0 127.0.0.1:3080 127.0.0.1:59552 ESTABLISHED 4086/...
+I DeepSeekHarness: node: dsh web: http://127.0.0.1:3080/?token=...
+I DeepSeekHarness: engine token url captured
+```
+
+WebView 渲染出 DSH Web UI（Preview Notice → API key 引导页），
+**左上角的汉堡菜单按钮正是 `dsh-client-ui-layout` 补丁加的移动端元素**，
+旁边 52px 留白来自 `mobile.css` —— 说明移动端补丁链也在生效。
+
+**或者直接用 arm64 真机** —— 那是官方支持的目标环境，**完全没有转译层**，
+上面两个机制都不存在：不需要换镜像、不需要补任何库。**仍然是最省事的路径。**
 
 ---
 
