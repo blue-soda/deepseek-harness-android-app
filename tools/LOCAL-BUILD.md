@@ -200,35 +200,83 @@ F linker: CANNOT LINK EXECUTABLE ".../runtime/bin/node":
 library "libz.so.1" not found: needed by main executable
 ```
 
-`docs/开发指南.md` 第六节第 1 条把这条错误归因于「**ARM 库合并进 /system 的 overlay
-存在 AVD 里，默认启动不挂载**」，并给出解法：AVD 必须带 `-writable-system` 启动。
-**但仅加 `-writable-system` 不够** —— 实测还要 `adb remount` 把 overlay 挂上，而本机 AVD
-用的是 **Play Store 生产镜像**，两条路都被堵死：
+**这里有两个彼此独立、极易被混为一谈的机制。**
+
+#### 机制一：x86_64 侧（转译器自己）—— **认** `LD_LIBRARY_PATH`
+
+`ndk_translation_program_runner_binfmt_misc_arm64` 本身是 x86_64 ELF，由**普通的** Android
+动态链接器加载，因此**会**按 `LD_LIBRARY_PATH` 找库。它依赖裸名 `libz.so` / `libssl.so` /
+`libcrypto.so` —— 所以上面那个开关（`DSH_X64_BARE_LIBS`）能修好它，**实测有效**。
+
+#### 机制二：arm64 侧（node 自己）—— **不认** `LD_LIBRARY_PATH`
+
+node 是 arm64，由 ndk_translation 加载，其依赖从**固定的 guest 库目录**解析。实测：
+
+```bash
+# 把 payload 的 runtime（里面确实有 arm64 的 libz.so.1）推到 /data/local/tmp 直接跑
+adb shell "cd /data/local/tmp/rt && LD_LIBRARY_PATH=/data/local/tmp/rt/lib ./bin/node --version"
+→ CANNOT LINK EXECUTABLE "./bin/node": library "libz.so.1" not found: needed by main executable
+```
+
+**`LD_LIBRARY_PATH` 指向的目录里明明有这个库，加载器依然报 not found** —— guest 侧不通过
+它解析。全机只有**一个** guest 库目录：
+
+```
+/system/lib64/arm64     # libs=56，其中 libz.so.1 = 0
+（/vendor/lib64/arm64、/apex/*/lib64/arm64、/system/lib/arm 均不存在）
+```
+
+把 node 的 12 个 `DT_NEEDED` 与该目录逐个核对：
+
+| node 需要 | guest 目录里 | |
+|---|---|---|
+| `libc.so` · `libm.so` · `libdl.so` | ✅ 有 | Android 自带 |
+| `libz.so.1` | ❌ 只有 `libz.so`（**soname 不同**） | |
+| `libcrypto.so.3` | ❌ 只有 `libcrypto.so` | |
+| `libssl.so.3` | ❌ 只有 `libssl.so` | |
+| `libicui18n.so.78` · `libicuuc.so.78` | ❌ 只有 `libicui18n.so` / `libicuuc.so` | |
+| `libc++_shared.so` | ❌ 只有 `libc++.so` | |
+| `libcares.so` · `libsqlite3.so` · `libffi.so` | ❌ **完全没有** | Termux 侧库 |
+
+**12 个依赖里 9 个不在 guest 目录** —— 这才是 `libz.so.1 not found` 的真正根因：
+guest 目录是 Android 的一份**精选子集**，不含 node/Termux 的库。
+
+#### `-writable-system` 与 Play Store 镜像到底是什么关系
+
+开发指南第六节第 1 条讲的其实是**这个坑的解法**：
+
+> AVD 必须**带 `-writable-system` 启动**（**ARM 库合并进 /system 的 overlay 存在 AVD 里**，
+> 默认启动不挂载 → node 报 `library "libz.so.1" not found`）
+
+维护者把 node 缺的那批 arm64 库**拷进了 `/system/lib64/arm64/`**（"ARM 库合并进 /system"）。
+`/system` 只读，所以这些追加文件保存在 **AVD 里的 writable-system overlay** 中；不加
+`-writable-system` 启动就不挂载它 → 库消失 → 报的正是 `libz.so.1 not found`。
+
+而要往 `/system/lib64/arm64/` 写，必须先 `adb root` + `adb remount`。本机 AVD 是
+**Play Store 生产镜像**，这条路被堵死：
 
 | 检查 | 结果 |
 |---|---|
-| `ro.build.type` | **`user`**（生产构建） |
-| `ro.debuggable` | **`0`** |
+| `ro.build.type` / `ro.debuggable` | **`user`** / **`0`** |
 | `adb root` | `adbd cannot run as root in production builds` |
 | `adb remount` | `remount: inaccessible or not found` |
-| `/system/lib64/arm64/` | 存在，**56 个** ARM64 系统库，**不含 `libz.so.1`** |
-| `/system/lib64/libz.so` | 只有裸名，**没有 `libz.so.1`** |
 
-也就是说：guest（arm64）加载器所在的 `/system/lib64/arm64` 是本镜像自带的精简集，
-没有 `libz.so.1`；而它显然没有从 `LD_LIBRARY_PATH`（payload 的 `runtime/lib`，里面
-**确实有** arm64 的 `libz.so.1`）解析出来。
+> **准确表述**：Play Store 镜像**不是**"`libz.so.1` 缺失的原因"，而是
+> **"文档给出的解法无法执行的原因"**。缺库的根因是 guest 目录不含 Termux/node 的库。
 
-**结论：要用模拟器验证，需要换一个非 Play Store 的镜像**（`google_apis` 而非
-`google_apis_playstore`），使 `adb root` / `adb remount` 可用：
+**结论：要用模拟器验证，需要换一个 `google_apis`（userdebug）镜像**，使 `adb root` /
+`adb remount` 可用，再把 node 缺的 arm64 库（连同其依赖闭包）装进 `/system/lib64/arm64/`：
 
 ```bash
 sdkmanager "system-images;android-36;google_apis;x86_64"
 avdmanager create avd -n dsh_test -k "system-images;android-36;google_apis;x86_64"
 emulator -avd dsh_test -writable-system
-adb root && adb remount        # ← Play Store 镜像做不到这两步
+adb root && adb remount
+adb push <arm64 libs> /system/lib64/arm64/ && adb shell chmod 644 /system/lib64/arm64/*.so*
 ```
 
-**或者直接用 arm64 真机**（那才是官方支持的目标环境，无需任何转译）。
+**或者直接用 arm64 真机** —— 那才是官方支持的目标环境，**完全没有转译层**，
+上面两个机制都不存在，是成本最低、最可靠的验证方式。
 
 ---
 
