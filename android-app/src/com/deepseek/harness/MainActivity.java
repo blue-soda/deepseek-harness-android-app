@@ -416,6 +416,18 @@ public class MainActivity extends Activity {
 
         // 附件/文件选择：官方前端用 <input type="file"> 选文件，Android WebView 必须实现
         // onShowFileChooser 才会弹系统文件选择器，否则点「添加附件」没有任何反应。
+        //
+        // v1.21：**多窗口支持** —— 插件（如 ds-harness-remote 的「DS 账号登录」）用
+        // `window.open("", "_blank")` 起授权弹窗（它把 opener 显式置空，授权结果靠插件在
+        // 主页面每 3 秒轮询服务端回收），而 WebView 默认**不支持多窗口**、我们也没实现
+        // onCreateWindow → 弹窗被拦，主页面会落到 `about:blank#blocked`（用户看到的白屏）。
+        // 所以：打开多窗口开关 + 用 onCloseWindow/onCreateWindow 给它一个真正的独立窗口。
+        try {
+            android.webkit.WebSettings multiWin = webView.getSettings();
+            multiWin.setSupportMultipleWindows(true);
+            multiWin.setJavaScriptCanOpenWindowsAutomatically(true);
+        } catch (Throwable ignored) {}
+
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback,
@@ -432,6 +444,67 @@ public class MainActivity extends Activity {
                 } catch (Throwable t) {
                     Log.w(TAG, "file chooser failed", t);
                     fileChooserCallback = null;
+                    return false;
+                }
+            }
+
+            /**
+             * v1.21：插件请求弹窗（window.open）→ 开一个独立的对话框 WebView。
+             *
+             * 为什么不"同窗口打开"：DS 登录的授权页只是让用户点授权，**结果由插件在主页面
+             * 轮询服务端**回收；若把授权页塞进主 WebView，轮询界面就没了，登录永远等不到结果。
+             * 弹窗若能自己 window.close()，会走 onCloseWindow 自动关掉；不能的用顶部「关闭」。
+             */
+            @Override
+            public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture,
+                                          android.os.Message resultMsg) {
+                Log.i(TAG, "webview: onCreateWindow（插件要开弹窗）isDialog=" + isDialog
+                        + " userGesture=" + isUserGesture);
+                try {
+                    final android.app.Dialog dlg = new android.app.Dialog(MainActivity.this);
+                    final WebView pop = new WebView(MainActivity.this);
+                    pop.getSettings().setJavaScriptEnabled(true);
+                    pop.getSettings().setDomStorageEnabled(true);
+                    pop.getSettings().setSupportMultipleWindows(true);
+                    // 弹窗内的导航自己处理（http(s) 都放行，避免第三方登录页跳转被拦）
+                    pop.setWebViewClient(new WebViewClient());
+                    pop.setWebChromeClient(new WebChromeClient() {
+                        @Override public void onCloseWindow(WebView w) {
+                            // 授权页自己调 window.close() → 关掉对话框
+                            try { dlg.dismiss(); } catch (Throwable ignored) {}
+                        }
+                    });
+                    Button close = new Button(MainActivity.this);
+                    close.setText("关闭");
+                    close.setAllCaps(false);
+                    close.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) {
+                            try { dlg.dismiss(); } catch (Throwable ignored) {}
+                        }
+                    });
+                    LinearLayout box = new LinearLayout(MainActivity.this);
+                    box.setOrientation(LinearLayout.VERTICAL);
+                    box.addView(close, new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+                    box.addView(pop, new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+                    dlg.setContentView(box);
+                    dlg.setOnDismissListener(new android.content.DialogInterface.OnDismissListener() {
+                        @Override public void onDismiss(android.content.DialogInterface d) {
+                            try { pop.destroy(); } catch (Throwable ignored) {}
+                        }
+                    });
+                    android.view.Window w = dlg.getWindow();
+                    if (w != null) {
+                        w.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT);
+                    }
+                    dlg.show();
+                    ((WebView.WebViewTransport) resultMsg.obj).setWebView(pop);
+                    resultMsg.sendToTarget();
+                    return true;
+                } catch (Throwable t) {
+                    Log.w(TAG, "onCreateWindow failed", t);
                     return false;
                 }
             }
