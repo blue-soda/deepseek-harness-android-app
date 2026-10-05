@@ -17,14 +17,17 @@
     values/colors.xml 里的 ic_launcher_background                  背景色（纯白）
 
 取景：
-  · 启动图标按"直接使用素材"处理 —— 自适应前景**铺满** 108dp 画布（蒙版只裁到边角头发），
-    背景纯白（素材自身顶部两角透明，白色与它的浅色底无缝）。
-  · 悬浮窗头像先按 alpha 包围盒去掉透明边，再缩到 320px（40dp 在 xxxhdpi 下 160px，留 2 倍余量）。
+  · 启动图标：素材里人物**偏左**（768 图里头部重心 x≈360，画布中心 384），且铺满时圆形蒙版会把
+    发箍两端切掉。所以先按**头部包围盒**（实测 x 20..700 / y 55..660，见下）居中，再缩到
+    "头部对角刚好落进圆里"的比例 × 0.95（=0.80），保证**脸与发箍完整**、人物居中。
+    背景纯白（素材顶部两角透明，白色与它的浅色底无缝）。
+  · 悬浮窗头像：先按 alpha 包围盒去掉透明边，再缩到 320px（40dp 在 xxxhdpi 下 160px，留 2 倍余量）。
 
 注意：`drawable/ic_launcher.xml`（小鲸鱼矢量图）不在这里生成 —— 它仍是**通知小图标**与启动页 logo。
 """
 import os
 import sys
+import numpy as np
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,6 +36,9 @@ SRC_AVATAR = os.path.join(ROOT, "android-app", "icon-src", "source.png")
 RES = os.path.join(ROOT, "android-app", "res")
 DENS = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
 BG = "#FFFFFF"
+# 启动图标的头部包围盒（在 768×768 源图里实测：发箍顶 ~55、下巴 ~660、头发左右 ~20/~700）
+HEAD_BOX = (20, 55, 700, 660)
+HEAD_FIT_MARGIN = 0.95   # 头部对角刚好入圆的比例再乘这个，留一点余量给不同蒙版/启动器缩放
 AVATAR_PX = 320          # 悬浮窗头像边长（nodpi）
 
 XML = """<?xml version="1.0" encoding="utf-8"?>
@@ -50,14 +56,28 @@ def trim(im: Image.Image) -> Image.Image:
     return im.crop(box) if box else im
 
 
+def head_centered_square(art: Image.Image) -> Image.Image:
+    """把素材按「头部居中 + 圆内完整」重排成正方形（白底），返回与素材同尺寸的图。"""
+    w, h = art.size
+    x0, y0, x1, y1 = HEAD_BOX
+    hcx, hcy = (x0 + x1) / 2, (y0 + y1) / 2
+    hw, hh = (x1 - x0) / 2, (y1 - y0) / 2
+    k = (w / 2) / np.hypot(hw, hh) * HEAD_FIT_MARGIN     # 头部对角刚好入圆 × 余量
+    tw, th = max(1, round(w * k)), max(1, round(h * k))
+    canvas = Image.new("RGBA", (w, h), (255, 255, 255, 255))
+    canvas.alpha_composite(art.resize((tw, th), Image.LANCZOS),
+                           (round(w / 2 - hcx * k), round(h / 2 - hcy * k)))
+    return canvas
+
+
 def main() -> int:
     for p in (SRC_ICON, SRC_AVATAR):
         if not os.path.isfile(p):
             print(f"找不到素材：{p}", file=sys.stderr)
             return 1
 
-    icon = Image.open(SRC_ICON).convert("RGBA")
-    print(f"启动图标素材 {os.path.basename(SRC_ICON)} {icon.size}（铺满 + 白底）")
+    icon = head_centered_square(Image.open(SRC_ICON).convert("RGBA"))
+    print(f"启动图标素材 {os.path.basename(SRC_ICON)}：头部居中 + 圆内完整（余量 {HEAD_FIT_MARGIN:.2f}）")
     for name, size in DENS.items():
         d = os.path.join(RES, f"mipmap-{name}")
         os.makedirs(d, exist_ok=True)

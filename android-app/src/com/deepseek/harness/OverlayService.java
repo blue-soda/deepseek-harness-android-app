@@ -73,11 +73,11 @@ public class OverlayService extends Service {
     private static final long PROBE_MS = 2000L;
     /**
      * 静置贴边时露在外面的比例（其余越界到屏幕外）。
-     * v1.19：悬浮窗图标从"小鲸鱼剪影"换成**人物立绘**（res/drawable-nodpi/overlay_avatar.png），
-     * 原来 0.45 的半藏会把人物裁掉一半、认不出是谁，所以改为 1.0 = 完整贴边。
-     * 想恢复半藏把这里改回 0.45 即可（越界靠 FLAG_LAYOUT_NO_LIMITS）。
+     * v1.19：悬浮窗图标从"小鲸鱼剪影"换成**人物立绘**（res/drawable-nodpi/overlay_avatar.png）。
+     * 原来 0.45 的半藏会把人物裁掉一半、认不出是谁；改成 0.8 = 基本完整、又贴着屏幕边缘
+     * （留 20% 越界，视觉上"贴边站着"）。想完全露出改 1.0，想恢复半藏改 0.45。
      */
-    private static final float TUCK_VISIBLE_FRACTION = 1.0f;
+    private static final float TUCK_VISIBLE_FRACTION = 0.8f;
     /** 拖到距底部多少 dp 内松手 = 隐藏。 */
     private static final int DISMISS_ZONE_DP = 84;
     /** AI "已完成"提示在状态切换后保留的时长（毫秒）。 */
