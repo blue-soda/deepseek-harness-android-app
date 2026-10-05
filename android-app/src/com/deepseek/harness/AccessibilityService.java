@@ -1138,11 +1138,20 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
         try {
             String text = queryParam(path, "text");
             String mode = queryParam(path, "mode");
+            boolean paste = "paste".equals(mode);
             JSONObject o = new JSONObject();
             o.put("ok", true);
             AccessibilityNodeInfo target = null;
             AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root == null) return jsonError("当前没有活动窗口");
+            // v1.18（A3）：失败时把"是什么情况"与"下一步做什么"分开报（error + hint），
+            // 不再只丢一句"未找到可输入的文本框"让模型（和用户）自己猜。
+            if (root == null) {
+                o.put("ok", false);
+                o.put("error", "当前没有活动窗口（无障碍拿不到窗口根节点）");
+                o.put("hint", "可能处于锁屏/桌面/动画过渡：先用 android_see 截图确认当前画面，回到目标界面后重试；"
+                        + "或先用 android_tap 点击一次目标输入框再输入。");
+                return o.toString();
+            }
             target = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
             if (target == null) {
                 final AccessibilityNodeInfo[] editable = {null};
@@ -1155,12 +1164,21 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
                 }, 0);
                 target = editable[0];
             }
-            if (target == null) return jsonError("未找到可输入的文本框");
-            boolean ok;
-            if (!target.isFocused()) {
-                target.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
+            if (target == null) {
+                o.put("ok", false);
+                o.put("error", "当前窗口里没有可编辑/可聚焦的输入框节点");
+                o.put("hint", "先用 android_tap 点击目标输入框使其聚焦（并确认软键盘弹出），再调用本工具；"
+                        + "中文/WebView 输入框建议改用 android_paste_text（剪贴板粘贴路径）。");
+                return o.toString();
             }
-            if ("paste".equals(mode)) {
+            boolean wasFocused = target.isFocused();
+            boolean focusIssued = false;
+            if (!wasFocused) {
+                focusIssued = target.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
+            }
+            final boolean focusedNow = target.isFocused();
+            boolean ok;
+            if (paste) {
                 // WebView/contenteditable：setText 不触发前端 input 事件 → 用剪贴板粘贴
                 android.content.ClipboardManager cm =
                         (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -1173,11 +1191,36 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
                 ok = target.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
                 o.put("method", "set");
             }
-            o.put("focused", target.isFocused());
-            o.put("error", ok ? "" : ("输入失败（" + ("paste".equals(mode) ? "粘贴未执行" : "setText 未执行") + "）"));
+            o.put("focused", focusedNow);
+            o.put("previouslyFocused", wasFocused);
+            o.put("focusIssued", focusIssued);
+            try {
+                CharSequence cls = target.getClassName();
+                if (cls != null) o.put("targetClass", cls.toString());
+                CharSequence pkg = target.getPackageName();
+                if (pkg != null) o.put("targetPackage", pkg.toString());
+            } catch (Throwable ignored) {}
+            if (ok) {
+                o.put("error", "");
+            } else {
+                o.put("error", "输入动作未被执行（" + (paste ? "ACTION_PASTE" : "ACTION_SET_TEXT") + " 返回 false，"
+                        + "节点类=" + o.optString("targetClass", "?") + "，聚焦=" + focusedNow + "）");
+                o.put("hint", paste
+                        ? "该节点/输入法拒绝了粘贴：可先 android_tap 点击输入框并确认键盘弹出；"
+                          + "仍失败时用 android_see 截图后点击输入法自带的「粘贴」键（键盘上方一行，屏幕底部约 y≈0.586），"
+                          + "或用特权通道 android_input(action=text，需 Shizuku/root)。"
+                        : "该节点拒绝无障碍写文本（常见于 WebView/contenteditable）：改用 android_paste_text 走剪贴板粘贴；"
+                          + "或先用 android_tap 聚焦并确认键盘弹出后重试。");
+            }
             return o.toString();
         } catch (Throwable t) {
-            return jsonError("input error: " + t.getMessage());
+            JSONObject o = new JSONObject();
+            try {
+                o.put("ok", false);
+                o.put("error", "input error: " + t.getMessage());
+                o.put("hint", "无障碍输入内部异常：可重试一次，或改用 android_paste_text / android_input。");
+            } catch (Throwable ignored) {}
+            return o.toString();
         }
     }
 

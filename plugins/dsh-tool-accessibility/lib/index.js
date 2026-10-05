@@ -9,6 +9,7 @@
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { get as httpGet, request as httpRequest } from "node:http";
 import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 
 const name = "tool-accessibility";
 const inject = ["tools"];
@@ -17,6 +18,47 @@ const a11yPort = () => parseInt(process.env.APP_A11Y_PORT || "3181", 10);
 
 const GUIDE_TEXT =
   "无障碍服务未开启或不可用：请在手机系统设置 → 无障碍 →（已下载的服务/服务）→ 开启「DeepSeek Harness 屏幕助手」，然后打开 App 后重试。";
+
+// ============================================================================
+// v1.18 工具体验改进（A2/A4/A5/A7/A8）
+//   A5 手势防呆、A7 截图去重与时间戳、A8 前台判定提示、A4 中文输入标准动作、A2 能力总览
+// ============================================================================
+
+/** 宿主包名（壳注入；旧壳回退正式包名）。 */
+const hostAppId = () => process.env.DSH_APP_ID || "com.deepseek.harness";
+
+/** 输入事件计数：任何会改变屏幕的操作 +1，用于判断"两次截图之间是否操作过"（A7）。 */
+let inputEventSeq = 0;
+const noteInputEvent = () => { inputEventSeq += 1; };
+/** 上一次 android_see 的记录：内容哈希 / 当时的输入计数 / 时间戳（A7）。 */
+let lastShot = { hash: "", seq: 0, at: 0 };
+
+/**
+ * 边缘手势防呆（A5）：分数起点落在系统手势区时给警告。
+ * 系统导航/返回手势在屏幕底部与左右边缘，起点落在那里的滑动会被系统吃掉
+ * （表现为回桌面/返回/切应用），而工具本身无法分辨"用户就是想从边缘划"。
+ */
+function edgeGestureWarning(fx, fy) {
+  const x = typeof fx === "number" && isFinite(fx) ? fx : null;
+  const y = typeof fy === "number" && isFinite(fy) ? fy : null;
+  if (y !== null && y > 0.95) {
+    return "起点 fy=" + y + " 落在屏幕底部（系统导航/返回手势区），该手势可能被系统拦截（回桌面/返回上一级）。建议起点上移到 fy ≤ 0.9。";
+  }
+  if (x !== null && x < 0.05) {
+    return "起点 fx=" + x + " 落在屏幕左边缘（系统返回手势区），该手势可能被系统拦截。建议起点右移到 fx ≥ 0.1。";
+  }
+  if (x !== null && x > 0.95) {
+    return "起点 fx=" + x + " 落在屏幕右边缘（系统返回手势区），该手势可能被系统拦截。建议起点左移到 fx ≤ 0.9。";
+  }
+  return "";
+}
+
+/** 特权通道可用性（壳注入 env；两个都没有时特权工具不会注册）。 */
+const privilegedChannel = () => {
+  if (process.env.ROOT_AVAILABLE === "1") return "root(su)";
+  if (process.env.SHIZUKU_AVAILABLE === "1") return "shizuku";
+  return "";
+};
 
 function a11yRequest(path, params, timeoutMs) {
   return new Promise((resolve) => {
@@ -84,10 +126,16 @@ const renderValue = (value, args) => (value && typeof value === "object" ? value
 
 function renderResult(value) {
   value = renderValue(value);
-  return [{
-    type: "text",
-    text: value.ok ? "操作成功。" : "执行失败：" + (value.error || "未知错误")
-  }];
+  if (!value.ok) {
+    return [{
+      type: "text",
+      text: "执行失败：" + (value.error || "未知错误") + (value.hint ? "\n提示：" + value.hint : "")
+    }];
+  }
+  let text = "操作成功。";
+  if (value.warning) text += "\n⚠ " + value.warning;
+  if (value.hint) text += "\n提示：" + value.hint;
+  return [{ type: "text", text }];
 }
 
 /**
@@ -128,6 +176,13 @@ function renderScreen(_args, value) {
   const lines = [];
   lines.push("当前前台应用: " + (value.package || "未知"));
   lines.push("节点数: " + value.count + (value.truncated ? "（已截断，仅显示部分）" : ""));
+  // A8：前台判定异常提示。锁屏/桌面/过渡动画期间，无障碍给出的前台包名与节点数都可能失真，
+  // 而模型会把它当前台事实 → 结论跑偏。这里如实提示"以截图为准"。
+  const count = typeof value.count === "number" ? value.count : -1;
+  if (value.package === hostAppId() || count === 0 || (count >= 0 && count < 3)) {
+    lines.push("⚠ 前台判定可能不准：前台=" + (value.package || "未知") + "，节点数=" + value.count +
+      "。可能正处于锁屏/桌面/动画过渡，或无障碍拿不到当前窗口 —— 结论请以 android_see 截图为准。");
+  }
   if (value.hint) lines.push("提示: " + value.hint);
   lines.push("");
   const nodes = value.nodes || [];
@@ -282,7 +337,9 @@ function apply(ctx) {
           ok: { type: "boolean", required: true },
           error: { type: "string" },
           found: { type: "boolean" },
-          method: { type: "string" }
+          method: { type: "string" },
+          warning: { type: "string" },
+          hint: { type: "string" }
         }
       },
       render: (_a, v) => renderResult(v)
@@ -298,6 +355,9 @@ function apply(ctx) {
       if (Object.keys(params).length === 0) {
         return { ok: false, error: "android_tap 需要至少一个参数：text / desc / x / y / fx / fy" };
       }
+      // A5：底部/边缘点击也可能落在系统手势区或导航栏上
+      const warning = edgeGestureWarning(args.fx, args.fy);
+      noteInputEvent();
       const raw = await a11yRequest("/tap", params, 8000);
       const v = parseResult(raw);
       if (!v.ok) return { ok: false, error: v.error || GUIDE_TEXT };
@@ -305,6 +365,7 @@ function apply(ctx) {
         ok: v.found !== false,
         found: v.found === true,
         method: typeof v.method === "string" ? v.method : "",
+        ...(warning ? { warning } : {}),
         ...(v.found === false && v.error ? { error: v.error } : {})
       };
     }
@@ -330,7 +391,8 @@ function apply(ctx) {
           ok: { type: "boolean", required: true },
           error: { type: "string" },
           focused: { type: "boolean" },
-          method: { type: "string" }
+          method: { type: "string" },
+          hint: { type: "string" }
         }
       },
       render: (_a, v) => renderResult(v)
@@ -342,14 +404,81 @@ function apply(ctx) {
       }
       const params = { text: String(args.text) };
       if (args.paste === true) params.mode = "paste";
+      noteInputEvent();
       const raw = await a11yRequest("/input", params, 8000);
       const v = parseResult(raw);
-      if (!v.ok) return { ok: false, error: v.error || GUIDE_TEXT };
+      // A3：服务端（v1.18 起）会自带可执行的 hint；这里优先用它，旧服务端则用本地启发式兜底。
+      const errText = String(v.error || "");
+      const serverHint = typeof v.hint === "string" && v.hint ? String(v.hint) : "";
+      const hint = serverHint || (!v.ok
+        ? (/未找到可输入|没有活动窗口|没有可编辑/.test(errText)
+            ? "输入框未聚焦或当前窗口没有可编辑节点：先用 android_tap 点击目标输入框（或用坐标点一次），确认软键盘已弹出，再重试本工具。中文/WebView 建议改用 android_paste_text。"
+            : /粘贴未执行|setText 未执行|输入动作未被执行/.test(errText)
+              ? "目标节点拒绝粘贴/写文本（常见于 WebView、contenteditable 或第三方输入法）：可改用 android_paste_text，或先 android_see 截图后点击输入法自带的「粘贴」键。"
+              : "")
+        : "");
+      if (!v.ok) {
+        return { ok: false, error: v.error || GUIDE_TEXT, ...(hint ? { hint } : {}) };
+      }
       return {
         ok: v.ok !== false,
         ...(v.focused !== undefined ? { focused: v.focused === true } : {}),
         ...(v.method ? { method: String(v.method) } : {}),
-        ...(v.error ? { error: v.error } : {})
+        ...(v.error ? { error: v.error } : {}),
+        ...(hint ? { hint } : {})
+      };
+    }
+  }));
+
+  // 中文/WebView 输入的标准动作（A4）：写剪贴板 → 聚焦 → ACTION_PASTE，
+  // 失败时给出可执行回退路径（而不是让模型自己去猜"为什么没输入进去"）。
+  ctx.tools.register(defineTool({
+    name: "android_paste_text",
+    description:
+      "把文本通过剪贴板粘贴进当前输入框（推荐用于中文、emoji，以及 WebView/contenteditable 输入框）。" +
+      "内部顺序：写入系统剪贴板 → 让无障碍服务对聚焦的输入框执行粘贴（ACTION_PASTE）。" +
+      "若目标未聚焦，请先用 android_tap 点击输入框并确认软键盘弹出。\n" +
+      "已知限制（如实说明）：ACTION_PASTE 是否生效取决于输入法/应用自身实现，第三方输入法可能只把内容放进候选栏而不提交。" +
+      "失败时本工具会返回回退路径：用 android_see 截图后点击输入法的「粘贴」键（通常在键盘上方一行，屏幕底部约 y≈0.586 一带）。",
+    parameters: {
+      text: { type: "string", required: true, description: "要粘贴的文本（支持中文）" }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          ok: { type: "boolean", required: true },
+          error: { type: "string" },
+          focused: { type: "boolean" },
+          method: { type: "string" },
+          hint: { type: "string" }
+        }
+      },
+      render: (_a, v) => renderResult(v)
+    },
+    async execute(args, exec) {
+      if (args.text === undefined || args.text === null) {
+        return { ok: false, error: "android_paste_text 需要 text 参数" };
+      }
+      noteInputEvent();
+      const raw = await a11yRequest("/input", { text: String(args.text), mode: "paste" }, 8000);
+      const v = parseResult(raw);
+      const fallback =
+        "回退路径：① 确保输入框已聚焦（android_tap 点一次、确认键盘弹出）；" +
+        "② 用 android_see 截图，找到输入法的「粘贴」键（键盘上方一行，屏幕底部约 y≈0.586 一带）并用 android_tap 点它；" +
+        "③ 仍不行则改用特权通道 android_input（action=text，需 Shizuku/root）。";
+      const serverHint = typeof v.hint === "string" && v.hint ? String(v.hint) : "";
+      if (!v.ok) {
+        return { ok: false, error: v.error || GUIDE_TEXT, hint: serverHint || fallback };
+      }
+      const method = v.method ? String(v.method) : "paste";
+      const failedAction = v.error && String(v.error).length > 0;
+      return {
+        ok: v.ok !== false,
+        ...(v.focused !== undefined ? { focused: v.focused === true } : {}),
+        method,
+        ...(failedAction ? { error: String(v.error), hint: serverHint || fallback } : {})
       };
     }
   }));
@@ -372,6 +501,7 @@ function apply(ctx) {
         render: (_a, v) => renderResult(v)
       },
       async execute(args, exec) {
+        noteInputEvent();
         const raw = await a11yRequest(actionPath, undefined, 6000);
         const v = parseResult(raw);
         if (!v.ok) return { ok: false, error: v.error || GUIDE_TEXT };
@@ -407,6 +537,7 @@ function apply(ctx) {
       render: (_a, v) => renderResult(v)
     },
     async execute(args, exec) {
+      noteInputEvent();
       const raw = await a11yRequest("/scroll", { direction: String(args.direction || "down") }, 8000);
       const v = parseResult(raw);
       if (!v.ok) return { ok: false, error: v.error || GUIDE_TEXT };
@@ -449,6 +580,11 @@ function apply(ctx) {
             scaleY: { type: "number" },
             grid: { type: "number" },
             hint: { type: "string" },
+            // A7：截图去重证据（时间戳 + 内容哈希 + 是否与上一次相同），
+            // 避免"连续两次拿到同一张图"时无法判断是自己没操作还是截图没刷新。
+            sha256: { type: "string" },
+            capturedAt: { type: "number" },
+            sameAsPrevious: { type: "boolean" },
             image: {
               type: "object",
               additionalProperties: false,
@@ -469,8 +605,10 @@ function apply(ctx) {
           const meta = [
             `${value.image.mediaType} 屏幕截图, ${value.image.width}x${value.image.height} px, ${value.image.bytes} bytes`,
             `屏幕尺寸 ${value.screenW}x${value.screenH}, 截图尺寸 ${value.imageW}x${value.imageH}, 换算系数 scaleX=${value.scaleX} scaleY=${value.scaleY}${value.grid ? `, 已叠加 ${value.grid}x${value.grid} 网格` : ""}`,
+            value.capturedAt ? `截取时间 ${new Date(value.capturedAt).toISOString()}，sha256=${value.sha256 || "?"}${value.sameAsPrevious ? "（与上一次截图内容相同）" : ""}` : "",
+            value.warning ? `⚠ ${value.warning}` : "",
             "操作优先用分数坐标 fx/fy（0~1）：图中位置 (ix,iy) → fx=ix/imageW, fy=iy/imageH；用绝对像素 = 图中像素 × scaleX/Y"
-          ].join("\n");
+          ].filter(Boolean).join("\n");
           return [{
             type: "text",
             text: `<path>${value.path}</path>\n<type>image</type>\n<content>\n${meta}\n</content>`
@@ -518,6 +656,20 @@ function apply(ctx) {
             mediaType: "image/png",
             name: "screen.png"
           });
+          // A7：记录本次截图内容哈希与截取时间，并判断"与上一次是否相同"。
+          // 若两次之间发生过输入操作却仍是同一张图，说明截图未刷新（或操作没生效），
+          // 必须如实提示，别让模型把旧画面当现状。
+          const hash = createHash("sha256").update(data).digest("hex");
+          const at = Date.now();
+          const prev = lastShot;
+          const sameAsPrevious = prev.hash !== "" && prev.hash === hash;
+          const staleAfterInput = sameAsPrevious && inputEventSeq > prev.seq;
+          lastShot = { hash, seq: inputEventSeq, at };
+          const hints = [];
+          if (typeof v.hint === "string" && v.hint) hints.push(v.hint);
+          if (staleAfterInput) {
+            hints.push("与上一次截图内容完全相同，但期间发生过输入操作：截图可能未刷新或操作未生效，建议重新截图确认（或先用 android_screen 看节点是否变化）。");
+          }
           return {
             ok: true,
             path: v.path,
@@ -528,7 +680,10 @@ function apply(ctx) {
             scaleX: typeof v.scaleX === "number" ? v.scaleX : 1,
             scaleY: typeof v.scaleY === "number" ? v.scaleY : 1,
             grid: typeof v.grid === "number" ? v.grid : 0,
-            ...(typeof v.hint === "string" && v.hint ? { hint: v.hint } : {}),
+            sha256: hash.slice(0, 16),
+            capturedAt: at,
+            sameAsPrevious,
+            ...(hints.length ? { hint: hints.join(" ") } : {}),
             image: {
               attachmentId: ref.attachmentId,
               mediaType: ref.mediaType,
@@ -572,7 +727,10 @@ function apply(ctx) {
         ok: { type: "boolean", required: true },
         error: { type: "string" },
         durationMs: { type: "number" },
-        held: { type: "array", items: heldSchema }
+        held: { type: "array", items: heldSchema },
+        // A5：边缘手势防呆提示（起点落在系统手势区时给出）
+        warning: { type: "string" },
+        hint: { type: "string" }
       }
     },
     render: (_a, v) => renderResult(v)
@@ -610,11 +768,15 @@ function apply(ctx) {
             ("x2" in params || "fx2" in params) && ("y2" in params || "fy2" in params))) {
         return { ok: false, error: "android_swipe 需要起点(x1/y1 或 fx1/fy1)和终点(x2/y2 或 fx2/fy2)" };
       }
+      // A5：边缘起点防呆（只对能拿到的分数坐标判定；像素坐标需要屏幕尺寸，这里不额外探测）
+      const warning = edgeGestureWarning(args.fx1, args.fy1);
+      noteInputEvent();
       const raw = await a11yRequest("/swipe", params, 12000);
       const v = parseResult(raw);
       if (!v.ok) return { ok: false, error: v.error || GUIDE_TEXT };
       return {
         ok: true,
+        ...(warning ? { warning } : {}),
         ...(typeof v.durationMs === "number" ? { durationMs: v.durationMs } : {}),
         ...(Array.isArray(v.held) ? { held: v.held } : {})
       };
@@ -647,10 +809,16 @@ function apply(ctx) {
       if (!(("x" in params || "fx" in params) && ("y" in params || "fy" in params))) {
         return { ok: false, error: "android_hold 需要 x/y 或 fx/fy" };
       }
+      const warning = edgeGestureWarning(args.fx, args.fy);
+      noteInputEvent();
       const raw = await a11yRequest("/hold", params, 12000);
       const v = parseResult(raw);
       if (!v.ok) return { ok: false, error: v.error || GUIDE_TEXT };
-      return { ok: true, ...(Array.isArray(v.held) ? { held: v.held } : {}) };
+      return {
+        ok: true,
+        ...(warning ? { warning } : {}),
+        ...(Array.isArray(v.held) ? { held: v.held } : {})
+      };
     }
   }));
 
@@ -680,10 +848,13 @@ function apply(ctx) {
       for (const k of ["x", "y", "fx", "fy"]) {
         if (args[k] !== undefined) params[k] = String(Number(args[k]));
       }
+      // A5：down 的落点若在系统手势区，按住可能被系统抢走
+      const warning = args.action === "down" ? edgeGestureWarning(args.fx, args.fy) : "";
+      noteInputEvent();
       const raw = await a11yRequest("/touch", params, 12000);
       const v = parseResult(raw);
       if (!v.ok) return { ok: false, error: v.error || GUIDE_TEXT };
-      return { ok: true, ...(Array.isArray(v.held) ? { held: v.held } : {}) };
+      return { ok: true, ...(warning ? { warning } : {}), ...(Array.isArray(v.held) ? { held: v.held } : {}) };
     }
   }));
 
@@ -756,8 +927,13 @@ function apply(ctx) {
       const raw = await a11yPost("/gesture", clean, total + 15000);
       const v = parseResult(raw);
       if (!v.ok) return { ok: false, error: v.error || GUIDE_TEXT };
+      // A5：用第一条定位笔（down/tap/swipe/hold）的分数起点做边缘防呆
+      const first = clean.find((s) => s.kind === "down" || s.kind === "tap" || s.kind === "swipe" || s.kind === "hold");
+      const warning = first ? edgeGestureWarning(first.fx, first.fy) : "";
+      noteInputEvent();
       return {
         ok: true,
+        ...(warning ? { warning } : {}),
         ...(typeof v.durationMs === "number" ? { durationMs: v.durationMs } : {}),
         ...(Array.isArray(v.held) ? { held: v.held } : {})
       };
@@ -798,6 +974,100 @@ function apply(ctx) {
         maxFingers: typeof v.maxFingers === "number" ? v.maxFingers : 0,
         holdTimeoutMs: typeof v.holdTimeoutMs === "number" ? v.holdTimeoutMs : 0,
         held: Array.isArray(v.held) ? v.held : []
+      };
+    }
+  }));
+
+  // ==========================================================================
+  // A2：统一能力探测（一次问清"现在到底能做什么"）
+  // 背景：无障碍开关、截图能力、Shizuku/root、虚拟屏桥是否在跑、能不能列/启动应用，
+  // 原来分散在 4~5 个工具各自的失败信息里，模型只能逐个试错。
+  // 本工具**不做任何特权操作**：只读 env + 打两个本地 HTTP（都是本 App 自己的服务）。
+  // 放在无障碍插件里是有意的——dsh-tool-android 在无特权时整体不注册，
+  // 能力探测若放在那里就会"无特权时恰好消失"，正是最需要它的时候没有。
+  // ==========================================================================
+  ctx.tools.register(defineTool({
+    name: "android_capabilities",
+    description:
+      "一次性查询本机当前可用的 Android 能力（无障碍是否开启、能否截图、Shizuku/root 特权通道、虚拟屏服务是否就绪、" +
+      "能否做需要特权的系统操作如装机/改设置/模拟输入）。" +
+      "**开始任何手机操作任务前建议先调用一次**，避免逐个工具试错（例如无特权时 android_input/android_package 根本不会出现在工具列表里）。" +
+      "返回每项能力的可用性与不可用时的下一步建议。",
+    parameters: {},
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          ok: { type: "boolean", required: true },
+          error: { type: "string" },
+          a11yRunning: { type: "boolean" },
+          canScreenshot: { type: "boolean" },
+          privileged: { type: "boolean" },
+          privilegedChannel: { type: "string" },
+          canSystemOps: { type: "boolean" },
+          canLaunchApps: { type: "boolean" },
+          vscreenBridge: { type: "boolean" },
+          appId: { type: "string" },
+          hint: { type: "string" }
+        }
+      },
+      render(_a, v) {
+        v = renderValue(v);
+        if (!v.ok) return renderResult(v);
+        const yn = (b) => (b ? "✅ 可用" : "❌ 不可用");
+        const lines = [
+          "当前 Android 能力总览（appId=" + (v.appId || "?") + "）:",
+          "  无障碍读屏/点击: " + yn(v.a11yRunning) + (v.a11yRunning ? "" : "（系统设置 → 无障碍 → 开启「DeepSeek Harness 屏幕助手」）"),
+          "  无障碍截图(android_see): " + yn(v.canScreenshot) + (v.canScreenshot ? "" : "（需无障碍开启且 Android 11+）"),
+          "  特权通道(Shizuku/root): " + yn(v.privileged) + (v.privileged ? "（" + (v.privilegedChannel || "?") + "）" : "（不授权也能用：文件/读屏/中文输入走无障碍与剪贴板）"),
+          "  系统操作(装机/改设置/模拟输入 android_input·android_package…): " + yn(v.canSystemOps),
+          "  启动/停止应用(android_app): " + yn(v.canLaunchApps),
+          "  虚拟屏服务(android_vscreen_*): " + yn(v.vscreenBridge) + (v.vscreenBridge ? "" : "（打开一次 App 会自动拉起；整个虚拟屏功能还必须有 Shizuku/root）")
+        ];
+        if (v.hint) lines.push("", "建议: " + v.hint);
+        return [{ type: "text", text: lines.join("\n") }];
+      }
+    },
+    async execute(args, exec) {
+      const channel = privilegedChannel();
+      const privileged = channel !== "";
+      // 1) 无障碍状态（读屏 + 截图能力）
+      let a11yRunning = false;
+      let canScreenshot = false;
+      const a11yRaw = await a11yRequest("/status", undefined, 4000);
+      const a11y = parseResult(a11yRaw);
+      if (a11y.ok) {
+        a11yRunning = a11y.running === true;
+        canScreenshot = a11y.canScreenshot === true;
+      }
+      // 2) 虚拟屏桥是否在监听（本 App 的桥服务，未授权特权时也可能在跑，但功能仍不可用）
+      const vsPort = parseInt(process.env.DSH_VS_BRIDGE_PORT || "8999", 10);
+      const vscreenBridge = await new Promise((resolve) => {
+        let done = false;
+        const finish = (val) => { if (!done) { done = true; resolve(val); } };
+        const req = httpGet({ host: "127.0.0.1", port: vsPort, path: "/vscreen/status", timeout: 1500 }, (res) => {
+          res.resume();
+          finish(res.statusCode === 200);
+        });
+        req.on("error", () => finish(false));
+        req.on("timeout", () => { req.destroy(); finish(false); });
+      });
+      const hints = [];
+      if (!a11yRunning) hints.push("开启无障碍（系统设置 → 无障碍 → DeepSeek Harness 屏幕助手）后，android_screen/android_tap/android_type/android_see 才可用。");
+      if (!privileged) hints.push("未授予 Shizuku/root：特权工具（android_input/android_package/android_app/android_setting/android_screenshot）不会出现在工具列表；中文输入请用 android_paste_text，截图请用 android_see。");
+      if (privileged && !vscreenBridge) hints.push("虚拟屏桥未就绪：打开一次 App 即可拉起（桥在 App 进程内，随 App 启动）。");
+      return {
+        ok: true,
+        a11yRunning,
+        canScreenshot,
+        privileged,
+        privilegedChannel: channel,
+        canSystemOps: privileged,
+        canLaunchApps: privileged,
+        vscreenBridge,
+        appId: hostAppId(),
+        ...(hints.length ? { hint: hints.join(" ") } : {})
       };
     }
   }));
