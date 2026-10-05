@@ -262,6 +262,9 @@
       attributeFilter: ['style', 'class', 'hidden', 'aria-hidden', 'data-dockkit-pane-active']
     });
   } catch (e) { /* 老 WebView 没 MutationObserver 也不致命 */ }
+  // 只用 MutationObserver 会漏：实测面板开着时偶发没触发（标记仍为 false）。
+  // 面板开关不频繁，加一个 400ms 轮询兜底，保证"打开第三栏 → 三条杠隐去"是确定行为。
+  try { setInterval(update, 400); } catch (e) { /* 忽略 */ }
   window.addEventListener('resize', update);
   window.addEventListener('orientationchange', update);
   setTimeout(update, 400);
