@@ -97,7 +97,55 @@ HTTP 经 `adb forward` 打到模拟器上真实运行的 App 服务（33xx/9xxx�
 （模型实际看到的内容）。A2/A3/A4/A5/A7/A8 的验证全部走它 + 真机路径，另有一个 mock 服务用来
 确定性地验证"同图/操作后同图"分支。
 
-### 七、未完成 / 已知限制
+### 七、设备端技能：让 AI 知道"该怎么改自己"（D1）
+
+壳启动时把仓库 `skills/<name>/SKILL.md` 落到 **`<filesDir>/.agents/skills/`**（引擎默认扫描的用户技能根，
+见 `dsh-skill-filesystem` 的 `agentsHome`）——刻意不放 payload：payload 会被解压/同步重写，filesDir 不会。
+
+- 首个技能 **`dsh-self-customization`**：判断矩阵（plugin_manager/profile 补丁 vs 必须重建 APK）、
+  设备内与 PC 两条构建路径、公开社区密钥与四变体共存表、跨签名迁移步骤、以及**哪些改动会被升级覆盖**。
+- 写入规则：文件不存在→写；含本壳标记（`dsh-android-managed`）且内容变了→覆盖；**用户自己写的技能永不覆盖**。
+- 内容按事实更正了两处旧说法：① 手机内构建**可行**（不需要 Gradle，工具链 ~0.5–2GB，最后一步安装仍需人点/Shizuku）；
+  ② 改 dshroot 内核 JS **能做**（引擎以应用 uid 运行、可热生效），但**不持久**，要持久必须走
+  `dsh-patches/overlay` + 白名单 + 重打包。
+- 实测：设备上文件按预期落盘；用部署树里的 `dsh-skill-filesystem` 提供者跑发现流程，
+  命中 `source=user-agents`、frontmatter 合法。
+
+### 八、payload 完整性清单（B9）与顺带抓到的真问题
+
+- **打包侧**：`build.sh` 生成 `assets/payload_manifest.txt`（条目数、总字节、`payload.zip` 大小与 SHA-256、
+  `LINKS.txt` 期望别名数、各子树 files/bytes）。**构建脚本侧**：`tools/build-apk.sh` 核对清单与
+  `payload.zip` 实际条目/字节，不一致直接判失败。
+- **运行期**：App 启动后核对 `runtime/`（完全由 App 拥有的一块）——非别名文件的**文件数与字节数**
+  必须与清单一致，别名（`LINKS.txt`）必须存在且与目标是**同一 inode**；结果写入 `files/payload-integrity.txt`，
+  并显示在控制台文件行（`· 完整性 OK` / `· ⚠ 完整性异常`），「校验」按钮也会带上结论。
+- **顺带修掉的真问题**：清单首跑就报 `runtime bytes=201,718,714 / 期望 120,669,225`。排查后确认是
+  **升级残留**——旧版把 soname 别名实体化成独立副本，而增量解压不删旧文件 → 老用户白背几十 MB。
+  现在 `applyLinks()` 增加自愈：别名若与目标**不是同一 inode**（旧实体化副本）就删掉重建为硬链/软链；
+  `stat()` 会跟随软链，所以正常的软链/硬链不会被动。
+  实测：自愈后 `runtime files=55/55 bytes=120669225/120669225 别名=15/15 → OK`；
+  人为塞一个 2MB 文件立刻变 `DRIFT`，删掉又回到 `OK`。
+- 判定阈值：字节偏差 >2%（且 >64KB）才算异常；文件数要求精确相等（运行期生成的
+  `runtime/etc/cacert.pem`、`runtime/etc/gitconfig` 已列入豁免）。
+
+### 九、可复现构建与产物哈希（B6，非逐字节目标）
+
+- `tools/build-apk.sh` 现在把**产物 SHA-256** 写进 `.build-info.txt`，并落一个 `sha256sum -c` 兼容的
+  `.apk.sha256` sidecar（与已有的"上游 tag + APK md5、git commit、JDK/build-tools 版本"一起构成来源凭据）。
+- 新增 `.github/workflows/build-apk.yml`：**只支持手动触发**（`workflow_dispatch`，刻意不加 push/PR 触发器），
+  输入变体/上游 tag，产物与哈希、构建信息一起上传。
+- 目标口径写进 workflow 注释：社区密钥是公开的，"谁签的"不再等于"谁发的"；凭据是
+  **输入可核对 + 哈希可复现 + 差异可解释**，**不追求 bit-identical**（aapt/签名含时间戳）。
+
+### 十、已知限制（本轮拍板）
+
+- **compat 与 official 不能同时使用虚拟屏**：compat 尚未并入变体机制（它有一套独立的 GeckoView 差异文件），
+  其虚拟屏端口仍是 8999/8998，与 official 相同 → 同时开两个 App 时虚拟屏二选一（其它功能不受影响）。
+  彻底修需要 GeckoView AAR（约 90MB，仓库不收），见 TODO(B13)。
+- **B1②「用户内核覆盖层」不做**：改内核不持久的问题已由 `dsh-patches/overlay` + 白名单这条官方路径解决，
+  再加一层任意 JS 注入收益有限、安全边界模糊。
+
+### 十一、未完成 / 已知限制
 
 - **compat 变体尚未并入本机制**：`android-app/compat/` 仍是一套独立差异文件（GeckoView），
   其 `build.sh` / `MainActivity.java` 未同步 BuildVariant 与变体 staging，其虚拟屏端口仍为 8999/8998

@@ -1,0 +1,82 @@
+name: build-apk (manual)
+
+# B6：只支持**手动触发**（workflow_dispatch）——刻意不加 push / pull_request 触发器，
+# 避免每次提交都跑一遍十几分钟的完整构建。用途是"按需产出可核对哈希的构建物"。
+#
+# 来源信号约定：社区密钥（android-app/community.jks）是公开的，因此"谁签的"不再等于"谁发的"；
+# 真正的凭据是 —— ① 本 workflow 公开跑、输入可核对（commit + 上游 tag/md5 + JDK/build-tools 版本）；
+# ② 产物 SHA-256 与 .build-info.txt 一并上传。目标是"输入可验证 + 哈希公示 + 差异可解释"，
+# **不追求逐字节可复现**（aapt/签名含时间戳，Android 打包链做不到 bit-identical）。
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: '变体（community 用仓库内公开密钥，可直接构建）'
+        required: true
+        default: community
+        type: choice
+        options: [community, official, lite, compat]
+      upstream:
+        description: '上游 Release tag（默认见脚本顶部）'
+        required: false
+        default: v1.17.3
+        type: string
+      emulator:
+        description: '额外适配 x86_64 模拟器（ndk_translation）'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK（只要 build-tools + 任一 platform，不需要 Gradle/AGP）
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'build-tools;35.0.0 platforms;android-36'
+
+      - name: Build APK
+        id: build
+        run: |
+          set -o pipefail
+          ARGS="--variant ${{ inputs.variant }}"
+          if [ -n "${{ inputs.upstream }}" ]; then ARGS="$ARGS --upstream ${{ inputs.upstream }}"; fi
+          if [ "${{ inputs.emulator }}" = "true" ]; then
+            # 模拟器适配需要 x86_64 的 libz/libssl/libcrypto：CI 里没有设备可 pull，
+            # 这里跳过（真机/PC 本地按 tools/LOCAL-BUILD.md 第四节做）。只做兼容性提示。
+            echo "::warning::CI 未启用 --emulator（需要从设备取 x86_64 裸名库）"
+          fi
+          bash tools/build-apk.sh $ARGS
+          echo "apk=$(ls -1 android-app/DeepSeekHarness*.apk | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Show hash
+        run: |
+          echo "== 产物 =="
+          ls -l android-app/DeepSeekHarness*.apk* android-app/*.build-info.txt 2>/dev/null || true
+          for f in android-app/DeepSeekHarness*.apk; do
+            echo "$(sha256sum "$f")"
+          done
+          cat android-app/DeepSeekHarness*.apk.build-info.txt 2>/dev/null || true
+
+      - name: Upload APK + hash + build info
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-apk-${{ inputs.variant }}-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            android-app/DeepSeekHarness*.apk
+            android-app/DeepSeekHarness*.apk.sha256
+            android-app/DeepSeekHarness*.apk.build-info.txt

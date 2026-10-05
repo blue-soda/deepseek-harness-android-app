@@ -124,6 +124,12 @@ bash tools/build-apk.sh --help
 > 详见 [android-app/README.md](android-app/README.md) 的「变体构建」一节。
 > `community` 变体使用仓库内**公开**的 `android-app/community.jks`（口令 `dsh-community`）；
 > 官方三变体仍用私有 `release.jks`。
+>
+> **产物哈希与 CI（B6）**：构建结束会写 `DeepSeekHarness*.apk.build-info.txt`（含 git commit、
+> 上游 tag/APK md5、JDK/build-tools、签名指纹、**产物 SHA-256**）与 `.apk.sha256` sidecar
+> （`sha256sum -c` 可直接核对）。仓库另带 **只支持手动触发**的
+> `.github/workflows/build-apk.yml`：选变体/上游 tag 即可产出带哈希的构建物。
+> 目标是"输入可核对 + 哈希公示 + 差异可解释"，**不追求逐字节可复现**（aapt/签名含时间戳）。
 
 ---
 
