@@ -34,4 +34,6 @@
     <color name="panel_text_bright">#E8EDFF</color>
     <color name="panel_text_dim">#9DB4FF</color>
     <color name="panel_bg">#E61A2140</color>
+    <!-- 应用图标（dsh-desktop.ico）自适应图标的背景色：纯白，与图像自身底色一致 -->
+    <color name="ic_launcher_background">#FFFFFF</color>
 </resources>

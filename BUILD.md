@@ -255,6 +255,21 @@ Linux / CI 上没有这个问题，构建同样在 **1 分钟出头**量级。
 | `config/`、`docs/` | 配置镜像与文档 |
 | `tools/` | **本仓库新增**：一键构建、桩 devhome、依赖闭包计算、构建说明 |
 
+### 应用图标（可重新生成）
+
+启动图标由 `android-app/icon-src/dsh-desktop.ico` 生成，重新生成只需一条命令：
+
+```sh
+python tools/gen-icons.py        # 需要 Pillow
+```
+
+它会写 `android-app/res/mipmap-*/ic_launcher{,_foreground}.png`、`mipmap-anydpi-v26/ic_launcher.xml`，
+并在 `values/colors.xml` 里维护 `ic_launcher_background`（自适应图标背景色，当前纯白）。
+脚本头部注释写清了取舍（前景铺满 108dp / 白色背景的理由）。
+
+⚠ `drawable/ic_launcher.xml`（小鲸鱼矢量图）**不是**启动图标，它是**通知小图标**与启动页 logo：
+通知小图标会被系统按 alpha 蒙版渲染，换成彩色位图会变白块 —— 改图标时不要动它。
+
 | 没有 | 为什么 / 从哪来 |
 |---|---|
 | node 运行时（`runtime/`） | 体积大；由 `tools/build-apk.sh` 从上游 APK 提取 |
