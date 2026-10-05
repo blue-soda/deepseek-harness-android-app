@@ -120,11 +120,16 @@ public class OverlayService extends Service {
     /** 空闲多久开始显示"摸鱼中…" */
     private static final long IDLE_FISH_MS = 3 * 60 * 1000L;
     /** 瞬时状态（思考中/调用工具）气泡停留时长 */
-    private static final long BUBBLE_TTL_MS = 8000L;
+    private static final long BUBBLE_TTL_MS = 12000L;
     /** 气泡自动收起（瞬时状态用；终态/空闲态不排这个）。 */
     private final Runnable bubbleHide = new Runnable() {
         @Override public void run() { if (statusBubble != null) statusBubble.setVisibility(View.GONE); }
     };
+
+    /** 最近一次气泡状态：服务被重启后据此恢复（只恢复 10 分钟内的）。 */
+    private static volatile String lastText = "";
+    private static volatile boolean lastSticky = false;
+    private static volatile long lastStatusAt = 0L;
 
     private float touchX, touchY, startX, startY;
     private boolean dragging = false;
@@ -196,6 +201,17 @@ public class OverlayService extends Service {
         foregroundWantsHidden = MainActivity.overlayForeground;   // v1.13.11：改为记状态再统一应用
         applyVisibleNow();
         handler.postDelayed(probeRunnable, 200);
+        // v1.21：服务被重启过 → 把最近一次气泡状态补回来（终态"任务已完成/会话已结束"尤其重要）
+        try {
+            if (lastText != null && !lastText.isEmpty()
+                    && System.currentTimeMillis() - lastStatusAt < 10 * 60 * 1000L) {
+                final String t = lastText;
+                final boolean st = lastSticky;
+                handler.postDelayed(new Runnable() {
+                    @Override public void run() { applyBubble(t, st, 0L); }
+                }, 400);
+            }
+        } catch (Throwable ignored) {}
     }
 
     @Override
@@ -845,7 +861,12 @@ public class OverlayService extends Service {
     private void applyBubble(String text, boolean sticky, long ttlMs) {
         if (statusBubble == null) return;
         if (text == null || text.isEmpty()) { hideBubble(); return; }
+        // v1.21（ANR 修正）：文案与当前显示完全相同时**不重绘**。
+        // 内核侧已按事件节流，这里再兜一道：悬浮窗每次 setText/显隐都会让窗口重排重绘，
+        // 模拟器软件渲染下高频重绘会把主线程卡在出帧（实测 ANR：nSyncAndDrawFrame）。
+        boolean same = text.contentEquals(statusBubble.getText()) && statusBubble.getVisibility() == View.VISIBLE;
         lastAgentStatusAt = System.currentTimeMillis();
+        if (same) return;
         statusBubble.setText(text);
         statusBubble.setVisibility(View.VISIBLE);
         handler.removeCallbacks(bubbleHide);
@@ -865,8 +886,15 @@ public class OverlayService extends Service {
     /**
      * 同进程静态入口：MainActivity 的本地服务收到 `action=bubble` 后调用这里。
      * （内核侧插件 → HTTP → App 本地服务 → 气泡。）
+     *
+     * v1.21：把最近一次状态缓存在静态字段里 —— 悬浮窗服务被系统重启后，
+     * onCreate 会用它把"任务已完成/会话已结束"这类终态补回来，
+     * 否则用户回到桌面会发现气泡莫名消失（实测踩过：后台期间服务重启）。
      */
     public static void pushStatus(final String text, final boolean sticky, final long ttlMs) {
+        lastText = text;
+        lastSticky = sticky;
+        lastStatusAt = System.currentTimeMillis();
         final OverlayService s = instance;
         if (s == null) return;   // 悬浮窗没在跑：静默忽略（用户没开悬浮窗就不打扰）
         s.handler.post(new Runnable() {
