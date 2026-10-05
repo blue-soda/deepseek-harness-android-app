@@ -226,6 +226,50 @@
 })();
 
 /**
+ * v1.21：插件登录授权页**自动**交系统浏览器（用户不必手点"Open the sign-in page"）。
+ *
+ * 背景（用户实测）：ds-harness-remote 点「DS 登录」后，第一次点击界面没反应；
+ * 第二次会显示它自己的 pending 文案 + 一个「Open the sign-in page」链接；
+ * 手动点那个链接**确实能**把真实授权地址交给系统浏览器（已验证）。
+ * 说明通道是通的，只是插件"自动打开"那一步在 WebView 里不稳（它先 window.open("")、
+ * 几秒后才 tab.location=授权地址）。所以这里兜底：只要界面上出现指向授权页的链接
+ * （href 含 /dsh/authorize 或 authorize_id=），就自动用系统浏览器打开一次。
+ * 同一地址只自动打开一次；native 侧对同一地址还有 10 秒去重。
+ */
+(function () {
+  try {
+    var opened = {};
+    var busy = false;
+    function note(msg) {
+      try { if (window.dshshell && window.dshshell.note) window.dshshell.note(String(msg)); } catch (e) {}
+    }
+    function scan() {
+      if (busy) return;
+      busy = true;
+      try {
+        if (!window.dshshell || typeof window.dshshell.openExternal !== 'function') return;
+        var as = document.querySelectorAll('a[href]');
+        for (var i = 0; i < as.length; i++) {
+          var href = as[i].href || '';
+          if (href.indexOf('/dsh/authorize') < 0 && href.indexOf('authorize_id=') < 0) continue;
+          if (opened[href]) continue;
+          opened[href] = 1;
+          note('auto-open authorize link: ' + href);
+          try { window.dshshell.openExternal(href); } catch (e) {}
+        }
+      } catch (e) {
+      } finally {
+        busy = false;
+      }
+    }
+    setInterval(scan, 800);
+    try {
+      new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true });
+    } catch (e) {}
+  } catch (e) {}
+})();
+
+/**
  * v1.21：接管 window.open → 用**系统浏览器**打开（插件登录授权页专用）。
  *
  * 背景：ds-harness-remote 点「DS 登录」时是

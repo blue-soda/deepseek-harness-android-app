@@ -19,6 +19,8 @@ set -u
 ADB=${ADB:-adb}
 DOMAIN=${HOSTS_DOMAIN:-api.deepseek.com}
 GATEWAY=${EMU_GATEWAY:-10.0.2.2}
+# 公共 DNS：把 guest 的 DNS 查询重定向到它（默认阿里 DNS，国内快且稳）
+PUBLIC_DNS=${EMU_PUBLIC_DNS:-223.5.5.5}
 CHECK_ONLY=0
 [ "${1:-}" = "--check" ] && CHECK_ONLY=1
 
@@ -39,6 +41,21 @@ else
     sh_ "ip route add default via $GATEWAY dev eth0" >/dev/null
     sh_ "ip route | head -3" | sed 's/^/   /'
   fi
+fi
+
+say "== 1.5) DNS 可用性：把查询重定向到 $PUBLIC_DNS =="
+# 为什么需要：AVD 的 DNS 常常整个坏掉 —— 内置代理 10.0.2.3 不应答，
+# 而 ndc resolver / setprop net.dns1 在现在的 Android 上都不接受改 DNS。
+# 结果：除了 /system/etc/hosts 里写死的域名，其它一律解析失败（Chrome 里就是白屏/卡加载）。
+# 用 iptables 把 guest 的 DNS 查询（UDP/TCP 53）DNAT 到公共 DNS，一劳永逸。
+# ⚠ 规则在内存里，模拟器重启即失效 → 每次开机后重跑本脚本即可。
+if [ "$CHECK_ONLY" = 1 ]; then
+  say "   (--check：不改动) 现有 53 端口 NAT 规则："
+  sh_ "iptables -t nat -L OUTPUT -n | grep -m2 53" | sed 's/^/   /'
+else
+  sh_ "iptables -t nat -C OUTPUT -p udp --dport 53 -j DNAT --to-destination $PUBLIC_DNS 2>/dev/null || iptables -t nat -A OUTPUT -p udp --dport 53 -j DNAT --to-destination $PUBLIC_DNS" >/dev/null
+  sh_ "iptables -t nat -C OUTPUT -p tcp --dport 53 -j DNAT --to-destination $PUBLIC_DNS 2>/dev/null || iptables -t nat -A OUTPUT -p tcp --dport 53 -j DNAT --to-destination $PUBLIC_DNS" >/dev/null
+  sh_ "iptables -t nat -L OUTPUT -n | grep -m2 53" | sed 's/^/   /'
 fi
 
 say "== 2) DNS 解析（用 App 自带 node，与引擎同一条解析路径）=="

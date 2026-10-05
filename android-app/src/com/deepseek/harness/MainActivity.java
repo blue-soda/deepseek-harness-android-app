@@ -359,9 +359,40 @@ public class MainActivity extends Activity {
                 return true;
             }
 
+            /**
+             * v1.21：主 WebView 里"跳离本地引擎地址"的导航一律交系统浏览器并取消。
+             *
+             * 场景：插件（ds-harness-remote 等）在界面里渲染授权链接（例如 pending 状态下的
+             * 「Open the sign-in page」）。有些带 target=_blank（走 onCreateWindow ✅），
+             * 有些是普通链接（会**把 App 界面导航走**，而插件的登录结果是靠这个页面轮询回收的
+             * —— 页面一被顶掉，登录就永远等不到结果）。所以这里：只要目标不是本地引擎地址，
+             * 就交给系统浏览器，并保持 App 界面与轮询存活。
+             */
             @Override
-            public void onPageFinished(WebView view, String url) {
-                errorRetries = 0;
+            public boolean shouldOverrideUrlLoading(WebView view,
+                                                    android.webkit.WebResourceRequest req) {
+                try {
+                    if (req == null || req.getUrl() == null || !req.isForMainFrame()) return false;
+                    String host = req.getUrl().getHost();
+                    String scheme = req.getUrl().getScheme();
+                    if (scheme != null && scheme.startsWith("http")
+                            && (host == null || host.equals("127.0.0.1") || host.equals("localhost"))) {
+                        return false;   // 本地引擎页面/本地资源：留在 WebView 里
+                    }
+                    if (host == null) return false;
+                    String url = req.getUrl().toString();
+                    Log.i(TAG, "主界面导航到外部地址 → 系统浏览器: " + url);
+                    lastPopupUrl = url;
+                    lastPopupAt = System.currentTimeMillis();
+                    if (openInSystemBrowser(url)) return true;
+                    return false;      // 没有浏览器就只能让它在这里加载
+                } catch (Throwable t) {
+                    return false;
+                }
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {                errorRetries = 0;
                 // v1.21：白页探针 —— "加载完成"不等于"渲染出来了"（老 WebView / 前端插件加载失败
                 // 都是加载成功但 #root 空着）。8 秒后探一次，仍空则落控制台。
                 final String finishedUrl = url;
@@ -430,6 +461,13 @@ public class MainActivity extends Activity {
                         Log.i(TAG, "dshshell.openExternal → " + u);
                         if (!openInSystemBrowser(u)) conToast("没有可用的浏览器，无法打开链接");
                     }});
+                }
+
+                /** v1.21：页面侧埋点（只落日志，便于排查"点登录为什么没跳浏览器"）。 */
+                @android.webkit.JavascriptInterface
+                public void note(String msg) {
+                    if (msg == null) return;
+                    Log.i(TAG, "page-note: " + msg);
                 }
             }, "dshshell");
         } catch (Throwable ignored) {}
