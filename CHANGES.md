@@ -365,6 +365,29 @@ L1（DSH 设置页诊断面板）与 L2（本机资产救援页）暂不做，�
 | 点通知（Activity 在跑） | 日志 `onNewIntent: 从常驻通知进控制台` → `showConsole: 控制台已显示`，截图确认控制台 |
 | 点通知（进程被杀） | `onCreate` 路径直接进控制台（无 `autoEnter`） |
 
+### 十五之二、启动体验（v1.21 第 2 批）：向导期间后台预热 payload
+
+**④ Q2-C：把首次解压挪到用户读向导的时间里**
+- `startEngine()` 拆出 `startEngine(boolean prepareOnly)`：`prepareOnly=true` 时只准备文件就返回，
+  **不启动引擎、不拉保活通知、不拉悬浮窗**；文件准备逻辑仍只有一份
+  （复用既有的 `extractOnlyMode` 路径，末尾按 `prepareOnly` 决定是否回调控制台 UI）。
+- 新增 `warmPayloadAsync()`，在 `showPermissionScreen()` 里调用：向导一出场就开始后台解压。
+  幂等 + 不重复（`filesPreparedThisBoot` / `extracting` / `starting` 三重判断）。
+- `guideFinish()` 原本就是 `showEngineScreen(); startEngine();`（即一条龙：向导结束自动起引擎、
+  就绪自动进主界面），所以第 2 批**不需要**改向导流程本身 —— 缺的只是"提前把文件准备好"。
+- 实测（模拟器 community，`pm clear` 模拟全新安装）：
+  ```
+  19:10:55.711  warmPayload: 向导期间开始后台预热 payload
+  19:10:59.702  extracted 2885 entries (mode=internal)
+  19:11:05.729  extracted 12839 entries (mode=dshroot)
+  19:11:07.376  payload integrity OK runtime files=55/55 … 别名=15/15
+  （此时用户还在向导页：向导共 10 步）
+  19:12:40      点「开始使用」
+  19:13:10.203  dsh web: http://127.0.0.1:3086/…     ← 33 秒后就绪，期间**没有任何解压日志**
+  ```
+  ⇒ 首启「开始使用 → 主界面可交互」从"解压 + 起引擎"变成**只有起引擎（~30 s）**；
+  预热本身在向导期间完成（~11.7 s，模拟器）。
+
 ### 十六、未完成 / 已知限制
 
 - **compat 变体尚未并入本机制**：`android-app/compat/` 仍是一套独立差异文件（GeckoView），

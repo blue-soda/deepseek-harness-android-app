@@ -552,6 +552,23 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * v1.21（Q2-C）：权限向导展示期间后台预热 payload（首次解压 1.5 万条目 / ~290MB）。
+     *
+     * 复用「只解压、不启动」的既有路径（{@code extractOnlyMode} + {@code startEngine(true)}）：
+     *   · 文件准备逻辑只有一份，不会和启动路径走偏；
+     *   · 幂等：{@code filesPreparedThisBoot} 已为真时直接返回；
+     *   · 不重复：正在解压/正在启动时不动手。
+     * 预热失败不致命 —— 启动引擎时会再走一遍同样的准备（失败分支会把 filesPreparedThisBoot 复位）。
+     */
+    private void warmPayloadAsync() {
+        if (filesPreparedThisBoot || extracting || starting) return;
+        Log.i(TAG, "warmPayload: 向导期间开始后台预热 payload");
+        extractOnlyMode = true;
+        extracting = true;
+        startEngine(true);
+    }
+
+    /**
      * issue #37（社区 @zf-666888 报告）：平板分屏 / 自由窗口拖动分隔条只改窗口尺寸，不该重建界面。
      *
      * manifest 的 configChanges 已补齐 screenLayout|smallestScreenSize（见 AndroidManifest.xml 里
@@ -1297,6 +1314,9 @@ public class MainActivity extends Activity {
     private void showPermissionScreen() {
         buildGuidePages();
         guideIndex = 0;
+        // v1.21（Q2-C）：向导展示期间就把 payload 解压跑起来 —— 首次解压 1.5 万条目 / ~290MB，
+        // 用户读权限说明的这段时间足够跑完；走完向导点「开始使用」时文件已就绪，无需再等。
+        warmPayloadAsync();
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -2170,18 +2190,28 @@ public class MainActivity extends Activity {
     }
 
     // ============ 引擎启动（原逻辑）============
-    private void startEngine() {
+    private void startEngine() { startEngine(false); }
+
+    /**
+     * @param prepareOnly v1.21（Q2-C）：只把 payload 文件准备好就返回 —— 不启动引擎、不拉保活通知、
+     *        不拉悬浮窗。权限向导展示期间用它做后台预热（复用既有的 extractOnlyMode 路径，
+     *        文件准备逻辑只有一份），用户走完向导点「开始使用」时 filesPreparedThisBoot 已为真，
+     *        启动路径直接跳过整段文件准备（首次解压 1.5 万条目的等待被挪到用户读向导的时间里）。
+     */
+    private void startEngine(final boolean prepareOnly) {
         engineStartAborted = false;    // v1.13：重新启动 → 清掉「停止」留下的中止/抑制标记
         engineStoppedByUser = false;
         markEngineStoppedByUser(false); // v1.21：任何"启动引擎"的路径都清掉持久化的停止意图
-        startKeepAliveService();   // 前台保活：挂后台不被杀（引擎持续运行）
-        // 引擎端口持久化（供 OverlayService/其他组件读取）；已授权悬浮窗时自动拉起小鲸鱼
-        try {
-            getSharedPreferences("dsh_prefs", MODE_PRIVATE)
-                    .edit().putInt("engine_port", enginePort).apply();
-        } catch (Throwable ignored) {}
-        if (Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this)) {
-            startOverlayService();
+        if (!prepareOnly) {
+            startKeepAliveService();   // 前台保活：挂后台不被杀（引擎持续运行）
+            // 引擎端口持久化（供 OverlayService/其他组件读取）；已授权悬浮窗时自动拉起小鲸鱼
+            try {
+                getSharedPreferences("dsh_prefs", MODE_PRIVATE)
+                        .edit().putInt("engine_port", enginePort).apply();
+            } catch (Throwable ignored) {}
+            if (Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this)) {
+                startOverlayService();
+            }
         }
         // v1.10（Operit 方案）：不再请求 MediaProjection 授权（用户反感弹窗；Operit 主 App 也不用）。
         // 虚拟屏承载外部 App 内容由 PUBLIC|PRESENTATION 建屏实现（真机 Android 15 验证）。
@@ -2315,10 +2345,14 @@ public class MainActivity extends Activity {
                     conMarkPayloadDone();   // 记录“内部这棵树是本次安装解压的”（供控制台/校验判定）
                     checkPayloadIntegrity();  // B9：启动自检 —— 与打包清单核对 runtime/（只记日志+落文件）
                     } // end if (!filesPreparedThisBoot)
-                    if (extractOnlyMode) {
-                        // 控制台「解压文件」：到此为止，不碰引擎
+                    if (extractOnlyMode || prepareOnly) {
+                        // 控制台「解压文件」/ 向导期间的后台预热：到此为止，不碰引擎
                         extractOnlyMode = false;
                         extracting = false;
+                        if (prepareOnly) {
+                            Log.i(TAG, "warmPayload: 后台预热完成，文件已就绪（向导走完可直接起引擎）");
+                            return;
+                        }
                         ui.post(new Runnable() { @Override public void run() { conExtractDone(); } });
                         return;
                     }
