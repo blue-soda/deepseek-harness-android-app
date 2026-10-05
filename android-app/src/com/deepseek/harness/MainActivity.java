@@ -596,16 +596,12 @@ public class MainActivity extends Activity {
         } catch (Throwable t) {
             Log.w(TAG, "start VsreenBridgeService failed", t);
         }
-        // 存储权限未授予时自动请求（写 /sdcard 提取 vscreen jar 需要；Android 10+ targetSdk28 必须运行时授权），
-        // 授权回调里重新提取外部 jar（首次启动提取会 EACCES，不弹窗用户根本不知道要授权）。
-        try {
-            if (checkSelfPermission("android.permission.WRITE_EXTERNAL_STORAGE") != PackageManager.PERMISSION_GRANTED) {
-                pendingVscreenExtract = true;
-                requestPermissions(new String[]{
-                        "android.permission.READ_EXTERNAL_STORAGE",
-                        "android.permission.WRITE_EXTERNAL_STORAGE"}, REQ_STORAGE);
-            }
-        } catch (Throwable ignored) {}
+        // 存储权限：**不再在启动时自动弹系统对话框**（v1.21，真机报障）。
+        // 这段老代码是为"写 /sdcard 提取 vscreen jar"服务的，但它会在首启引导刚出现时
+        // 叠一个系统权限弹窗 —— 用户看到的是"引导页 + 系统弹窗"两套东西同时来，很乱。
+        // 现在改成按需：引导里的「所有文件访问」那一页会主动申请（见 requestPermissions 调用点），
+        // 用户点了才弹。缺权限时虚拟屏相关能力后续再申请即可（不影响首次启动）。
+        pendingVscreenExtract = false;
 
         // Shizuku API：监听 binder 与授权结果（实现授权弹窗）
         try {
@@ -1880,21 +1876,12 @@ public class MainActivity extends Activity {
             return checkSelfPermission("android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED;
         }};
         p8.action = new View.OnClickListener() { @Override public void onClick(View v) {
-            if (Build.VERSION.SDK_INT >= 33) {
-                if (checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
-                    requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, REQ_NOTIFICATION);
-                } else {
-                    try {
-                        Intent i = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
-                        i.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
-                        startActivity(i);
-                    } catch (Exception e) {
-                        openSystemSetting(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
-                    }
-                }
-            } else {
-                openSystemSetting(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
-            }
+            // v1.21（真机实测修复）：**直接打开系统「通知设置」页**，不再走运行时申请。
+            // 原因：本应用 targetSdk=28，在 Android 13+ 上 POST_NOTIFICATIONS 的运行时申请
+            // 经常**什么都不弹**（该权限实际由"通知渠道 / 系统通知开关"控制）→
+            // 用户点「去授权」毫无反应（真机报障）。设置页在所有状态下都可用：
+            // 开/关通知、看被屏蔽的渠道，都能在那里处理。
+            openSystemSetting(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
         }};
         guidePages.add(p8);
 
@@ -2385,11 +2372,18 @@ public class MainActivity extends Activity {
     private void openSystemSetting(String action) {
         try {
             Intent i = new Intent(action);
+            // 通知设置页要带包名，否则部分 ROM 会落到"全部应用通知"列表（用户找不到本应用）
+            if (Settings.ACTION_APP_NOTIFICATION_SETTINGS.equals(action)) {
+                i.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+            }
             i.setData(Uri.parse("package:" + getPackageName()));
             startActivity(i);
         } catch (Exception e) {
             try {
                 Intent i = new Intent(action);
+                if (Settings.ACTION_APP_NOTIFICATION_SETTINGS.equals(action)) {
+                    i.putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName());
+                }
                 startActivity(i);
             } catch (Exception e2) {
                 Log.w(TAG, "无法打开设置: " + action, e2);

@@ -161,6 +161,16 @@ fi
 #（docs/开发指南.md 第六节原本要求解压后手工 push 进设备，且每次重解压都要重做）。
 # 真机 arm64 不要设置这个变量；三个裸名库可从模拟器 /system/lib64/ 取。
 if [ -n "$DSH_X64_BARE_LIBS" ]; then
+  # ⚠⚠ v1.21 血泪警告：这个分支是给 **x86_64 模拟器**（ndk_translation）用的。
+  #   用它构建的 APK 一旦装到**真机 arm64**，node 一启动就崩，日志只有寥寥几行：
+  #     node: OpenSSL configuration error: … dlopen failed:
+  #       ".../payload/runtime/lib/libz.so" is for EM_X86_64 (62) instead of EM_AARCH64 (183)
+  #   而 payload 同步是"已存在文件不覆盖"，换 APK 也修不回来（只能卸载重装）。
+  #   给真机构建时**不要**设置 DSH_X64_BARE_LIBS：
+  #     · tools/build-apk.sh 默认不设（只有 --emulator 才设）
+  #     · .cache/build-local.sh 是本地**模拟器**入口，它设了 → 真机请用 .cache/build-arm64.sh
+  echo "⚠⚠ 正在使用模拟器(x86_64)适配构建：DSH_X64_BARE_LIBS=$DSH_X64_BARE_LIBS" >&2
+  echo "⚠⚠ 这个 APK 不要装到真机 arm64（node 的 OpenSSL 会 dlopen 失败并直接崩溃）" >&2
   for _l in libz.so libssl.so libcrypto.so; do
     [ -f "$DSH_X64_BARE_LIBS/$_l" ] || { echo "!! DSH_X64_BARE_LIBS 缺少 $_l：$DSH_X64_BARE_LIBS"; exit 1; }
     cp -f "$DSH_X64_BARE_LIBS/$_l" "$P/staging/runtime/lib/$_l"
