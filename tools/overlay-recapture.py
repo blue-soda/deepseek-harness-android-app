@@ -59,13 +59,55 @@ def rel_files(root: str) -> list[str]:
     return sorted(out)
 
 
+def is_patch_payload(rel: str) -> bool:
+    """判断一个 overlay 文件是否"值得留在补丁集里"。
+
+    剪枝掉的是**陪跑文件**：README / LICENSE / *.d.ts / *.js.map / *.test.js。
+    它们在上游每次发版都会变，留在 overlay 里只会：
+      · 让"我们改了什么"看不出来（137 个文件里 100 个不是补丁）；
+      · 未来 apply 时把上游新写的文档/类型用旧快照覆盖回去。
+    保留：代码（*.js/*.cjs/*.mjs）、package.json、原生二进制（*.node）等。
+    """
+    base = os.path.basename(rel)
+    if base.startswith("README"):
+        return False
+    if base.startswith("LICENSE"):
+        return False
+    if base.endswith(".d.ts") or base.endswith(".map"):
+        return False
+    if base.endswith(".test.js"):
+        return False
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tree", default=DEFAULT_TREE)
     ap.add_argument("--overlay", default=DEFAULT_OVERLAY)
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--write", action="store_true")
+    ap.add_argument("--prune", action="store_true", help="只清掉陪跑文件（README/LICENSE/*.d.ts/*.map/*.test.js）")
     args = ap.parse_args()
+
+    if args.prune:
+        if not os.path.isdir(args.overlay):
+            print(f"!! 找不到 overlay {args.overlay}", file=sys.stderr)
+            return 1
+        removed = 0
+        for rel in rel_files(args.overlay):
+            if is_patch_payload(rel):
+                continue
+            full = os.path.join(args.overlay, rel)
+            os.remove(full)
+            removed += 1
+            d = os.path.dirname(full)
+            while d.startswith(args.overlay) and d != args.overlay and not os.listdir(d):
+                os.rmdir(d)
+                d = os.path.dirname(d)
+        print(f"== 剪枝完成：移除 {removed} 个陪跑文件（README/LICENSE/*.d.ts/*.map/*.test.js）==")
+        print(f"   剩下 {len(rel_files(args.overlay))} 个文件（代码 + package.json + 二进制）")
+        print("   自检：bash tools/overlay-drift.sh   # 期望 stale=0 且 diff=0")
+        return 0
 
     if not os.path.isdir(args.tree):
         print(f"!! 找不到内核树 {args.tree}（先跑一次构建，或指定 --tree）", file=sys.stderr)
