@@ -183,13 +183,31 @@ adb pull /system/lib64/libssl.so    x64libs/
 adb pull /system/lib64/libcrypto.so x64libs/
 
 export DSH_X64_BARE_LIBS=$PWD/x64libs
-export DSH_X64_NO_LINKS=1     # 可选：清空 LINKS.txt，全部保留为实体文件
 bash android-app/build.sh
 ```
 
 设置后 `build.sh` 会：把三个 x86_64 库复制进 `staging/runtime/lib/`，并从 `LINKS.txt`
 移除对应三条（否则 App 首次启动会按 `LINKS.txt` 把它们重建为指向 arm64 的链接，
-把注入的库覆盖掉）。**真机 arm64 不要设置这两个变量。**
+把注入的库覆盖掉）。**真机 arm64 不要设置这个变量。**
+
+> 历史上这里还要求 `DSH_X64_NO_LINKS=1`（清空整个 `LINKS.txt`）。**v1.18 起不需要、也不要这么做**：
+> 清空会让 `libz.so.1` 等 soname 缺失，node 照样起不来。当前做法是"硬链优先 + 只剔除裸名三条"。
+
+### guest arm64 库：每次启动后补一次（v1.19 起有脚本）
+
+`LD_LIBRARY_PATH` 解决不了 node 的 soname —— 实测把同名实体文件放进 LD 路径，guest 链接器依然报
+`library "libz.so.1" not found`，它只搜 `/system/lib64/arm64/`。所以**必须带 `-writable-system` 启动**
+（Android Studio 默认不带，需要在 AVD 的 *Additional emulator command line options* 里加），
+并在每次（重新）启动后执行：
+
+```bash
+adb root && adb remount
+adb push tools/emu-guestlibs.sh /data/local/tmp/
+adb shell sh /data/local/tmp/emu-guestlibs.sh com.deepseek.harness.community
+```
+
+脚本按 payload 的 `LINKS.txt` 把缺的 arm64 soname 拷进 `/system/lib64/arm64/`（chmod 644），
+最后跑 `node -v` 自检；幂等，可重复执行。
 
 修复效果：转译器错误消失，错误前进一步。
 

@@ -33,7 +33,7 @@ case "$DSH_VARIANT" in
     V_APP_ID="com.deepseek.harness.beta"
     V_PORT=3082
     V_EXT_DIR="DeepSeekHarnessLite"
-    V_LABEL="DeepSeek Harness Lite"
+    V_LABEL="DeepSeek Harness"
     V_SUFFIX="-lite"
     V_KEY_FILE="release.jks"
     V_VS_BRIDGE_PORT=9009
@@ -43,7 +43,7 @@ case "$DSH_VARIANT" in
     V_APP_ID="com.deepseek.harness.compat"
     V_PORT=3084
     V_EXT_DIR="DeepSeekHarnessCompat"
-    V_LABEL="DeepSeek Harness 兼容版"
+    V_LABEL="DeepSeek Harness"
     V_SUFFIX="-compat"
     V_KEY_FILE="release.jks"
     V_VS_BRIDGE_PORT=9019
@@ -55,7 +55,7 @@ case "$DSH_VARIANT" in
     V_APP_ID="com.deepseek.harness.community"
     V_PORT=3086
     V_EXT_DIR="DeepSeekHarnessCommunity"
-    V_LABEL="DeepSeek Harness 社区版"
+    V_LABEL="DeepSeek Harness"
     V_SUFFIX="-community"
     V_KEY_FILE="community.jks"
     V_VS_BRIDGE_PORT=9029

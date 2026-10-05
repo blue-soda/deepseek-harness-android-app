@@ -227,7 +227,25 @@ HTTP 经 `adb forward` 打到模拟器上真实运行的 App 服务（33xx/9xxx�
   自动走 `android_apps → android_launch → android_screen`，**3 次调用完成**，最后读到"当前前台应用: com.android.settings"。
 - 首轮提示词增量：**+435 token**（9,926 → 10,361），换来"无特权也能列应用/开应用"。
 
-### 十三、未完成 / 已知限制
+### 十三、图标与命名（v1.19）
+
+- **启动图标换成全身立绘**：源图 `android-app/icon-src/source.png`（由维护者提供，986×1024 去透明边）。
+  取景对比后定为：自适应前景内容占 108dp 画布 **0.80**（长边）、传统图标 **0.96**、背景纯白 ——
+  0.66 太小、1.00 会把头带与脚裁掉。可用 `python tools/gen-icons.py` 一条命令重新生成。
+  （上一版用的是 `dsh-desktop.ico`，那是**头像特写**，桌面上只看得到大半张脸。）
+- **变体名称统一**：official / lite / compat / community 四个变体的 `android:label` 全部为
+  **DeepSeek Harness**（此前是 "DeepSeek Harness 社区版 / Lite / 兼容版"）。Android 允许不同包名同名的
+  App 共存，桌面会出现三个同名图标，靠图标位置区分；无障碍服务名随之变成统一的 "DeepSeek Harness 屏幕助手"。
+  变体仍可从 **versionName** 区分（`1.17.3` / `-lite` / `-compat` / `-community`）。
+- **模拟器 guest 库补装脚本化**（`tools/emu-guestlibs.sh`）：x86_64 模拟器上 node 是 arm64、靠
+  ndk_translation 转译，而 guest 链接器**只搜 `/system/lib64/arm64/`**（实测 `LD_LIBRARY_PATH` 无效：
+  把同名实体文件放进 LD 路径依然报 `libz.so.1 not found`）。因此必须带 `-writable-system` 启动并在每次
+  启动后补库；脚本按 payload 的 `LINKS.txt` 幂等补齐并跑 `node -v` 自检。
+  **这次的故障就是它引起的**：用 Android Studio 启动（默认不带 `-writable-system`）→ AVD 的可写 system
+  overlay 不挂载 → 上一轮补齐的库“消失” → 引擎起不来、`打开主界面` 一直转圈。Android Studio 里可在
+  Device Manager → 编辑 AVD → *Additional emulator command line options* 填 `-writable-system`。
+
+### 十四、未完成 / 已知限制
 
 - **compat 变体尚未并入本机制**：`android-app/compat/` 仍是一套独立差异文件（GeckoView），
   其 `build.sh` / `MainActivity.java` 未同步 BuildVariant 与变体 staging，其虚拟屏端口仍为 8999/8998

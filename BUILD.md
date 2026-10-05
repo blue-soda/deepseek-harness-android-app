@@ -234,10 +234,26 @@ Linux / CI 上没有这个问题，构建同样在 **1 分钟出头**量级。
 
 1. **模拟器镜像必须是 userdebug**（`google_apis`，**不能**是 `google_apis_playstore`），
    否则 `adb root` / `adb remount` 被禁，无法补库；
-2. **把 node 缺的 20 个 arm64 库装进 guest 目录** `/system/lib64/arm64/`。
+2. **必须带 `-writable-system` 启动**，否则 AVD 的可写 system 覆盖层不挂载，第 3 步补的库会“消失”
+   （现象：引擎起不来、`打开主界面` 一直打不开，logcat 里 node 报
+   `CANNOT LINK EXECUTABLE ... library "libz.so.1" not found`）。
+   Android Studio 默认**不带**这个开关 —— 在 Device Manager → 编辑该 AVD →
+   *Additional emulator command line options* 里填 `-writable-system`；
+3. **每次（重新）启动后补一次 guest 库**：
+
+   ```sh
+   adb root && adb remount
+   adb push tools/emu-guestlibs.sh /data/local/tmp/
+   adb shell sh /data/local/tmp/emu-guestlibs.sh com.deepseek.harness   # 换包名即可换变体
+   ```
+
+   脚本把 payload 里 arm64 的 soname（`libz.so.1`、`libsqlite3.so`、`libicui18n.so.78`、
+   `libicuuc.so.78`、`libicudata.so.78` …）按 `LINKS.txt` 补进 `/system/lib64/arm64/`，
+   并跑 `node -v` 自检。**为什么不能靠 `LD_LIBRARY_PATH`**：实测把同名实体文件放进 LD 路径依然报
+   `libz.so.1 not found`，guest 链接器只搜那个目录；真机 arm64 完全不需要这些。
 
 完整步骤与原理见 [tools/LOCAL-BUILD.md 第四节](LOCAL-BUILD.md)。构建时加 `--emulator`
-会自动带上需要的开关（`DSH_X64_BARE_LIBS` + `DSH_X64_NO_LINKS`），但你仍需自备
+会自动带上需要的开关（`DSH_X64_BARE_LIBS`），但你仍需自备
 `x86_64` 的 `libz.so`/`libssl.so`/`libcrypto.so`（从模拟器 `/system/lib64/` 取）。
 
 ---
