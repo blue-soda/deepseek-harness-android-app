@@ -101,6 +101,8 @@ public class OverlayService extends Service {
     /** v1.21：面板里的"任务状态"行 —— 与头像上方气泡同源（气泡被点掉后仍能在这里看）。 */
     private TextView agentText;
     private Button destroyBtn;
+    /** v1.21（B）：虚拟屏回程按钮，仅在虚拟屏真的在跑时可见。 */
+    private Button vscreenBtn;
     // v1.9 虚拟屏预览：悬浮窗实时显示虚拟屏画面（用户可看 AI 操作）
     private ImageView vscreenImageView = null;
     private volatile boolean vscreenPreviewRunning = false;
@@ -377,45 +379,39 @@ public class OverlayService extends Service {
         vscreenImageView.setBackgroundColor(0x88000000);
         panelView.addView(vscreenImageView);
 
-        // v1.13.12：按钮重做 —— 面板不需要大按钮，两行小胶囊足够；端口行整体移除
-        // （端口在控制台/通知里都有，天天显示在悬浮窗上没有信息量）。
-        LinearLayout btnRow1 = new LinearLayout(this);
-        btnRow1.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams r1p = new LinearLayout.LayoutParams(
+        // v1.21 精简（用户选 A+B）：
+        //   A. 去掉「收起」按钮 —— 点面板外、或再点一下小人就能收起，按钮没必要占一行；
+        //      三个按钮并成**一行**（常态下只有「打开应用」，不会拥挤）。
+        //   B.「虚拟屏／销毁屏」只在**真的有虚拟屏**时才出现（refreshPanelDynamicRows 按
+        //      VsreenBridgeService.sVscreenRunning 切换），避免出现"点了没反应"的按钮。
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams brp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        r1p.topMargin = dp(7);
-        btnRow1.setLayoutParams(r1p);
-        btnRow1.addView(pillButton("打开应用", new Runnable() { @Override public void run() {
+        brp.topMargin = dp(7);
+        btnRow.setLayoutParams(brp);
+        btnRow.addView(pillButton("打开应用", new Runnable() { @Override public void run() {
             Intent i = new Intent(OverlayService.this, MainActivity.class);
             i.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
             try { startActivity(i); } catch (Throwable ignored) {}
             setPanelVisible(false, true);
         }}));
-        btnRow1.addView(pillButton("虚拟屏", new Runnable() { @Override public void run() {
-            // 预览窗被「收起到小鲸鱼」后的回程入口；没有虚拟屏时桥服务会静默忽略
+        vscreenBtn = pillButton("虚拟屏", new Runnable() { @Override public void run() {
+            // 预览窗被「收起到小鲸鱼」后的回程入口；没有虚拟屏时按钮本身就不可见
             try { VsreenBridgeService.showPreviewFromWhale(); } catch (Throwable ignored) {}
             setPanelVisible(false, true);
-        }}));
-
-        LinearLayout btnRow2 = new LinearLayout(this);
-        btnRow2.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams r2p = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        r2p.topMargin = dp(5);
-        btnRow2.setLayoutParams(r2p);
+        }});
+        vscreenBtn.setVisibility(View.GONE);
+        btnRow.addView(vscreenBtn);
         // 销毁屏：替代旧预览窗上的 ✕（用户要求销毁功能收进小鲸鱼面板）
         destroyBtn = pillButton("销毁屏", new Runnable() { @Override public void run() {
             try { VsreenBridgeService.destroyVscreenFromWhale(); } catch (Throwable ignored) {}
             setPanelVisible(false, true);
         }});
         destroyBtn.setVisibility(View.GONE);
-        btnRow2.addView(destroyBtn);
-        btnRow2.addView(pillButton("收起", new Runnable() { @Override public void run() {
-            setPanelVisible(false, true);
-        }}));
+        btnRow.addView(destroyBtn);
 
-        panelView.addView(btnRow1);
-        panelView.addView(btnRow2);
+        panelView.addView(btnRow);
         rootView.addView(panelView);
         setPanelVisible(false, false);
 
@@ -676,10 +672,11 @@ public class OverlayService extends Service {
     /** 面板每次展开时刷新"看场景才该出现"的行（如销毁屏按钮）。 */
     private void refreshPanelDynamicRows() {
         try {
-            if (destroyBtn != null) {
-                destroyBtn.setVisibility(VsreenBridgeService.sVscreenRunning
-                        ? View.VISIBLE : View.GONE);
-            }
+            // v1.21（B）：虚拟屏相关的两个按钮只在**真的有虚拟屏**时出现。
+            // 常态下（没开虚拟屏）面板里只有「打开应用」，不会出现点了没反应的按钮。
+            boolean vs = VsreenBridgeService.sVscreenRunning;
+            if (destroyBtn != null) destroyBtn.setVisibility(vs ? View.VISIBLE : View.GONE);
+            if (vscreenBtn != null) vscreenBtn.setVisibility(vs ? View.VISIBLE : View.GONE);
         } catch (Throwable ignored) {}
     }
 
