@@ -38,8 +38,12 @@ DENS = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
 BG = "#FFFFFF"
 # 启动图标的头部包围盒（在 768×768 源图里实测：发箍顶 ~55、下巴 ~660、头发左右 ~20/~700）
 HEAD_BOX = (20, 55, 700, 660)
-HEAD_FIT_MARGIN = 0.95   # 头部对角刚好入圆的比例再乘这个，留一点余量给不同蒙版/启动器缩放
-AVATAR_PX = 320          # 悬浮窗头像边长（nodpi）
+# ⚠ 关键：Android 自适应图标是 108×108dp，但系统**只显示中央 72×72dp**（宽度的 72/108 = 66.7%），
+#   再放大到图标显示尺寸。所以"按整张画布预览"会严重高估可见范围 —— 之前就是踩了这个坑：
+#   生成器按 0.80 缩放（看起来头在画布里完整），到设备上被裁到中央 66.7% 后头箍与下巴都被切掉。
+ADAPTIVE_HEAD_SCALE = 0.56   # 自适应前景：头部占 108dp 画布的比例（按中央 72dp 可见区校准）
+LEGACY_HEAD_SCALE = 0.80     # 传统方形图标：没有裁切，填得满一些更好看
+AVATAR_PX = 320              # 悬浮窗头像边长（nodpi）
 
 XML = """<?xml version="1.0" encoding="utf-8"?>
 <!-- 自适应图标（API 26+）：前景 = icon-src/icon-windows.png（铺满 108dp 画布），白色背景。
@@ -56,13 +60,11 @@ def trim(im: Image.Image) -> Image.Image:
     return im.crop(box) if box else im
 
 
-def head_centered_square(art: Image.Image) -> Image.Image:
-    """把素材按「头部居中 + 圆内完整」重排成正方形（白底），返回与素材同尺寸的图。"""
+def head_centered_square(art: Image.Image, k: float) -> Image.Image:
+    """把素材按「头部居中」放到正方形画布上（白底），头部按比例 k 缩放。"""
     w, h = art.size
     x0, y0, x1, y1 = HEAD_BOX
     hcx, hcy = (x0 + x1) / 2, (y0 + y1) / 2
-    hw, hh = (x1 - x0) / 2, (y1 - y0) / 2
-    k = (w / 2) / np.hypot(hw, hh) * HEAD_FIT_MARGIN     # 头部对角刚好入圆 × 余量
     tw, th = max(1, round(w * k)), max(1, round(h * k))
     canvas = Image.new("RGBA", (w, h), (255, 255, 255, 255))
     canvas.alpha_composite(art.resize((tw, th), Image.LANCZOS),
@@ -76,15 +78,18 @@ def main() -> int:
             print(f"找不到素材：{p}", file=sys.stderr)
             return 1
 
-    icon = head_centered_square(Image.open(SRC_ICON).convert("RGBA"))
-    print(f"启动图标素材 {os.path.basename(SRC_ICON)}：头部居中 + 圆内完整（余量 {HEAD_FIT_MARGIN:.2f}）")
+    src_icon = Image.open(SRC_ICON).convert("RGBA")
+    icon_adaptive = head_centered_square(src_icon, ADAPTIVE_HEAD_SCALE)
+    icon_legacy = head_centered_square(src_icon, LEGACY_HEAD_SCALE)
+    print(f"启动图标素材 {os.path.basename(SRC_ICON)}：头部居中；"
+          f"自适应 k={ADAPTIVE_HEAD_SCALE}（按可见区 72/108 校准）、传统 k={LEGACY_HEAD_SCALE}")
     for name, size in DENS.items():
         d = os.path.join(RES, f"mipmap-{name}")
         os.makedirs(d, exist_ok=True)
-        icon.resize((size, size), Image.LANCZOS).save(os.path.join(d, "ic_launcher.png"))
+        icon_legacy.resize((size, size), Image.LANCZOS).save(os.path.join(d, "ic_launcher.png"))
         canvas = round(size * 108 / 48)
         fg = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
-        fg.alpha_composite(icon.resize((canvas, canvas), Image.LANCZOS), (0, 0))
+        fg.alpha_composite(icon_adaptive.resize((canvas, canvas), Image.LANCZOS), (0, 0))
         fg.save(os.path.join(d, "ic_launcher_foreground.png"))
         print(f"  mipmap-{name}: ic_launcher.png {size}px + ic_launcher_foreground.png {canvas}px")
 
