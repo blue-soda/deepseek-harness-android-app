@@ -460,7 +460,36 @@ L1（DSH 设置页诊断面板）与 L2（本机资产救援页）暂不做，�
 因此**事件映射这一环无法在模拟器上跑真实会话验证**；有 key 的设备上发一条消息即可确认
 （观察 `[bubble]` 日志与气泡文字是否随 agent 状态变化）。
 
-### 十七、未完成 / 已知限制
+### 十七、"模拟器里会话跑不起来"的排查（环境问题，非 App bug）
+
+现象：App 里发消息很快失败，界面报 `DeepSeek Messages transport failed: fetch failed`；
+但同一个 key 在宿主机上完全正常。
+
+排查过程与结论：
+1. **凭证没问题**：宿主机直接打 `GET https://api.deepseek.com/user/balance` →
+   `{"is_available":true,"total_balance":"54.60"}` ✅。
+2. **模拟器 guest 网络半死**：
+   · `ping api.deepseek.com` → `unknown host`；
+   · `ip route` 只有 `10.0.2.0/24`，**内核路由表里没有 default 路由**
+     （而 `dumpsys connectivity` 里 LinkProperties 是有默认路由和 DNS 的 ——
+      内核表与 ConnectivityService 状态不一致，这是 AVD 的已知脆弱点）；
+   · 模拟器内置 DNS 代理 `10.0.2.3` ping 得通、但**不应答查询**；
+   · TCP 层面到 `api.deepseek.com` 的真实 IP:443 是通的（宿主机解析出 61.241.148.62 /
+     101.71.73.135 后逐个 `nc -z` 验证）→ 说明只是**路由 + DNS**的问题，不是防火墙。
+3. `ndc resolver setnetdns` 在该 Android 版本上不被接受（`Command not recognized`），
+   `setprop net.dns1` 现代 Android 的解析器也不看 → 用 **/system/etc/hosts** 兜底
+   （宿主机解析出 IP 后写入；`-writable-system` + adb root 环境直接可写）。
+
+修复后实测：Node 侧 `dns.lookup('api.deepseek.com')` → OK ✅；
+界面发一条「请只回复两个字：好的」→ 会话完整跑完，会话缓存里
+`tokenUsage.totals.outputTokens = 2`（正好两个字）、`uncachedInputTokens = 11383` ✅；
+悬浮窗气泡同步走完 `[bubble] 思考中…` → `[bubble] 任务已完成` ✅。
+
+沉淀：`tools/emu-netfix.sh`（`--check` 只自检）—— 自检/补默认路由、用 App 自带 node 自检 DNS、
+必要时写 hosts 兜底。**这是环境问题**：最彻底的修法是重启模拟器（slirp 会重新下发 DNS 代理），
+长期压测建议 `-gpu host`。
+
+### 十八、未完成 / 已知限制
 
 - **compat 变体尚未并入本机制**：`android-app/compat/` 仍是一套独立差异文件（GeckoView），
   其 `build.sh` / `MainActivity.java` 未同步 BuildVariant 与变体 staging，其虚拟屏端口仍为 8999/8998
