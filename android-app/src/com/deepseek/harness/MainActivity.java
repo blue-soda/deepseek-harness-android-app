@@ -144,6 +144,12 @@ public class MainActivity extends Activity {
     // 用于识别「解压中途被打断」：即使 REVISION 一致也强制补齐缺失文件。
     private static final String DSHROOT_COMPLETE = ".complete";
     private static final String PREFS = "dsh_setup";
+    /**
+     * v1.21（Q1 第 3 批）：常驻通知点按 → 进原生控制台。
+     * EngineService 用它构造通知的 contentIntent；MainActivity 在 onCreate/onNewIntent 里消费。
+     * （控制台的另一条入口是故障自动回退：引擎起不来 / WebView 加载失败。）
+     */
+    public static final String EXTRA_OPEN_CONSOLE = "open_console";
     private static final int REQ_STORAGE = 200;
     private static final int REQ_NOTIFICATION = 201;
     private static final int REQ_SHIZUKU = 300;
@@ -445,15 +451,104 @@ public class MainActivity extends Activity {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (prefs.getBoolean("setup_done", false)) {
             showEngineScreen();
-            // v1.12：冷启动先停在控制台；切屏回来/任务恢复（savedInstanceState != null）直接进主界面。
-            if (savedInstanceState == null) {
+            // v1.12：切屏回来/任务恢复（savedInstanceState != null）直接进主界面。
+            // v1.21（Q1-P1「秒进」）：冷启动**不再先停在控制台** —— 正常路径应当直接进主界面，
+            //   控制台只从「常驻通知」或「故障回退」进入（用户定的口径）。
+            if (consumeOpenConsoleExtra()) {
+                // 从常驻通知点进来的：明确要看控制台
                 showConsole();
-            } else {
+            } else if (savedInstanceState != null) {
                 startEngine();
+            } else {
+                autoEnterOnBoot();
             }
         } else {
             showPermissionScreen();
         }
+    }
+
+    /**
+     * v1.21：消费 {@link #EXTRA_OPEN_CONSOLE}。读一次就清掉，避免 Activity 重建/任务恢复时
+     * 又莫名其妙弹回控制台（用户可能已经从控制台返回主界面了）。
+     */
+    private boolean consumeOpenConsoleExtra() {
+        try {
+            Intent it = getIntent();
+            if (it == null || !it.getBooleanExtra(EXTRA_OPEN_CONSOLE, false)) return false;
+            it.removeExtra(EXTRA_OPEN_CONSOLE);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * v1.21：Activity 已在运行（通知 Intent 带 FLAG_ACTIVITY_SINGLE_TOP）时走这里 ——
+     * 不处理的话"点通知"第二次开始就没反应了。
+     */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (intent == null) return;
+        boolean wantConsole = intent.getBooleanExtra(EXTRA_OPEN_CONSOLE, false);
+        intent.removeExtra(EXTRA_OPEN_CONSOLE);
+        setIntent(intent);
+        if (!wantConsole) return;
+        Log.i(TAG, "onNewIntent: 从常驻通知进控制台");
+        try {
+            showEngineScreenIfNeeded();
+            showConsole();
+        } catch (Throwable t) {
+            Log.w(TAG, "onNewIntent open console failed", t);
+        }
+    }
+
+    /** 控制台可能被建在 WebView 之上；确保引擎屏（含 WebView 容器）已存在再显示控制台。 */
+    private void showEngineScreenIfNeeded() {
+        if (webView == null || engineRoot == null || engineRoot.getParent() == null) showEngineScreen();
+    }
+
+    /**
+     * v1.21（Q1-P1）：冷启动秒进主界面，不再默认停在控制台。
+     *
+     * 三条分支：
+     *  ① 连续启动失败已达阈值（{@link #BOOT_FAIL_HINT_AT}）→ 直接进控制台：
+     *     上次就没起来，再让用户对着卡住的启动页没有意义；控制台里有日志/安全模式/重启。
+     *  ② 引擎已在跑（App 被杀后 EngineService 保活）→ {@code launchEngine} 内部探测到健康即
+     *     {@code loadHome()}，实际是"秒进"；不重复 spawn（有 healthOk/端口两道防线）。
+     *  ③ 引擎没在跑 → 正常起引擎：启动页（logo + 状态文字 + 进度条）本身就是骨架屏，
+     *     就绪后 {@code waitForServer → loadHome} 自动进主界面。
+     *
+     * 失败兜底完全沿用既有链路，不改行为：{@code waitForServer} 超时 → {@code bumpBootFailure()}
+     * + {@code conEngineTimedOut()}（回控制台 + 后台守望，引擎迟到就绪时自动进主界面）。
+     */
+    private void autoEnterOnBoot() {
+        final int fails = bootFailures();
+        if (fails >= BOOT_FAIL_HINT_AT) {
+            Log.i(TAG, "autoEnter: 连续失败 " + fails + " 次 → 直接进控制台");
+            showConsole();
+            conToast("上次引擎未启动成功，已打开控制台（引擎就绪后会自动进入主界面）");
+            return;
+        }
+        // 用户上次在控制台主动点了「停止」→ 尊重意图，冷启动不自动拉起（否则就是"停不掉"）。
+        if (engineStoppedByUserPersisted()) {
+            Log.i(TAG, "autoEnter: 用户曾主动停止引擎 → 进控制台等用户决定");
+            showConsole();
+            conToast("引擎处于你上次手动停止的状态，点「启动引擎」即可恢复");
+            return;
+        }
+        Log.i(TAG, "autoEnter: 秒进模式（不显示控制台），直接起引擎");
+        startEngine();
+    }
+
+    /** v1.21：持久化"用户主动停止引擎"的意图（内存标记进程一死就没了）。 */
+    private static final String KEY_ENGINE_STOPPED = "engine_user_stopped";
+    private boolean engineStoppedByUserPersisted() {
+        try { return prefs().getBoolean(KEY_ENGINE_STOPPED, false); } catch (Throwable t) { return false; }
+    }
+
+    private void markEngineStoppedByUser(boolean stopped) {
+        try { prefs().edit().putBoolean(KEY_ENGINE_STOPPED, stopped).apply(); } catch (Throwable ignored) {}
     }
 
     /**
@@ -2078,6 +2173,7 @@ public class MainActivity extends Activity {
     private void startEngine() {
         engineStartAborted = false;    // v1.13：重新启动 → 清掉「停止」留下的中止/抑制标记
         engineStoppedByUser = false;
+        markEngineStoppedByUser(false); // v1.21：任何"启动引擎"的路径都清掉持久化的停止意图
         startKeepAliveService();   // 前台保活：挂后台不被杀（引擎持续运行）
         // 引擎端口持久化（供 OverlayService/其他组件读取）；已授权悬浮窗时自动拉起小鲸鱼
         try {
@@ -2127,18 +2223,32 @@ public class MainActivity extends Activity {
                         }
                     }
 
+                    // v1.21（Q2-A）：本次启动是否换了载荷（assets/payload_manifest.txt 的
+                    // payload_zip_sha256 与上次记录不同）。用它当闸门：没换载荷就不必每次冷启动
+                    // 都去扫一遍 102MB / 15703 条目的 payload.zip —— 实测这两步合计 ~5.2s
+                    // （internal-patch 3.53s + 插件刷新 1.74s），是 App 侧最大的可省项。
+                    // 代价：设备上文件若被手删，不会在下次启动自动补回，需在控制台点「重新解压」
+                    //（完整性校验仍会报告 drift）。相对每次冷启动省 5 秒，这个取舍值得。
+                    final boolean payloadChanged = payloadZipChanged();
+
                     if (!done.exists()) {
                         // 关键：先解压内部关键运行时（node/.so/dshhome/bin/rish），再解压 dshroot。
                         // 解压中途被打断时，只要内部已就位引擎仍能启动；缺的文件由 dshrootNeedsSync 幂等补齐。
                         extractPayload(payload, null, "internal");
                         done.createNewFile();
-                    } else {
+                    } else if (payloadChanged) {
                         // 覆盖升级：补齐内部运行时缺失的新增文件（如 runtime/bin/rg），已有文件不动
                         try { extractPayload(payload, null, "internal-patch"); } catch (Throwable ignored) {}
+                    } else {
+                        Log.i(TAG, "internal-patch 跳过（载荷未变）");
                     }
 
-                    // 引擎插件强制刷新（见 refreshEnginePluginsFromPayload 注释）
-                    refreshEnginePluginsFromPayload(payload);
+                    if (payloadChanged) {
+                        // 引擎插件强制刷新（见 refreshEnginePluginsFromPayload 注释）
+                        refreshEnginePluginsFromPayload(payload);
+                    } else {
+                        Log.i(TAG, "engine plugins refresh 跳过（载荷未变）");
+                    }
 
                     // 内部 dshroot 同步（node 从此处读内核）：
                     // REVISION 不匹配（重装）或 .complete 缺失（中断）都补。
@@ -2157,7 +2267,7 @@ public class MainActivity extends Activity {
                             // v1.20：payload.zip 变了也走「增量补齐」——fast 同步只看 REVISION +
                             // 白名单，**不解压本次新增的文件**（踩过：新增的 node-pty 替身包
                             // 在 fast 模式下永远不落地，终端一直报 Cannot find module 'node-pty'）。
-                            boolean payloadChanged = payloadZipChanged();
+                            // v1.21：payloadChanged 提升到本段之前统一判定（见上面的 Q2-A 注释）。
                             boolean layoutOnly = !full && (dshrootLayoutChanged(internalBase) || payloadChanged);
                             fastSyncedThisBoot = !full;
                             String mode = full ? "dshroot" : (layoutOnly ? "dshroot-add" : "dshroot-fast");
@@ -2166,6 +2276,9 @@ public class MainActivity extends Activity {
                             rememberPayloadZipSha();
                             if (revisionChanged) refreshInternalConfig(payload);
                         }
+                        // v1.21：本段没走（dshroot 已同步）但载荷换过时，也要记住指纹，
+                        // 否则闸门永远为真 → internal-patch/插件刷新每次都做，Q2-A 省不下来。
+                        if (payloadChanged) rememberPayloadZipSha();
                         dshrootDir = internalDshroot;
                     } catch (Throwable t) {
                         // 内部解压失败（通常为内部存储空间不足）→ 回退外部（慢但可用）
@@ -4468,11 +4581,12 @@ public class MainActivity extends Activity {
 
     private void showConsole() {
         if (consoleLayer == null) buildConsoleLayer();
-        if (consoleLayer == null) { startEngine(); return; } // 兜底：控制台建不出来就走老路
+        if (consoleLayer == null) { Log.w(TAG, "showConsole: 控制台层构建失败，回退 startEngine"); startEngine(); return; }
         consoleVisible = true;
         if (consoleLayerBox != null) consoleLayerBox.setVisibility(View.VISIBLE);
         consoleLayer.setVisibility(View.VISIBLE);
         if (engineRoot != null) engineRoot.bringChildToFront(consoleLayerBox != null ? consoleLayerBox : consoleLayer);
+        Log.i(TAG, "showConsole: 控制台已显示");
         ensureConsoleThemeAssets();      // v1.17.4：四件套（规范/schema/示例/校验器）解到 /sdcard
         conThemeReloadIfChanged(false);  // v1.17.4：读 console.json（坏配置自动回退，绝不阻塞控制台）
         renderConsole();
@@ -7118,6 +7232,9 @@ public class MainActivity extends Activity {
         // 同样不能只 destroy 句柄 —— 句柄丢了就什么都停不掉，改用 killEngineNow（按 PID）。
         engineStoppedByUser = true;
         engineStartAborted = true;
+        // v1.21：把"用户主动停止"持久化。否则进程被杀重开后这个内存标记就丢了，
+        // 而 v1.21 的秒进会在冷启动时自动把引擎又拉起来 —— 与用户意图相反。
+        markEngineStoppedByUser(true);
         conToast("正在停止引擎…");
         // v1.13.12：停引擎 = 虚拟屏一起销毁（用户确认的行为）。虚拟屏由 AI 经引擎驱动，
         // 引擎停了虚拟屏就是一块没人管的孤儿屏；不一起收掉的话它还挂在屏幕上。

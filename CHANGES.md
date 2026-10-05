@@ -326,7 +326,46 @@ HTTP 经 `adb forward` 打到模拟器上真实运行的 App 服务（33xx/9xxx�
 - 修法：`payload_manifest.txt` 的 `payload_zip_sha256` 与上次记录不同 → 改走
   `dshroot-add`（增量补齐：缺失文件会写、白名单照旧覆盖）。实测同步模式 fast → add，新包成功落地。
 
-### 十五、未完成 / 已知限制
+### 十五、启动体验（v1.21 第 1 批）：秒进 + 载荷闸门 + 通知进控制台
+
+维护者定的口径：**主界面是默认，原生控制台只从「常驻通知」或「故障」两条路进**；
+L1（DSH 设置页诊断面板）与 L2（本机资产救援页）暂不做，权限按需暂不做。
+
+**① 秒进（Q1-P1）**：冷启动不再默认停在控制台。
+- `onCreate` 里 `setup_done` 分支改走 `autoEnterOnBoot()`：
+  · 连续启动失败 ≥2 次（`KEY_BOOT_FAILS`）→ 直接进控制台（不让用户对着卡住的启动页）；
+  · 用户上次在控制台点过「停止」→ 尊重意图，进控制台等用户决定
+    （新增 `KEY_ENGINE_STOPPED` 持久化：原来 `engineStoppedByUser` 只是内存标记，进程一死就忘，
+    秒进会把引擎又自动拉起来，等于"停不掉"）；
+  · 否则直接起引擎：启动页（logo + 状态文字 + 进度条）本身就是骨架屏，就绪后
+    `waitForServer → loadHome` 自动进主界面；失败兜底沿用既有链路
+    （超时 → `bumpBootFailure()` + `conEngineTimedOut()` 回控制台 + 后台守望自动进入）。
+
+**② 载荷闸门（Q2-A）**：`internal-patch` 解压与插件刷新只在载荷变化时做。
+- 判定用 `payload_manifest.txt` 的 `payload_zip_sha256`（`payloadChanged` 提升到本段之前统一算，
+  并在 dshroot 未走同步时也 `rememberPayloadZipSha()`，否则闸门永远为真）。
+- 实测：App 侧 `notify → spawn node` 由 **5.28 s → 0.11 s**（省掉 15,703 条目中央目录扫描 +
+  10 个内部文件 + 28 个白名单插件文件）。代价：设备上文件被手删不会在下次启动自动补回，
+  可用控制台「重新解压」补（完整性校验仍会报 drift）。
+
+**③ 通知进控制台（Q1 第 3 批）**：常驻通知成为控制台唯一人工入口。
+- `EngineService.buildNotification()`：contentIntent 带 `MainActivity.EXTRA_OPEN_CONSOLE`
+  （点通知 → 控制台）；另加动作按钮「打开界面」指向不带 extra 的 Intent（requestCode=1，
+  避免与 contentIntent 的 requestCode=0 互相覆盖）。
+- `MainActivity`：`onCreate` 用 `consumeOpenConsoleExtra()` 消费（读一次就清，避免重建时反复弹回），
+  并新增 `onNewIntent`（通知 Intent 带 `FLAG_ACTIVITY_SINGLE_TOP`，Activity 在跑时不再 create）。
+
+**实测（模拟器 community）**
+
+| 场景 | 结果 |
+|---|---|
+| 升级后首次启动 | 42.0 s（含 `dshroot-add` 94 项 + internal-patch 10 项 + 插件刷新 28 项） |
+| 同版本冷启动 | **31.9 s**（App 侧 0.11 s + 引擎 31.5 s），日志 `internal-patch 跳过 / plugins refresh 跳过` |
+| 冷启动进主界面 | 0 点击，日志 `autoEnter: 秒进模式`，截图确认是 DSH 界面而非控制台 |
+| 点通知（Activity 在跑） | 日志 `onNewIntent: 从常驻通知进控制台` → `showConsole: 控制台已显示`，截图确认控制台 |
+| 点通知（进程被杀） | `onCreate` 路径直接进控制台（无 `autoEnter`） |
+
+### 十六、未完成 / 已知限制
 
 - **compat 变体尚未并入本机制**：`android-app/compat/` 仍是一套独立差异文件（GeckoView），
   其 `build.sh` / `MainActivity.java` 未同步 BuildVariant 与变体 staging，其虚拟屏端口仍为 8999/8998
