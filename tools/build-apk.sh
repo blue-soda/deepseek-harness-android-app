@@ -37,6 +37,8 @@ DO_EMULATOR=0
 DO_VERIFY=1
 DO_SMOKE=0
 ANDROID_JAR_OPT=""
+DSH_VARIANT="${DSH_VARIANT:-official}"
+VARIANT_SET=0
 
 usage() {
   sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
@@ -46,7 +48,10 @@ usage() {
   --upstream <tag>    指定上游 Release tag（默认见脚本顶部 UPSTREAM_TAG）
   --apk <path>        用本地 APK（跳过下载与 md5 校验）
   --md5 <hex>         覆盖期望的 md5
-  --keystore <path>   签名密钥（默认在 .cache/ 里自动生成一个本地调试密钥）
+  --variant <name>    变体：official | lite | compat | community
+                      （真源 android-app/variants.sh：包名/端口/外部目录/显示名/默认密钥）
+  --keystore <path>   签名密钥（默认 official/lite/compat 用 .cache 里自动生成的本地调试密钥，
+                      community 用仓库内公开的 android-app/community.jks）
   --android-jar <p>   android.jar（默认自动从 Android SDK 里挑）
   --out <path>        产物路径（默认 android-app/DeepSeekHarness.apk）
   --cache <dir>       缓存目录（默认 <仓库>/.cache）
@@ -77,6 +82,7 @@ while [ $# -gt 0 ]; do
     --upstream) UPSTREAM_TAG_OPT="${2:?}"; shift 2 ;;
     --apk)      APK_IN="${2:?}"; shift 2 ;;
     --md5)      UPSTREAM_MD5="${2:?}"; shift 2 ;;
+    --variant)  DSH_VARIANT="${2:?}"; VARIANT_SET=1; shift 2 ;;
     --keystore) KEYSTORE="${2:?}"; shift 2 ;;
     --android-jar) ANDROID_JAR_OPT="${2:?}"; shift 2 ;;
     --out)      OUT="${2:?}"; shift 2 ;;
@@ -94,6 +100,18 @@ if [ -n "$UPSTREAM_TAG_OPT" ]; then
   UPSTREAM_TAG="$UPSTREAM_TAG_OPT"
   UPSTREAM_ASSET="DeepSeekHarness-official-${UPSTREAM_TAG}.apk"
 fi
+
+# ── 变体（B11）：真源 android-app/variants.sh，build.sh 也会 source 同一份 ──
+REPO_VARIANTS="$REPO/android-app/variants.sh"
+[ -f "$REPO_VARIANTS" ] || die "缺少 $REPO_VARIANTS（变体表）"
+. "$REPO_VARIANTS"
+# 产物名：official 保持历史名（兼容既有文档/脚本），其余变体带后缀
+if [ "$VARIANT_SET" = 1 ] && [ "$OUT" = "$REPO/android-app/DeepSeekHarness.apk" ]; then
+  if [ "$DSH_VARIANT" != "official" ]; then
+    OUT="$REPO/android-app/DeepSeekHarness-$DSH_VARIANT.apk"
+  fi
+fi
+echo "   变体        : $DSH_VARIANT（appId=$V_APP_ID 引擎=$V_PORT 外部目录=$V_EXT_DIR）"
 
 # ── 0. 预检 ───────────────────────────────────────────────────────────────
 info "0/7 预检环境"
@@ -357,7 +375,15 @@ fi
 # ── 4. 签名密钥 ───────────────────────────────────────────────────────────
 mark "组装 devhome"
 info "4/7 签名密钥"
-if [ -z "$KEYSTORE" ]; then
+if [ -z "$KEYSTORE" ] && [ "$DSH_VARIANT" = "community" ]; then
+  # 社区版：仓库内公开密钥（口令同样公开，故意如此）——与正式 release.jks 完全无关。
+  KEYSTORE="$REPO/android-app/$V_KEY_FILE"
+  [ -f "$KEYSTORE" ] || die "缺少社区密钥 $KEYSTORE（应随仓库分发，见 android-app/README.md）"
+  KEYSTORE_PASS="${KEYSTORE_PASS:-dsh-community}"
+  KEYSTORE_ALIAS="${KEYSTORE_ALIAS:-community}"
+  echo "   使用社区公开密钥：$KEYSTORE（口令公开：dsh-community）"
+  warn "社区密钥是【公开】的，只用于社区自助构建；绝不用于签名正式发布物。"
+elif [ -z "$KEYSTORE" ]; then
   KEYSTORE="$CACHE/local-debug.jks"
   if [ ! -f "$KEYSTORE" ]; then
     echo "   生成本地调试密钥：$KEYSTORE"
@@ -388,6 +414,7 @@ export DSH_DEV_HOME="$H"
 export JAVA_BIN
 export ANDROID_JAR
 export KEYSTORE_PASS KEYSTORE_ALIAS
+export DSH_VARIANT
 # build.sh 默认用 android-app/release.jks；这里指向我们实际选择的密钥
 export DSH_KEYSTORE="$KEYSTORE"
 
@@ -405,7 +432,11 @@ fi
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
 ( cd "$REPO/android-app" && bash build.sh ) || die "构建失败（上面有日志）"
-BUILT="$REPO/android-app/DeepSeekHarness.apk"
+if [ "$DSH_VARIANT" = "official" ]; then
+  BUILT="$REPO/android-app/DeepSeekHarness.apk"
+else
+  BUILT="$REPO/android-app/DeepSeekHarness-$DSH_VARIANT.apk"
+fi
 [ -f "$BUILT" ] || die "构建脚本报成功但没有产物"
 if [ "$BUILT" != "$OUT" ]; then
   mv -f "$BUILT" "$OUT"
@@ -499,9 +530,9 @@ if [ "$DO_SMOKE" = 1 ]; then
     warn "没有已连接设备，跳过"
   else
     "$ADB" install -r "$OUT" || die "安装失败"
-    "$ADB" shell am start -n com.deepseek.harness/.MainActivity >/dev/null 2>&1 || true
-    echo "   已安装并拉起；请在 App 内走完权限向导并点「启动引擎」。"
-    echo "   引擎就绪判据：adb shell netstat -tlnp | grep 3080"
+    "$ADB" shell am start -n "$V_APP_ID/$V_APP_ID.MainActivity" >/dev/null 2>&1 || true
+    echo "   已安装并拉起（变体 $DSH_VARIANT，包名 $V_APP_ID）；请在 App 内走完权限向导并点「启动引擎」。"
+    echo "   引擎就绪判据：adb shell netstat -tlnp | grep $V_PORT"
   fi
 fi
 

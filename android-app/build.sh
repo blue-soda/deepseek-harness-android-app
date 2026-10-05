@@ -21,8 +21,24 @@ APKSIGNER="apksigner"
 case "$(uname -s 2>/dev/null)" in
   MINGW*|MSYS*|CYGWIN*) CP_SEP=";"; D8="d8.bat"; APKSIGNER="apksigner.bat" ;;
 esac
+# 变体表（B11）：appId / 端口 / 外部目录 / 显示名 / 默认密钥文件名 的单一真源。
+# DSH_VARIANT=official|lite|compat|community（默认 official）
+[ -f "$P/variants.sh" ] || { echo "!! 缺少 android-app/variants.sh（变体表）"; exit 1; }
+. "$P/variants.sh"
+
 # 签名密钥（自行准备，不入仓库）。DSH_KEYSTORE 可覆盖，便于一键脚本用缓存里的密钥。
-KEY="${DSH_KEYSTORE:-$P/release.jks}"
+# 默认按变体取：official/lite/compat → release.jks；community → community.jks（公开密钥）。
+KEY="${DSH_KEYSTORE:-$P/$V_KEY_FILE}"
+
+# 产物路径：official 保持历史名 DeepSeekHarness.apk（兼容 tools/build-apk.sh），
+# 其余变体带后缀，避免不同变体互相覆盖。
+if [ -n "${DSH_APK_OUT:-}" ]; then
+  APK_OUT="$DSH_APK_OUT"
+elif [ "$DSH_VARIANT" = "official" ]; then
+  APK_OUT="$P/DeepSeekHarness.apk"
+else
+  APK_OUT="$P/DeepSeekHarness-$DSH_VARIANT.apk"
+fi
 
 echo "== 0/7 组装 payload =="
 # 移动端适配注入（mobile.css，不覆盖原生 index.html，DSH 更新后也自动重新注入）
@@ -349,14 +365,65 @@ mkdir -p "$P/staging/rish"
 cp "$H/rish/rish_shizuku.dex" "$P/staging/rish/rish_shizuku.dex"
 chmod 644 "$P/staging/rish/rish_shizuku.dex"
 
+# ============================================================================
+# 变体构建（B11）：把 src/ 与 AndroidManifest.xml 生成为变体专属副本。
+#   · Java 包名 = 变体 appId（aapt 生成的 R.java 也落在该包下，故必须整体搬包）
+#   · 生成 BuildVariant.java：端口 / 外部目录 / appId 常量，供壳与 vscreen 核心引用
+#   · manifest：package / provider authorities / 版本后缀 / 显示名 一并替换
+# ⚠ 不要手改 out/ 下的产物；要改变体请改 android-app/variants.sh。
+# ============================================================================
+SRC_STAGE="$P/out/src"
+MANIFEST="$P/out/manifest/AndroidManifest.xml"
+rm -rf "$P/out/src" "$P/out/manifest"
+mkdir -p "$SRC_STAGE" "$P/out/manifest"
+find "$P/src" -name '*.java' > "$P/out/srcfiles.txt"
+while IFS= read -r f; do
+  rel="${f#$P/src/}"                       # com/deepseek/harness/MainActivity.java
+  sub="${rel#com/deepseek/harness/}"       # MainActivity.java / vscreen/Main.java
+  dest="$SRC_STAGE/$V_PKG_PATH/$sub"
+  mkdir -p "$(dirname "$dest")"
+  sed -e "s|^package com\.deepseek\.harness|package $V_APP_ID|" \
+      -e "s|^import com\.deepseek\.harness\.|import $V_APP_ID.|" \
+      "$f" > "$dest"
+done < "$P/out/srcfiles.txt"
+cat > "$SRC_STAGE/$V_PKG_PATH/BuildVariant.java" <<EOF
+package $V_APP_ID;
+
+/** 构建期生成：变体常量。真源 = android-app/variants.sh，请勿手改本文件。 */
+public final class BuildVariant {
+    public static final String VARIANT = "$DSH_VARIANT";
+    public static final String APP_ID = "$V_APP_ID";
+    public static final String EXT_DIR_NAME = "$V_EXT_DIR";
+    public static final int ENGINE_PORT = $V_PORT;
+    public static final int NOTIFY_PORT = $V_NOTIFY_PORT;
+    public static final int VS_BRIDGE_PORT = $V_VS_BRIDGE_PORT;
+    public static final int VS_CORE_PORT = $V_VS_CORE_PORT;
+    private BuildVariant() {}
+}
+EOF
+sed -e "s|package=\"com\.deepseek\.harness\"|package=\"$V_APP_ID\"|" \
+    -e "s|android:authorities=\"com\.deepseek\.harness\.|android:authorities=\"$V_APP_ID.|g" \
+    -e "s|android:versionName=\"\([^\"]*\)\"|android:versionName=\"\1$V_SUFFIX\"|" \
+    "$P/AndroidManifest.xml" > "$MANIFEST"
+if [ "$DSH_VARIANT" != "official" ]; then
+  sed -i "s|android:label=\"@string/app_name\"|android:label=\"$V_LABEL\"|" "$MANIFEST"
+  sed -i "s|android:label=\"DeepSeek Harness 屏幕助手\"|android:label=\"$V_LABEL 屏幕助手\"|" "$MANIFEST"
+fi
+# 自检：替换必须真的发生（否则会静默产出"包名没变"的包，两个变体互相覆盖）
+grep -q "package=\"$V_APP_ID\"" "$MANIFEST" || { echo "!! manifest package 未替换为 $V_APP_ID"; exit 1; }
+grep -q "authorities=\"$V_APP_ID.shizuku\"" "$MANIFEST" || { echo "!! manifest shizuku authority 未替换"; exit 1; }
+grep -q "authorities=\"$V_APP_ID.logshare\"" "$MANIFEST" || { echo "!! manifest logshare authority 未替换"; exit 1; }
+grep -q "^package $V_APP_ID;" "$SRC_STAGE/$V_PKG_PATH/MainActivity.java" || { echo "!! Java package 未替换"; exit 1; }
+echo "  变体: $DSH_VARIANT（appId=$V_APP_ID 引擎=$V_PORT 通知=$V_NOTIFY_PORT vscreen=$V_VS_BRIDGE_PORT/$V_VS_CORE_PORT 外部目录=$V_EXT_DIR）"
+
 # v1.9 虚拟屏服务 jar（VirtualScreenServer）：独立于 App classes，供 app_process 特权加载。
 # app_process -Djava.class.path 必须指向含 *.dex 的 jar（裸 dex 会报 Unsupported class loader）。
 # 单独 javac 编译 src/.../vscreen/ 源码 → d8 成 classes.dex → jar 打包 → 放 assets（App 提取后传给引擎）
 echo "== vscreen jar =="
-VSC_SRC="$P/src/com/deepseek/harness/vscreen"
+VSC_SRC="$SRC_STAGE/$V_PKG_PATH/vscreen"
 mkdir -p "$P/out/vsc-classes" "$P/out/vsc-dex"
 if ls "$VSC_SRC"/*.java >/dev/null 2>&1; then
-  if "$JAVA/javac" -source 1.8 -target 1.8 -bootclasspath "$AJ" -d "$P/out/vsc-classes" "$VSC_SRC"/*.java >"$P/out/vsc-javac.log" 2>&1; then
+  if "$JAVA/javac" -source 1.8 -target 1.8 -bootclasspath "$AJ" -d "$P/out/vsc-classes" "$VSC_SRC"/*.java "$SRC_STAGE/$V_PKG_PATH/BuildVariant.java" >"$P/out/vsc-javac.log" 2>&1; then
     ( cd "$P/out/vsc-classes" && "$D8" --release --lib "$AJ" --min-api 24 --output "$P/out/vsc-dex" $(find . -name '*.class' | sed 's|^\./||') ) 2>/tmp/vsc-d8.log || ( echo "  d8 retry"; cd "$P/out/vsc-classes" && find . -name '*.class' > "$P/out/vsc.rsp" && "$D8" --release --lib "$AJ" --min-api 24 --output "$P/out/vsc-dex" @"$P/out/vsc.rsp" 2>/tmp/vsc-d8b.log )
     if [ -f "$P/out/vsc-dex/classes.dex" ]; then
       # 用 jar 把 classes.dex 打成 jar（app_process 认含 dex 的 jar）
@@ -416,7 +483,9 @@ echo "payload.zip: $(du -sh "$P/assets/payload.zip" | cut -f1)"
 
 echo "== 1/7 资源编译 (aapt) =="
 mkdir -p "$P/out/gen" "$P/out/classes" "$P/out/dex"
-aapt package -f -m -J "$P/out/gen" -M "$P/AndroidManifest.xml" -S "$P/res" -I "$AJ"
+aapt package -f -m -J "$P/out/gen" -M "$MANIFEST" -S "$P/res" -I "$AJ"
+R_JAVA="$P/out/gen/$V_PKG_PATH/R.java"
+[ -f "$R_JAVA" ] || { echo "!! aapt 未生成 $R_JAVA（包名与 manifest 不一致？）"; find "$P/out/gen" -name 'R.java'; exit 1; }
 
 echo "== 2/7 javac =="
 # 解压 Shizuku API + provider + aidl 的 classes.jar 供编译和 dex
@@ -437,12 +506,13 @@ if [ "$CP_SEP" = ";" ] && command -v cygpath >/dev/null 2>&1; then
 fi
 # javac 必须成功：失败立即中止（曾因 javac 找不到而产出无 MainActivity 的坏 APK，安装即闪退）
 # v48：vscreen 全量源码编入 APK（App 进程内嵌 Operit server，不再单独 jar 部署）
-VSC_SRC="$P/src/com/deepseek/harness/vscreen"
+# 变体构建：源码来自 out/src（包名已改写为变体 appId），并额外编译生成的 BuildVariant.java
+VSC_SRC="$SRC_STAGE/$V_PKG_PATH/vscreen"
+JAVA_SRCS="$(find "$SRC_STAGE" -name '*.java')"
 if ! "$JAVA/javac" -source 1.8 -target 1.8 -bootclasspath "$AJ" \
   -classpath "$GEN_CP${CP_SEP}$SHIZUKU_JARS" -d "$P/out/classes" \
-  "$P/src/com/deepseek/harness/MainActivity.java" "$P/src/com/deepseek/harness/ConsoleTheme.java" "$P/src/com/deepseek/harness/EngineService.java" "$P/src/com/deepseek/harness/OverlayService.java" "$P/src/com/deepseek/harness/UsageStatsHelper.java" "$P/src/com/deepseek/harness/AccessibilityService.java" "$P/src/com/deepseek/harness/VsreenBridgeService.java" "$P/src/com/deepseek/harness/LogShareProvider.java" \
-  "$VSC_SRC"/*.java \
-  "$P/out/gen/com/deepseek/harness/R.java" \
+  $JAVA_SRCS \
+  "$R_JAVA" \
   >"$P/out/javac.log" 2>&1; then
   echo "!! javac 编译失败，日志：$P/out/javac.log"
   tail -20 "$P/out/javac.log"
@@ -470,19 +540,19 @@ fi
 echo "  classes.dex 含 MainActivity，$(stat -c%s "$P/out/dex/classes.dex") bytes"
 
 echo "== 4/7 aapt 打包 + assets =="
-aapt package -f -M "$P/AndroidManifest.xml" -S "$P/res" -I "$AJ" -A "$P/assets" -0 zip -F "$P/out/unsigned.apk"
+aapt package -f -M "$MANIFEST" -S "$P/res" -I "$AJ" -A "$P/assets" -0 zip -F "$P/out/unsigned.apk"
 ( cd "$P/out/dex" && aapt add "$P/out/unsigned.apk" classes.dex )
 
 echo "== 5/7 zipalign =="
 zipalign -f 4 "$P/out/unsigned.apk" "$P/out/aligned.apk"
 
 echo "== 6/7 签名 =="
-[ -f "$KEY" ] || { echo "!! 缺少签名密钥 $KEY（release.jks 不入仓库，请自行准备）"; exit 1; }
+[ -f "$KEY" ] || { echo "!! 缺少签名密钥 $KEY（release.jks 不入仓库，请自行准备；community 变体用 community.jks）"; exit 1; }
 "$APKSIGNER" sign --ks "$KEY" --ks-pass "pass:${KEYSTORE_PASS:?请先 export KEYSTORE_PASS=签名密码}" --ks-key-alias "${KEYSTORE_ALIAS:-dsh}" --key-pass "pass:$KEYSTORE_PASS" \
-  --out "$P/DeepSeekHarness.apk" "$P/out/aligned.apk"
+  --out "$APK_OUT" "$P/out/aligned.apk"
 
 echo "== 7/7 校验 =="
-"$APKSIGNER" verify --print-certs "$P/DeepSeekHarness.apk"
-aapt dump badging "$P/DeepSeekHarness.apk" | head -8
-ls -la "$P/DeepSeekHarness.apk"
-echo "BUILD OK -> $P/DeepSeekHarness.apk"
+"$APKSIGNER" verify --print-certs "$APK_OUT"
+aapt dump badging "$APK_OUT" | head -8
+ls -la "$APK_OUT"
+echo "BUILD OK [$DSH_VARIANT] -> $APK_OUT"
