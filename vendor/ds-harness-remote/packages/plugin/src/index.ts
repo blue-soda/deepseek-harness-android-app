@@ -38,6 +38,22 @@ interface DeepSeekAccountLike {
     callbackOrigin: string,
     loginSource: 'web' | 'desktop',
   ): Promise<{ attempt?: { authorizeUrl?: string } | null } | null>
+  signOut(client: { version: string; locale: string; timezoneOffsetSeconds: number }): Promise<unknown>
+}
+
+/**
+ * The Host's own UI language, for platform calls the Host makes for itself.
+ *
+ * The browser half reports its own language; a Host-side call has no `navigator`,
+ * so it asks the runtime, and the platform reduces the value to `zh_CN`/`en_US`.
+ * @returns a locale tag, or `en` when the runtime cannot answer.
+ */
+function hostLocale(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().locale || 'en'
+  } catch {
+    return 'en'
+  }
 }
 
 import type { FileViewerHostServiceLike } from './file-viewer-bridge.js'
@@ -246,6 +262,19 @@ async function activate(
         }, request.callbackOrigin, request.loginSource)
         const authorizeUrl = view?.attempt?.authorizeUrl
         return typeof authorizeUrl === 'string' && authorizeUrl.length > 0 ? { authorizeUrl } : {}
+      },
+      signOut: async () => {
+        // The official call carries the identity of the UI that asked. Here the
+        // Host answers for itself, so it reports its own clock and locale; the
+        // platform only uses them to attribute the request.
+        await deepseekAccount.signOut({
+          version: PLUGIN_VERSION,
+          locale: hostLocale(),
+          timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+        })
+        // The account service returns the resulting state; a signed-out state is
+        // the only outcome that means the authorization was actually released.
+        return (await deepseekAccount.getPlatformSession()) === null
       },
     }
   const runtime = new HostPluginRuntime(

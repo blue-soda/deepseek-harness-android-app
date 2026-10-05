@@ -62,6 +62,15 @@ export interface DeepSeekSessionSource {
    * @returns the authorization URL when the provider exposes one.
    */
   startSignIn(request: DeepSeekSignInRequest): Promise<{ authorizeUrl?: string }>
+  /**
+   * Sign the DSH DeepSeek account out.
+   *
+   * Signing in here borrows that account authorization, so leaving it behind
+   * would make this plugin's sign-out look ineffective: the next sign-in would
+   * silently reuse the same account.
+   * @returns whether the account was signed out.
+   */
+  signOut(): Promise<boolean>
 }
 
 /**
@@ -367,7 +376,7 @@ export class PluginControlRuntime {
     await targetApi.authorizeOwnedRole(targetIdentity, sourceCredentials.accessToken, sourceCredentials.account)
   }
 
-  private async logout(): Promise<PluginSettingsView> {
+  private async logout(): Promise<PluginSettingsView & { deepseekSignedOut: boolean }> {
     if (this.settings === undefined) {
       throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
     }
@@ -382,7 +391,20 @@ export class PluginControlRuntime {
         await new ServerCredentialStore(directory).clear()
       }))
     }
-    return this.settingsView()
+    // Signing in borrows DSH's own DeepSeek authorization, so signing out must
+    // release it as well: otherwise the next sign-in silently reuses the same
+    // account and this sign-out has no observable effect. A failure is reported
+    // through the flag rather than hidden, because the local credentials are
+    // already gone at this point and the user should know what remains.
+    let deepseekSignedOut = false
+    if (this.deepseekSession !== undefined) {
+      try {
+        deepseekSignedOut = await this.deepseekSession.signOut()
+      } catch {
+        deepseekSignedOut = false
+      }
+    }
+    return { ...(await this.settingsView()), deepseekSignedOut }
   }
 
   private async settingsView(): Promise<PluginSettingsView> {

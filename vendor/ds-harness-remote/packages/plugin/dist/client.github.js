@@ -1838,6 +1838,7 @@ Minimum version required to store current data is: ` + bestVersion + `.
     enterAccountPassword: "Enter the Server account and password.",
     associationSaved: "Associated. Restart Harness to apply.",
     signedOut: "Signed out. Restart Harness to disconnect this mode.",
+    signedOutDeepseek: "Signed out, and your DSH DeepSeek account was signed out too.",
     remoteRequestFailed: "Remote mode request failed.",
     remoteControlUnavailable: "Remote plugin control is still starting. Restart DSH if it stays unavailable.",
     switchTarget: "Switch Local / Remote Harness target",
@@ -1986,9 +1987,11 @@ Minimum version required to store current data is: ` + bestVersion + `.
     openLocalWorkspaces: "Open local workspaces",
     clientSignInHint: "Sign in to this Server to list your remote Hosts.",
     deepseekSignIn: "Sign in with DeepSeek account",
-    deepseekSignInWaiting: "Starting DeepSeek sign-in \u2014 finish it in the browser.",
+    deepseekSignInRequesting: "Requesting the DeepSeek sign-in page\u2026",
+    deepseekSignInWaiting: "Finish signing in to DeepSeek in the browser.",
     deepseekSignInOpen: "Open the sign-in page",
     deepseekSignInTimeout: "DeepSeek sign-in was not completed. Try again.",
+    deepseekAuthorizeUnavailable: "DeepSeek did not return a sign-in page. Try again.",
     changeServerUrl: "Change address",
     startSignIn: "Start sign-in",
     allowControlCurrentDevice: "Allow control of this device",
@@ -2010,6 +2013,8 @@ Minimum version required to store current data is: ` + bestVersion + `.
     noConnectedClients: "No devices are currently connected to this Host.",
     unknownDevice: "Unknown device",
     exitRemoteAccount: "Sign out",
+    cancel: "Cancel",
+    signOutImpact: "Signing out disconnects this plugin and also signs DSH out of your DeepSeek account.",
     wechatLogin: "WeChat QR",
     githubLogin: "GitHub QR",
     zhihuLogin: "Zhihu QR",
@@ -2082,6 +2087,7 @@ Minimum version required to store current data is: ` + bestVersion + `.
     enterAccountPassword: "\u8BF7\u8F93\u5165 Server \u8D26\u53F7\u548C\u5BC6\u7801\u3002",
     associationSaved: "\u5173\u8054\u6210\u529F\u3002\u91CD\u542F Harness \u540E\u751F\u6548\u3002",
     signedOut: "\u5DF2\u9000\u51FA\u6388\u6743\u3002\u91CD\u542F Harness \u540E\u5C06\u65AD\u5F00\u6B64\u6A21\u5F0F\u3002",
+    signedOutDeepseek: "\u5DF2\u9000\u51FA\u6388\u6743\uFF0CDSH \u7684 DeepSeek \u8D26\u53F7\u4E5F\u5DF2\u4E00\u5E76\u9000\u51FA\u767B\u5F55\u3002",
     remoteRequestFailed: "\u8FDC\u7A0B\u6A21\u5F0F\u8BF7\u6C42\u5931\u8D25\u3002",
     remoteControlUnavailable: "Remote \u63D2\u4EF6\u63A7\u5236\u901A\u9053\u4ECD\u5728\u542F\u52A8\uFF1B\u5982\u679C\u4E00\u76F4\u4E0D\u53EF\u7528\uFF0C\u8BF7\u91CD\u542F DSH\u3002",
     switchTarget: "\u5207\u6362\u672C\u5730\u6216\u8FDC\u7A0B Harness",
@@ -2230,9 +2236,11 @@ Minimum version required to store current data is: ` + bestVersion + `.
     openLocalWorkspaces: "\u6253\u5F00\u672C\u5730\u5DE5\u4F5C\u533A",
     clientSignInHint: "\u767B\u5F55 Server \u540E\u5373\u53EF\u67E5\u770B\u81EA\u5DF1\u7684\u8FDC\u7AEF\u4E3B\u673A\u3002",
     deepseekSignIn: "\u4F7F\u7528 DeepSeek \u8D26\u53F7\u767B\u5F55",
-    deepseekSignInWaiting: "\u6B63\u5728\u53D1\u8D77 DeepSeek \u767B\u5F55\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u4E2D\u5B8C\u6210\u3002",
+    deepseekSignInRequesting: "\u6B63\u5728\u83B7\u53D6 DeepSeek \u767B\u5F55\u9875\u2026",
+    deepseekSignInWaiting: "\u8BF7\u5728\u6D4F\u89C8\u5668\u4E2D\u5B8C\u6210 DeepSeek \u767B\u5F55\u3002",
     deepseekSignInOpen: "\u624B\u52A8\u6253\u5F00\u767B\u5F55\u9875",
     deepseekSignInTimeout: "DeepSeek \u767B\u5F55\u672A\u5B8C\u6210\uFF0C\u8BF7\u91CD\u8BD5\u3002",
+    deepseekAuthorizeUnavailable: "\u672A\u80FD\u83B7\u53D6 DeepSeek \u767B\u5F55\u9875\uFF0C\u8BF7\u91CD\u8BD5\u3002",
     changeServerUrl: "\u4FEE\u6539\u5730\u5740",
     startSignIn: "\u5F00\u59CB\u767B\u5F55",
     allowControlCurrentDevice: "\u5141\u8BB8\u63A7\u5236\u5F53\u524D\u8BBE\u5907",
@@ -2254,6 +2262,8 @@ Minimum version required to store current data is: ` + bestVersion + `.
     noConnectedClients: "\u76EE\u524D\u6CA1\u6709\u8BBE\u5907\u8FDE\u63A5\u5230\u8FD9\u53F0\u4E3B\u673A\u3002",
     unknownDevice: "\u672A\u77E5\u8BBE\u5907",
     exitRemoteAccount: "\u9000\u51FA\u8D26\u53F7",
+    cancel: "\u53D6\u6D88",
+    signOutImpact: "\u9000\u51FA\u540E\u4F1A\u65AD\u5F00\u672C\u63D2\u4EF6\u7684\u8FDE\u63A5\uFF0C\u5E76\u4E14\u4F1A\u4E00\u5E76\u9000\u51FA DSH \u7684 DeepSeek \u8D26\u53F7\u767B\u5F55\u3002",
     wechatLogin: "\u5FAE\u4FE1\u626B\u7801",
     githubLogin: "GitHub \u626B\u7801",
     zhihuLogin: "\u77E5\u4E4E\u626B\u7801",
@@ -2498,7 +2508,7 @@ Minimum version required to store current data is: ` + bestVersion + `.
           setBusy(!0), setError(void 0), setNotice(void 0);
           try {
             let view = await props.control("settings.logout");
-            applyView(view), setRegistrationCode(""), setNotice({ key: "signedOut" });
+            applyView(view), setRegistrationCode(""), setNotice({ key: view.deepseekSignedOut === !0 ? "signedOutDeepseek" : "signedOut" });
           } catch (reason) {
             setError(messageOf(reason));
           } finally {
@@ -2918,7 +2928,7 @@ Minimum version required to store current data is: ` + bestVersion + `.
       function RemoteWorkspaceAction(props) {
         let { t } = props, [open, setOpen] = React.useState(!1), [status, setStatus] = React.useState(void 0), [devices, setDevices] = React.useState([]), [selectedHost, setSelectedHost] = React.useState(void 0), [connectingHost, setConnectingHost] = React.useState(void 0), [workspaces, setWorkspaces] = React.useState([]), [codexWorkspaces, setCodexWorkspaces] = React.useState([]), [workspaceBackend, setWorkspaceBackend] = React.useState("harness"), [codexWorkspaceId, setCodexWorkspaceId] = React.useState(void 0), [directory, setDirectory] = React.useState(void 0), [path, setPath] = React.useState(""), [addingWorkspace, setAddingWorkspace] = React.useState(!1), [showAllWorkspaces, setShowAllWorkspaces] = React.useState(!1), [showAllCodexWorkspaces, setShowAllCodexWorkspaces] = React.useState(!1), [devicesOpen, setDevicesOpen] = React.useState(!1), workspaceListId = "dsh-remote-workspace-list", codexWorkspaceHeadingId = "dsh-remote-codex-workspace-heading", codexWorkspaceListId = "dsh-remote-codex-workspace-list", [busy, setBusy] = React.useState(!1), [needsAuthorization, setNeedsAuthorization] = React.useState(!1), [authorizationResolved, setAuthorizationResolved] = React.useState(!1), [email, setEmail] = React.useState(""), [password, setPassword] = React.useState(""), [loginServerUrl, setLoginServerUrl] = React.useState(DEFAULT_REMOTE_SERVER_URL), [editingServerUrl, setEditingServerUrl] = React.useState(!1), [awaitingDeepSeek, setAwaitingDeepSeek] = React.useState(!1), [pendingAuthorizeUrl, setPendingAuthorizeUrl] = React.useState(void 0), [loginMethod, setLoginMethod] = React.useState(
           isEnabledQrProvider(props.preferredQrProvider) ? props.preferredQrProvider : defaultQrProvider
-        ), [loginMethodManuallySelected, setLoginMethodManuallySelected] = React.useState(!1), [qrSession, setQrSession] = React.useState(void 0), [qrImage, setQrImage] = React.useState(void 0), [qrExpired, setQrExpired] = React.useState(!1), [progress, setProgress] = React.useState(void 0), progressRun = React.useRef(0), qrFlowRun = React.useRef(0), [notice, setNotice] = React.useState(void 0), [error, setError] = React.useState(void 0);
+        ), [loginMethodManuallySelected, setLoginMethodManuallySelected] = React.useState(!1), [qrSession, setQrSession] = React.useState(void 0), [qrImage, setQrImage] = React.useState(void 0), [qrExpired, setQrExpired] = React.useState(!1), [progress, setProgress] = React.useState(void 0), progressRun = React.useRef(0), qrFlowRun = React.useRef(0), [notice, setNotice] = React.useState(void 0), [confirmingSignOut, setConfirmingSignOut] = React.useState(!1), [error, setError] = React.useState(void 0);
         React.useEffect(() => {
           open || setDevicesOpen(!1);
         }, [open]), React.useEffect(() => {
@@ -3123,7 +3133,13 @@ Minimum version required to store current data is: ` + bestVersion + `.
           try {
             let state = await requestDeepSeekSignIn();
             if (state.pending) {
-              state.authorizeUrl !== void 0 ? (setPendingAuthorizeUrl(state.authorizeUrl), tab === null || tab.closed ? window.open(state.authorizeUrl, "_blank", "noopener,noreferrer") : tab.location.replace(state.authorizeUrl)) : tab?.close();
+              for (let wait = 0; wait < 30 && state.pending && state.authorizeUrl === void 0; wait++)
+                await new Promise((resolve) => {
+                  setTimeout(resolve, 1e3);
+                }), state = await requestDeepSeekSignIn();
+              if (state.authorizeUrl === void 0)
+                throw tab?.close(), new Error(t("deepseekAuthorizeUnavailable"));
+              setPendingAuthorizeUrl(state.authorizeUrl), tab === null || tab.closed ? window.open(state.authorizeUrl, "_blank", "noopener,noreferrer") : tab.location.replace(state.authorizeUrl);
               for (let poll = 0; poll < 40 && state.pending; poll++)
                 await new Promise((resolve) => {
                   setTimeout(resolve, 3e3);
@@ -3131,7 +3147,7 @@ Minimum version required to store current data is: ` + bestVersion + `.
               if (state.pending) throw new Error(t("deepseekSignInTimeout"));
             } else
               tab?.close();
-            setDevices(await props.control("devices")), setStatus(await props.control("status")), setNeedsAuthorization(!1), setAuthorizationResolved(!0), setPassword("");
+            setDevices(await props.control("devices")), setStatus(await props.control("status")), setNeedsAuthorization(!1), setAuthorizationResolved(!0), setPassword(""), setNotice(void 0);
           } catch (reason) {
             setError(messageOf(reason));
           } finally {
@@ -3154,13 +3170,13 @@ Minimum version required to store current data is: ` + bestVersion + `.
             setBusy(!1);
           }
         }, logoutRemote = async () => {
-          setBusy(!0), setError(void 0);
+          setBusy(!0), setError(void 0), setNotice(void 0);
           try {
             await props.control("settings.logout"), setDevices([]), setNeedsAuthorization(!0), setQrSession(void 0), setQrImage(void 0), setQrExpired(!1), setStatus(await props.control("status"));
           } catch (reason) {
             setError(messageOf(reason));
           } finally {
-            setBusy(!1);
+            setConfirmingSignOut(!1), setBusy(!1);
           }
         }, openWorkspace = async (selection) => {
           let targetBackend = selection?.backend ?? workspaceBackend, targetPath = (selection?.path ?? path).trim(), targetCodexWorkspaceId = selection?.backend === "codex" ? selection.workspaceId : selection === void 0 ? codexWorkspaceId : void 0, createWorkspace = selection === void 0 && addingWorkspace;
@@ -3368,7 +3384,7 @@ Minimum version required to store current data is: ` + bestVersion + `.
                     awaitingDeepSeek ? React.createElement(
                       "p",
                       { className: "dshRemoteServiceAddress" },
-                      t("deepseekSignInWaiting"),
+                      t(pendingAuthorizeUrl === void 0 ? "deepseekSignInRequesting" : "deepseekSignInWaiting"),
                       pendingAuthorizeUrl === void 0 ? null : React.createElement("a", {
                         href: pendingAuthorizeUrl,
                         target: "_blank",
@@ -3436,17 +3452,40 @@ Minimum version required to store current data is: ` + bestVersion + `.
                   selectedHost === void 0 ? connectingHost === void 0 ? React.createElement(
                     React.Fragment,
                     null,
-                    React.createElement("p", { className: "dshRemoteHint" }, t("selectHostHint")),
+                    React.createElement(
+                      "p",
+                      { className: "dshRemoteHint" },
+                      t(confirmingSignOut ? "signOutImpact" : "selectHostHint")
+                    ),
                     React.createElement(
                       "footer",
                       { className: "dshRemoteAccountFooter" },
-                      React.createElement("span", null, status?.host?.account ?? t("account")),
-                      React.createElement("button", {
-                        type: "button",
-                        className: "dshRemoteAccountExit",
-                        disabled: busy,
-                        onClick: () => void logoutRemote()
-                      }, t("exitRemoteAccount"))
+                      confirmingSignOut ? React.createElement(
+                        React.Fragment,
+                        null,
+                        React.createElement("button", {
+                          type: "button",
+                          className: "dshRemoteDiscard",
+                          disabled: busy,
+                          onClick: () => setConfirmingSignOut(!1)
+                        }, t("cancel")),
+                        React.createElement("button", {
+                          type: "button",
+                          className: "dshRemoteAccountExit",
+                          disabled: busy,
+                          onClick: () => void logoutRemote()
+                        }, t("exitRemoteAccount"))
+                      ) : React.createElement(
+                        React.Fragment,
+                        null,
+                        React.createElement("span", null, status?.host?.account ?? t("account")),
+                        React.createElement("button", {
+                          type: "button",
+                          className: "dshRemoteAccountExit",
+                          disabled: busy,
+                          onClick: () => setConfirmingSignOut(!0)
+                        }, t("exitRemoteAccount"))
+                      )
                     )
                   ) : null : React.createElement(
                     "section",

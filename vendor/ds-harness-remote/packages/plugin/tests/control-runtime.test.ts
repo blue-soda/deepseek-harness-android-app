@@ -351,6 +351,62 @@ describe('PluginControlRuntime local authorization', () => {
   })
 })
 
+describe('PluginControlRuntime sign out', () => {
+  /**
+   * Signing in borrows DSH's own DeepSeek authorization. Leaving it behind would
+   * make this sign-out invisible: the next sign-in would silently reuse the same
+   * account, which reads as "sign out did nothing".
+   */
+  it('releases the borrowed DeepSeek authorization and says so', async () => {
+    const directory = await temporaryDirectory()
+    const settings = settingsBinding({})
+    const signOut = vi.fn(async () => true)
+    const handler = register(new PluginControlRuntime(
+      resolveConfig(settings.get()), directory, settings, undefined, undefined,
+      { read: async () => undefined, startSignIn: async () => ({}), signOut },
+    ))
+
+    await expect(handler('settings.logout', {}, signal())).resolves.toMatchObject({
+      ok: true,
+      value: { deepseekSignedOut: true },
+    })
+    expect(signOut).toHaveBeenCalledOnce()
+  })
+
+  it('reports a DeepSeek sign-out that did not take effect', async () => {
+    const directory = await temporaryDirectory()
+    const settings = settingsBinding({})
+    const handler = register(new PluginControlRuntime(
+      resolveConfig(settings.get()), directory, settings, undefined, undefined,
+      { read: async () => undefined, startSignIn: async () => ({}), signOut: async () => false },
+    ))
+
+    // The caller must be able to tell the user that the account is still signed
+    // in, rather than claiming a sign-out that did not happen.
+    await expect(handler('settings.logout', {}, signal())).resolves.toMatchObject({
+      ok: true,
+      value: { deepseekSignedOut: false },
+    })
+  })
+
+  it('survives a DeepSeek sign-out that throws', async () => {
+    const directory = await temporaryDirectory()
+    const settings = settingsBinding({})
+    const signOut = vi.fn(async () => { throw new Error('platform unavailable') })
+    const handler = register(new PluginControlRuntime(
+      resolveConfig(settings.get()), directory, settings, undefined, undefined,
+      { read: async () => undefined, startSignIn: async () => ({}), signOut },
+    ))
+
+    // A platform failure must not turn a completed local sign-out into an error.
+    await expect(handler('settings.logout', {}, signal())).resolves.toMatchObject({
+      ok: true,
+      value: { deepseekSignedOut: false },
+    })
+    expect(signOut).toHaveBeenCalledOnce()
+  })
+})
+
 function register(runtime: PluginControlRuntime) {
   let handler: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<RpcResult<unknown>>) | undefined
   let channel: string | undefined

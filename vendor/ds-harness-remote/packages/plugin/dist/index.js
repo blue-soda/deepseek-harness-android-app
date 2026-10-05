@@ -21868,7 +21868,15 @@ var PluginControlRuntime = class {
         await new ServerCredentialStore(directory).clear();
       }));
     }
-    return this.settingsView();
+    let deepseekSignedOut = false;
+    if (this.deepseekSession !== void 0) {
+      try {
+        deepseekSignedOut = await this.deepseekSession.signOut();
+      } catch {
+        deepseekSignedOut = false;
+      }
+    }
+    return { ...await this.settingsView(), deepseekSignedOut };
   }
   async settingsView() {
     const config = this.settings === void 0 ? editableConfig(this.config) : editableConfig(resolveConfig(this.settings.get()));
@@ -28184,6 +28192,13 @@ function decodeBase64(value) {
 }
 
 // src/index.ts
+function hostLocale() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().locale || "en";
+  } catch {
+    return "en";
+  }
+}
 var name = "ds-harness-remote";
 var legacyLoaderModuleNames = /* @__PURE__ */ new Set(["dsh-remote", "@dsh-remote/plugin"]);
 var pluginSettingsNamespace = "ds-harness-remote";
@@ -28290,6 +28305,14 @@ async function activate(ctx, readConfig, entryId, tuiBinding) {
       }, request.callbackOrigin, request.loginSource);
       const authorizeUrl = view?.attempt?.authorizeUrl;
       return typeof authorizeUrl === "string" && authorizeUrl.length > 0 ? { authorizeUrl } : {};
+    },
+    signOut: async () => {
+      await deepseekAccount.signOut({
+        version: PLUGIN_VERSION,
+        locale: hostLocale(),
+        timezoneOffsetSeconds: -(/* @__PURE__ */ new Date()).getTimezoneOffset() * 60
+      });
+      return await deepseekAccount.getPlatformSession() === null;
     }
   };
   const runtime = new HostPluginRuntime(
