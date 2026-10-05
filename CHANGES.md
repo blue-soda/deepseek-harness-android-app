@@ -1,3 +1,67 @@
+## v1.18（未发布 · 变体构建 + 社区版 · 2026-10-05）
+
+> **一句话**：**一份源码构建全部变体**（official / lite / compat / community），端口与外部目录
+> **按变体彻底错开**，并新增**公开密钥签名的社区版**——四个变体可在同一台设备上**同时安装、同时运行**。
+> versionCode 仍 **52**；内核不变（DSH 0.2.0-rc.2）。
+
+### 一、变体表成为单一真源（B11）
+
+- 新增 **`android-app/variants.sh`**：每个变体声明 appId / 引擎端口 / 外部目录 / 显示名 / 版本后缀 / 默认密钥。
+- `build.sh` 不再要求"手改包名"：构建期把 `src/` 复制到 `out/src/`，按变体改写 `package`、`import` 并整体搬包；
+  生成 `<变体包>/BuildVariant.java`；改写 manifest 的 `package` / provider `authorities`（shizuku、logshare）/
+  版本后缀 / 显示名，并**自检替换确实发生**（否则直接退出，避免静默产出"包名没变"的包）。
+- 产物命名：official 保持 `DeepSeekHarness.apk`，其余 `DeepSeekHarness-<variant>.apk`；
+  `tools/build-apk.sh` 新增 `--variant official|lite|compat|community`。
+
+### 二、跨变体硬编码清零（B12）
+
+| 原硬编码 | 现状 |
+|---|---|
+| 引擎端口 `contains("beta")?3082:contains("compat")?3084:3080` | `BuildVariant.ENGINE_PORT`（official 3080 / lite 3082 / compat 3084 / community 3086）；`AccessibilityService`（+101 → 3181/3183/3185/3187）与 `OverlayService.defaultEnginePort` 同步改掉 |
+| 外部目录名（`MainActivity.pkgRoot` + `:2208`/`:3867` + `AccessibilityService` + `VsreenBridgeService.extRoot` 共 5 处） | 统一 `BuildVariant.EXT_DIR_NAME` |
+| 虚拟屏桥/核心 8999/8998（桥、OverlayService 预览轮询、插件、vscreen 核心默认值） | 按变体错开：official 8999/8998、lite 9009/9008、compat 9019/9018、community 9029/9028 |
+| `com.deepseek.harness.vscreen.Main`（桥的 killOld、app_process 类名、插件兜底类名） | `BuildVariant.APP_ID + ".vscreen.Main"` |
+| `android_screenshot` 默认目录写死 `/sdcard/DeepSeekHarness/screenshots/` | 走壳注入的 `DSH_EXT_DIR`（插件读 env，旧壳回退正式版目录） |
+| 插件 `RISH_APPLICATION_ID` 兜底写死 | 优先 `SHIZUKU_APP_ID`，其次 `DSH_APP_ID`，最后才回退 |
+| 更新检查对所有变体都提示"下载官方版" | 非 official 变体明确提示"签名不同，无法覆盖安装本变体" |
+| `OverlayService` 的 `ACTION_SHOW` 常量 | 随变体包名（避免多变体悬浮窗互相唤起） |
+
+其中还修掉一条**死路径**：`MainActivity.ensureVscreenServer()` 原来用 `…vscreen.VirtualScreenServer`
+作为 app_process 主类，而真实类名是 `…vscreen.Main`（该路径从来起不来），现已随变体修正。
+
+### 三、社区版（D2）
+
+- 新增**公开**的 `android-app/community.jks`（别名 `community`，口令 `dsh-community`，SHA-256 `18:C9:7C:04:…:A8:E3`）：
+  任何人可用它构建 `com.deepseek.harness.community`，与官方三个变体共存；**正式发布物仍由私有 `release.jks` 签发**。
+- `tools/build-apk.sh --variant community` 自动选用该密钥；`--variant` 未指定时行为与历史一致。
+
+### 四、模拟器实测（Pixel_10_Pro / android-36.1 google_apis x86_64 + ndk_translation）
+
+同时安装 official（本地调试密钥）与 community（社区密钥）两个包并各自走完权限向导、启动引擎：
+
+```
+LISTEN 127.0.0.1:3080 (official 引擎)      LISTEN 127.0.0.1:3086 (community 引擎)
+LISTEN 127.0.0.1:3081 (official 通知)      LISTEN 127.0.0.1:3087 (community 通知)
+LISTEN 127.0.0.1:8999 (official 虚拟屏桥)  LISTEN 127.0.0.1:9029 (community 虚拟屏桥)
+/sdcard/DeepSeekHarness                    /sdcard/DeepSeekHarnessCommunity
+```
+
+- 两个 node 引擎**同时运行**（各自私有 payload）；`DSH_APP_ID/DSH_EXT_DIR/DSH_VS_*` env 逐项核对无误。
+- 社区版核心以 root 手动拉起，日志 `server starting … port=9028 dir=/sdcard/DeepSeekHarnessCommunity`；
+  官方核心同法验证为 `port=8998 dir=/sdcard/DeepSeekHarness`；两者**可同时监听**（历史上 8999/8998 是二选一）。
+- 应用显示名分别为 `DeepSeek Harness` / `DeepSeek Harness 社区版`；两个 provider authority 不同，
+  因此第二个包能正常安装（同 authority 会导致 `INSTALL_FAILED_CONFLICTING_PROVIDER`）。
+
+### 五、未完成 / 已知限制
+
+- **compat 变体尚未并入本机制**：`android-app/compat/` 仍是一套独立差异文件（GeckoView），
+  其 `build.sh` / `MainActivity.java` 未同步 BuildVariant 与变体 staging，其虚拟屏端口仍为 8999/8998
+  （与 official 冲突）。需在有 GeckoView AAR 的环境下同步，详见 TODO(B13)。
+- 变体机制目前只覆盖 **Java 壳 + manifest + 插件 env**；payload 内部的 `config/cordis.patch.yml`
+  与 `mobile-patch` 各变体一致（无差异需求）。
+
+---
+
 ## v1.17.3（正式版 + Lite 共存版 + 兼容版 · 2026-10-03）
 
 > ⚠️ **这是 v1.17.1 之后的第一次发布**，内容覆盖 **v1.17.2 + v1.17.3** 两级（中间那两级从未单独发布过）。

@@ -134,6 +134,12 @@
 - **`DeepSeekHarness-lite-v1.17.3.apk`（Lite 共存版）**：包名 `com.deepseek.harness.beta`（端口 3082），与正式版完全独立、可同时安装；数据独立在 `/sdcard/DeepSeekHarnessLite/`，API Key 需单独填
 - **`DeepSeekHarness-compat-v1.17.3.apk`（兼容版）**：包名 `com.deepseek.harness.compat`（端口 3084），**内置 GeckoView（不依赖系统 WebView）**，老设备可用；体积约 250MB、要求 **Android 8.0（API 26）**及以上
 
+> 🧩 **社区版（自建）**：v1.18 起仓库提供**公开的社区密钥** `android-app/community.jks` 与变体机制，
+> 任何人都能构建出包名 `com.deepseek.harness.community`（端口 3086、数据在 `/sdcard/DeepSeekHarnessCommunity/`）的
+> **可共存**社区版，不需要维护者私钥：`bash tools/build-apk.sh --variant community`。
+> 四个变体的端口与外部目录**彻底错开**（引擎 3080/3082/3084/3086，虚拟屏桥 8999/9009/9019/9029），
+> 可同时安装同时运行。详见 [android-app/README.md](android-app/README.md)。
+
 > ⚠️ **从任何旧版本升级，请直接装 v1.17.3**（这是 v1.17.1 之后的第一次发布，内容覆盖 v1.17.2 + v1.17.3）：
 > ① **兼容版内嵌 GeckoView**，老设备不再白屏；② **控制台「一切皆自定义」**（主题包：外观含背景图 / 布局含整页控件树 / 文案 / 自定义按钮与动作）；
 > ③ **混装树自愈** —— 升级后引擎起不来可以一键「重新解压」修好，不必再清数据；④ 修掉两个真机问题：多模态全挂（`fsync EINVAL`）与展开侧边栏后正文纯白；

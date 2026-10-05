@@ -89,7 +89,9 @@ GitHub 的 release 直链以 `github.com` 开头。**部分地区 `github.com` �
 ## 3. 常用命令
 
 ```bash
-bash tools/build-apk.sh                      # 全自动（推荐）
+bash tools/build-apk.sh                      # 全自动（推荐，= official 变体）
+bash tools/build-apk.sh --variant community  # 社区版：公开密钥签名，可与官方三个变体共存
+bash tools/build-apk.sh --variant lite       # Lite 共存版（包名 .beta / 端口 3082）
 bash tools/build-apk.sh --clean              # 清缓存重建（保留签名密钥）
 bash tools/build-apk.sh --apk ~/x.apk        # 用本地 APK，不下载
 bash tools/build-apk.sh --upstream v1.17.4 --md5 <hex>   # 换上游版本
@@ -100,6 +102,13 @@ bash tools/build-apk.sh --smoke              # 构建后若连着设备，装上
 bash tools/build-apk.sh --emulator           # 额外适配 x86_64 模拟器（见第 6 节）
 bash tools/build-apk.sh --help
 ```
+
+> **变体（v1.18）**：包名 / 端口 / 外部目录 / 显示名 / 默认密钥全部由 `android-app/variants.sh`
+> 这一份真源决定，构建期生成 `BuildVariant.java` 并改写 manifest（含 provider authorities），
+> 不需要手改源码。四个变体各自一段独立端口与独立 `/sdcard` 目录，**可同时安装同时运行**。
+> 详见 [android-app/README.md](android-app/README.md) 的「变体构建」一节。
+> `community` 变体使用仓库内**公开**的 `android-app/community.jks`（口令 `dsh-community`）；
+> 官方三变体仍用私有 `release.jks`。
 
 ---
 
