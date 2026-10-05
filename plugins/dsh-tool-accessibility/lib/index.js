@@ -507,7 +507,8 @@ function apply(ctx) {
           // 跨包必失败）。服务端已改为写入共享目录；这里保留可操作的提示便于在旧包上定位。
           const hint = code === "EACCES"
             ? "\n该截图位于另一个安装包的私有目录（/data/user/0/<包名>/...），跨包按 UID 隔离无法读取。" +
-              "请确认无障碍服务与引擎是同一个包。\n临时替代：android_screenshot(save_path=\"/sdcard/DeepSeekHarness/screenshots/x.png\") + read_image。"
+              "请确认无障碍服务与引擎是同一个包。\n临时替代：android_screenshot(save_path=\"" +
+              (process.env.DSH_EXT_DIR || "/sdcard/DeepSeekHarness") + "/screenshots/x.png\") + read_image。"
             : "";
           return { ok: false, error: "读取截图失败: " + (code ? code + " " : "") + String(e && e.message || e) + hint };
         }

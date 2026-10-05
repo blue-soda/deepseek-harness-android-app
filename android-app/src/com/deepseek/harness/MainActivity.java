@@ -930,8 +930,15 @@ public class MainActivity extends Activity {
                         ui.post(new Runnable() {
                             @Override public void run() {
                                 try {
+                                    // v1.18（B12）：变体感知——官方 Release 的签名与本变体不同，不能覆盖安装
+                                    // （社区版/自签包尤其如此），文案必须说清，别让用户白下载。
+                                    String hint = "official".equals(BuildVariant.VARIANT)
+                                            ? "前往 GitHub Releases 下载更新（正式版 / Lite 共存版可选）。"
+                                            : "注意：当前是「" + BuildVariant.VARIANT + "」变体（" + BuildVariant.APP_ID
+                                              + "），签名与官方包不同，官方 APK 无法覆盖安装本变体；\n"
+                                              + "请用同变体源码自行构建，或先「导出全部数据」再卸载换装官方版。";
                                     conDialog("发现新版本 " + ftag,
-                                            "当前版本 " + fLocal + "，最新 " + ftag + "。\n\n前往 GitHub Releases 下载更新（正式版 / Lite 共存版可选）。",
+                                            "当前版本 " + fLocal + "，最新 " + ftag + "。\n\n" + hint,
                                             "去下载", new Runnable() { @Override public void run() {
                                                 try {
                                                     startActivity(new Intent(Intent.ACTION_VIEW,
@@ -1811,11 +1818,14 @@ public class MainActivity extends Activity {
             if (ch != null) { ch.waitFor(); }
             // 3) 启动 server（长驻；保存引用防 GC）—— Operit 同款启动方式：
             //    CLASSPATH=... app_process / <Main>（cmd-dir 用 /，不用 /system/bin；Operit 实测在这类设备可用）
+            // v1.18（B12）：主类与端口随变体（原为硬编码 "…vscreen.VirtualScreenServer"，与
+            // vscreen/Main.java 的真实类名 com.deepseek.harness.vscreen.Main 不符，是一条死路径）。
             String[] env = new String[]{ "CLASSPATH=/data/local/tmp/vscreen_shizuku.jar" };
             vscreenProc = svc.newProcess(new String[]{
                     "/system/bin/app_process",
                     "/",
-                    "com.deepseek.harness.vscreen.VirtualScreenServer"
+                    BuildVariant.APP_ID + ".vscreen.Main",
+                    "--port", String.valueOf(BuildVariant.VS_CORE_PORT)
             }, env, null);
             Log.i(TAG, "vscreen server start issued via Shizuku newProcess");
         } catch (Throwable t) {
@@ -1826,7 +1836,8 @@ public class MainActivity extends Activity {
     private boolean vscreenAlive() {
         try {
             java.net.Socket s = new java.net.Socket();
-            s.connect(new java.net.InetSocketAddress("127.0.0.1", 8999), 500);
+            // v1.18（B12）：桥端口随变体（official 8999 / lite 9009 / compat 9019 / community 9029）
+            s.connect(new java.net.InetSocketAddress("127.0.0.1", BuildVariant.VS_BRIDGE_PORT), 500);
             s.close();
             return true;
         } catch (Throwable t) { return false; }
@@ -1902,9 +1913,8 @@ public class MainActivity extends Activity {
     }
 
     private String pkgRoot() {
-        String p = getPackageName();
-        return p.contains("beta") ? "DeepSeekHarnessLite"
-                : p.contains("compat") ? "DeepSeekHarnessCompat" : "DeepSeekHarness";
+        // v1.18（B11/B12）：外部目录名随变体（BuildVariant），不再 contains("beta")/("compat") 硬编码。
+        return BuildVariant.EXT_DIR_NAME;
     }
 
     /**
@@ -2205,8 +2215,7 @@ public class MainActivity extends Activity {
     /** v1.7：启动失败时把引擎日志尾部与状态写进外部目录，用户无需 adb 即可反馈排查。 */
     private void writeStartupDiag(String errorMsg) {
         try {
-            String sub = getPackageName().contains("beta") ? "DeepSeekHarnessLite"
-                    : getPackageName().contains("compat") ? "DeepSeekHarnessCompat" : "DeepSeekHarness";
+            String sub = pkgRoot();
             File dir = new File(android.os.Environment.getExternalStorageDirectory(), sub);
             if (!dir.exists()) dir.mkdirs();
             StringBuilder sb = new StringBuilder();
@@ -2356,11 +2365,10 @@ public class MainActivity extends Activity {
      * 正式版 3080 / Lite 3082 / 兼容版 3084。通知端口 = 引擎端口 + 1，无障碍端口 = +101。
      * 否则三套 App 同时安装会抢同一个 3080（表现为 EADDRINUSE、工具连到别的版本的服务）。
      */
+    // v1.18（B11/B12）：端口不再按包名 contains() 猜，统一由构建期生成的 BuildVariant 提供
+    // （真源 android-app/variants.sh）。每个变体一段独立端口，互不重叠。
     private static int defaultEnginePort(Context ctx) {
-        String p = ctx != null ? ctx.getPackageName() : "";
-        if (p.contains("beta")) return 3082;
-        if (p.contains("compat")) return 3084;
-        return 3080;
+        return BuildVariant.ENGINE_PORT;
     }
 
     private int notifyPort() { return enginePort + 1; }
@@ -3856,6 +3864,19 @@ public class MainActivity extends Activity {
         // AI 工作区（可选）：用户选择的外部共享存储目录，作为 bash/文件工具的工作根目录
         String ws = workspacePath();
         if (ws != null && !ws.isEmpty()) env.put("DSH_WORKSPACE", ws);
+        // v1.18（B12）：把变体事实注入引擎，供插件使用（插件不再硬编码包名/端口/截图目录）。
+        //   DSH_APP_ID          —— 本变体包名（rish 兜底 appId、vscreen 核心类名前缀）
+        //   DSH_ENGINE_PORT     —— 引擎端口
+        //   DSH_EXT_DIR         —— 外部目录绝对路径（/sdcard/<变体目录>）
+        //   DSH_VS_BRIDGE/CORE  —— 虚拟屏桥/核心端口（每个变体一段，互不重叠）
+        //   DSH_EXT_ROOT_NAME   —— 目录名（历史字段，供需要拼路径的插件用）
+        env.put("DSH_APP_ID", BuildVariant.APP_ID);
+        env.put("DSH_ENGINE_PORT", String.valueOf(enginePort));
+        File extRootDir = new File(android.os.Environment.getExternalStorageDirectory(), pkgRoot());
+        env.put("DSH_EXT_DIR", extRootDir.getAbsolutePath());
+        env.put("DSH_EXT_ROOT_NAME", pkgRoot());
+        env.put("DSH_VS_BRIDGE_PORT", String.valueOf(BuildVariant.VS_BRIDGE_PORT));
+        env.put("DSH_VS_CORE_PORT", String.valueOf(BuildVariant.VS_CORE_PORT));
         pb.redirectErrorStream(true);
 
         final Process proc = pb.start();
@@ -3864,9 +3885,7 @@ public class MainActivity extends Activity {
         // v1.7.1：同时镜像一份引擎日志到外部目录（无需 root/adb 可读），
         // 覆盖「node 反复崩溃但 waitForServer 未抛异常」时不产生 startup-diag.txt 的场景。
         final File extLogFile = new File(android.os.Environment.getExternalStorageDirectory(),
-                (getPackageName().contains("beta") ? "DeepSeekHarnessLite"
-                        : getPackageName().contains("compat") ? "DeepSeekHarnessCompat" : "DeepSeekHarness")
-                        + "/dsh-web.log");
+                pkgRoot() + "/dsh-web.log");
         new Thread(new Runnable() {
             @Override public void run() {
                 FileOutputStream fos = null;

@@ -58,12 +58,12 @@ public class VsreenBridgeService extends Service {
 
     private static final String TAG = "VsreenBridge";
 
-    /** 插件使用的对外端口（本服务的代理端口）。 */
-    private static final int PORT = 8999;
-    /** 特权服务端端口。 */
-    private static final int CORE_PORT = 8998;
-    /** 特权服务端主类。 */
-    private static final String CORE_MAIN = "com.deepseek.harness.vscreen.Main";
+    /** 插件使用的对外端口（本服务的代理端口）。v1.18（B12）：随变体错开，见 android-app/variants.sh。 */
+    private static final int PORT = BuildVariant.VS_BRIDGE_PORT;
+    /** 特权服务端端口。v1.18（B12）：随变体错开（official 8998 / lite 9008 / compat 9018 / community 9028）。 */
+    private static final int CORE_PORT = BuildVariant.VS_CORE_PORT;
+    /** 特权服务端主类。v1.18（B12）：随变体包名。 */
+    private static final String CORE_MAIN = BuildVariant.APP_ID + ".vscreen.Main";
     /**
      * issue #36：小鲸鱼入口自动建屏时用的默认尺寸（竖屏 9:16，与插件 android_vscreen_create
      * 不传 orientation 时的默认一致）。核心收到 w/h=0 才用它自己的默认值，这里显式传更确定。
@@ -588,10 +588,9 @@ public class VsreenBridgeService extends Service {
 
     private String extRoot() {
         // 必须与 MainActivity.pkgRoot() 完全一致：桥接从这里取 jar 交给特权进程，
-        // 用错目录会拿到另一个根目录下的旧 jar（8998 跑旧版服务端 → 缺新路由 → 工具报错）。
-        String p = getPackageName();
-        return p.contains("beta") ? "DeepSeekHarnessLite"
-                : p.contains("compat") ? "DeepSeekHarnessCompat" : "DeepSeekHarness";
+        // 用错目录会拿到另一个根目录下的旧 jar（CORE_PORT 跑旧版服务端 → 缺新路由 → 工具报错）。
+        // v1.18（B12）：统一走 BuildVariant（与 MainActivity.pkgRoot() 同源），不再 contains() 猜。
+        return BuildVariant.EXT_DIR_NAME;
     }
 
     // ==================== 生命周期 ====================
@@ -662,7 +661,8 @@ public class VsreenBridgeService extends Service {
             String remoteJar = "/data/local/tmp/vscreen_shizuku.jar";
             // 启动前清掉占着 CORE_PORT 的旧 core（旧版进程不会自行退出；卸载/重装也不杀它）。
             // 用正则（不能加 -F）+ [x] 括号技巧：既能匹配 Main，又不会匹配到这条命令自身
-            String killOld = "PID=$(ps -A -o PID,ARGS | grep 'com.deepseek.harness.vscreen.Mai[n]' "
+            // v1.18（B12）：类名随变体包名（否则社区版/兼容版会去杀正式版的 core 进程）
+            String killOld = "PID=$(ps -A -o PID,ARGS | grep '" + BuildVariant.APP_ID + ".vscreen.Mai[n]' "
                     + "| grep -v grep | awk '{print $1}'); "
                     + "if [ -n \"$PID\" ]; then kill -9 $PID 2>/dev/null; sleep 1; fi; ";
             String cmd = "echo \"--- core start $(date)\" >> /data/local/tmp/vscreen.log 2>&1; "

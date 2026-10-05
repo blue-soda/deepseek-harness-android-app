@@ -26,8 +26,13 @@ const inject = ["tools"];
 
 const APP_PROC = "/system/bin/app_process";
 const VS_DEX = "/data/local/tmp/vscreen_shizuku.jar"; // server jar 位置（特权可读）
-const SERVER_PORT = 8999;
-const SERVER_MAIN = "com.deepseek.harness.vscreen.VirtualScreenServer";
+// v1.18（B12）：桥/核心端口与主类随变体（由壳注入 env，见 android-app/variants.sh）。
+//   official 8999/8998 · lite 9009/9008 · compat 9019/9018 · community 9029/9028
+// 每个变体一段独立端口，同一设备上两个变体同时运行虚拟屏不再互斥（原为硬编码 8999/8998）。
+const APP_ID = process.env.DSH_APP_ID || "com.deepseek.harness";
+const SERVER_PORT = Number(process.env.DSH_VS_BRIDGE_PORT || 8999);
+const CORE_PORT = Number(process.env.DSH_VS_CORE_PORT || 8998);
+const SERVER_MAIN = APP_ID + ".vscreen.Main";
 const MAX_STDOUT = 8000;
 const MAX_STDERR = 2000;
 const START_TIMEOUT_MS = 12000; // 等 server 起来
@@ -75,7 +80,7 @@ function privShell(command, timeoutMs) {
           "--nice-name=rish",
           "rikka.shizuku.shell.ShizukuShellLoader",
           "-c", command
-        ], { env: { ...sanitizeEnv(process.env), RISH_APPLICATION_ID: process.env.SHIZUKU_APP_ID || "com.deepseek.harness" }, stdio: ["ignore", "pipe", "pipe"] });
+        ], { env: { ...sanitizeEnv(process.env), RISH_APPLICATION_ID: process.env.SHIZUKU_APP_ID || APP_ID }, stdio: ["ignore", "pipe", "pipe"] });
       }
     } catch (e) {
       resolve({ ok: false, exit_code: -1, stdout: "", stderr: "", error: String(e && e.message || e) });
@@ -106,8 +111,8 @@ function privShell(command, timeoutMs) {
 async function ensureServer() {
   if (await serverAlive()) return { ok: true };
 
-  // v1.10：插件自己不拉起服务端——App 打开的桥（VsreenBridgeService，监听 8999）会负责拉起。
-  // 注意：这里“插件无需特权”≠“功能无需特权”。桥要用 Shizuku/root 把**核心**（8998）
+  // v1.10：插件自己不拉起服务端——App 打开的桥（VsreenBridgeService，监听本变体桥端口）会负责拉起。
+  // 注意：这里“插件无需特权”≠“功能无需特权”。桥要用 Shizuku/root 把**核心**（本变体核心端口）
   // 以 shell 身份拉起来，所以虚拟屏整体仍需 Shizuku 或 root；无它时核心起不来、全功能不可用。
   // （但**不需要无障碍**：点击走 shell 的 `input -d <displayId>`，截图走 ImageReader 直接从虚拟屏取帧。）
   for (let i = 0; i < 15; i++) {
@@ -170,9 +175,9 @@ function safeParse(raw) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** 强制关闭 server（可选）。 */
+/** 强制关闭 server（可选）。v1.18（B12）：按变体包名匹配，避免杀掉别的变体的 core。 */
 async function killServer() {
-  await privShell("pkill -f com.deepseek.harness.vscreen.VirtualScreenServer || true", 5000);
+  await privShell("pkill -f " + APP_ID + ".vscreen.Main || true", 5000);
 }
 
 /** DSH 个别路径可能以缺失 value 调用 render（历史回放/旧参数）；兜底避免整次工具调用失败，并把入参暴露出来便于定位。 */

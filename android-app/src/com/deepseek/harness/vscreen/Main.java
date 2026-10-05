@@ -1,5 +1,7 @@
 package com.deepseek.harness.vscreen;
 
+import com.deepseek.harness.BuildVariant;
+
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
@@ -65,8 +67,10 @@ public class Main {
     private static final long HEARTBEAT_TIMEOUT_MS = 60000L;
     private static volatile long sLastRequestAt = System.currentTimeMillis();
 
-    private static final int DEFAULT_PORT = 8998;
-    private static final String DEFAULT_EXTERNAL_ROOT = "/sdcard/DeepSeekHarness";
+    private static final int DEFAULT_PORT = BuildVariant.VS_CORE_PORT;
+    // v1.18（B12）：外部目录随变体；正常由桥通过 --dir 显式传入，这里只是兜底默认值。
+    private static final String DEFAULT_EXTERNAL_ROOT =
+            "/sdcard/" + BuildVariant.EXT_DIR_NAME;
     private static final String LOG_PATH = "/data/local/tmp/vscreen.log";
 
     /** 预览帧最大边（服务端缩放后再 JPEG，避免把 720x1520 原图传给 App）。 */

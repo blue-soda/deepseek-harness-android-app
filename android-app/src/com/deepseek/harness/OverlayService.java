@@ -58,15 +58,12 @@ import org.json.JSONObject;
  */
 public class OverlayService extends Service {
     /**
-     * 三版本共存的默认引擎端口，按包名区分（与 AccessibilityService 的口径一致）：
-     * 正式版 3080 / Lite 3082 / 兼容版 3084。通知端口 = 引擎端口 + 1，无障碍端口 = +101。
-     * 否则三套 App 同时安装会抢同一个 3080（表现为 EADDRINUSE、工具连到别的版本的服务）。
+     * 引擎端口的**兜底默认值**：v1.18（B11）起由变体表决定（BuildVariant.ENGINE_PORT），
+     * 不再按包名 contains() 猜 —— 否则社区版等新变体会落回 3080，抢正式版的端口。
+     * 通知端口 = 引擎端口 + 1，无障碍端口 = 引擎端口 + 101（均按变体错开）。
      */
     private static int defaultEnginePort(Context ctx) {
-        String p = ctx != null ? ctx.getPackageName() : "";
-        if (p.contains("beta")) return 3082;
-        if (p.contains("compat")) return 3084;
-        return 3080;
+        return BuildVariant.ENGINE_PORT;
     }
 
     private static final String PREFS = "dsh_prefs";
@@ -187,7 +184,8 @@ public class OverlayService extends Service {
         return START_STICKY;
     }
 
-    private static final String ACTION_SHOW = "com.deepseek.harness.overlay.SHOW";
+    // v1.18（B12）：action 名随变体，避免同一设备上两个变体的悬浮窗互相唤起/干扰
+    private static final String ACTION_SHOW = BuildVariant.APP_ID + ".overlay.SHOW";
 
     @Override
     public void onDestroy() {
@@ -847,12 +845,14 @@ public class OverlayService extends Service {
         }
     }
 
-    /** 预览帧拉取任务：HTTP GET 127.0.0.1:8999/vscreen/preview → base64 JPEG → ImageView。 */
+    /** 预览帧拉取任务：HTTP GET 127.0.0.1:<变体桥端口>/vscreen/preview → base64 JPEG → ImageView。 */
     private final Runnable vscreenPreviewRunnable = new Runnable() {
         @Override public void run() {
             if (!vscreenPreviewRunning || !isRunning) return;
             try {
-                HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:8999/vscreen/preview").openConnection();
+                // v1.18（B12）：桥端口随变体（official 8999 / lite 9009 / compat 9019 / community 9029）
+                HttpURLConnection c = (HttpURLConnection) new URL(
+                        "http://127.0.0.1:" + BuildVariant.VS_BRIDGE_PORT + "/vscreen/preview").openConnection();
                 c.setConnectTimeout(2000); c.setReadTimeout(2000);
                 String resp = readAll(c.getInputStream());
                 c.disconnect();

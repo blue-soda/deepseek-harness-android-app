@@ -26,6 +26,13 @@ const SHIZUKU_LOADER = "rikka.shizuku.shell.ShizukuShellLoader";
 const MAX_STDOUT = 8000;
 const MAX_STDERR = 2000;
 
+// v1.18（B12）：变体事实由壳在启动引擎时注入（见 android-app/variants.sh + MainActivity.spawnNode）。
+//   DSH_APP_ID  —— 本变体包名（rish 的 RISH_APPLICATION_ID 兜底）
+//   DSH_EXT_DIR —— 外部目录绝对路径（/sdcard/<变体目录>），截图等落盘位置
+// 旧壳/旧包没有这些变量时回退到正式版默认值（向后兼容，不改变老行为）。
+const APP_ID = process.env.DSH_APP_ID || "com.deepseek.harness";
+const EXT_DIR = process.env.DSH_EXT_DIR || "/sdcard/DeepSeekHarness";
+
 /** 特权通道是否可用（root 或 Shizuku 任一授予即可）。 */
 function privilegedAvailable() {
   return process.env.ROOT_AVAILABLE === "1" || process.env.SHIZUKU_AVAILABLE === "1";
@@ -145,7 +152,7 @@ function shizukuCmd(command, dex, appId, timeoutMs) {
         SHIZUKU_LOADER,
         "-c", command
       ], {
-        env: { ...sanitizeEnv(process.env), RISH_APPLICATION_ID: appId || "com.deepseek.harness" },
+        env: { ...sanitizeEnv(process.env), RISH_APPLICATION_ID: appId || APP_ID },
         stdio: ["ignore", "pipe", "pipe"]
       });
     } catch (e) {
@@ -545,7 +552,7 @@ function apply(ctx) {
   // 4) 截图
   ctx.tools.register(defineTool({
     name: "android_screenshot",
-    description: "截取当前屏幕，保存为 PNG，返回文件路径。默认存到 /sdcard/DeepSeekHarness/screenshots/。",
+    description: "截取当前屏幕，保存为 PNG，返回文件路径。默认存到 " + EXT_DIR + "/screenshots/。",
     parameters: {
       save_path: { type: "string", description: "可选，完整保存路径；留空自动生成" }
     },
@@ -561,7 +568,7 @@ function apply(ctx) {
       const ts = new Date().toISOString().replace(/[:.]/g, "-");
       const path = args.save_path
         ? safe(args.save_path)
-        : "/sdcard/DeepSeekHarness/screenshots/shot-" + ts + ".png";
+        : EXT_DIR + "/screenshots/shot-" + ts + ".png";
       const r = await privCmd("mkdir -p " + path.substring(0, path.lastIndexOf("/")) + "; screencap -p " + path + " && echo __SHOT_OK__", 30000);
       return { ...r, path: r.ok ? path : "" };
     }

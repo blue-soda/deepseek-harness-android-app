@@ -76,7 +76,7 @@ function shizukuCmd(command, dex, appId, timeoutMs) {
         SHIZUKU_LOADER,
         "-c", command
       ], {
-        env: { ...sanitizeEnv(process.env), RISH_APPLICATION_ID: appId || "com.deepseek.harness" },
+        env: { ...sanitizeEnv(process.env), RISH_APPLICATION_ID: appId || process.env.DSH_APP_ID || "com.deepseek.harness" },
         stdio: ["ignore", "pipe", "pipe"]
       });
     } catch (e) {

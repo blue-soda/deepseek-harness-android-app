@@ -103,9 +103,9 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
         // 且静默，先连的那个应答 —— 插件于是拿到“另一个包”的截图/节点（跨包路径必然 EACCES）。
         int port = 3181;
         try {
-            String pkg = getPackageName();
-            int defaultEngine = pkg.contains("beta") ? 3082 : pkg.contains("compat") ? 3084 : 3080;
-            port = defaultEngine + 101;
+            // v1.18（B12）：端口一律由变体表派生（BuildVariant），不再 contains() 猜包名。
+            // 无障碍端口 = 引擎端口 + 101（official 3181 / lite 3183 / compat 3185 / community 3187）。
+            port = BuildVariant.ENGINE_PORT + 101;
             SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
             if (prefs.getInt(KEY_A11Y_PORT, port) != port) {
                 prefs.edit().putInt(KEY_A11Y_PORT, port).apply(); // 顺手纠正历史脏值
@@ -1235,11 +1235,9 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
         try {
             File ext = android.os.Environment.getExternalStorageDirectory();
             if (ext != null) {
-                String p = getPackageName();
-                String root = p.contains("beta") ? "DeepSeekHarnessLite"
-                        : p.contains("compat") ? "DeepSeekHarnessCompat"
-                        : "DeepSeekHarness";
-                File d = new File(new File(ext, root), "screenshots");
+                // v1.18（B12）：外部目录名随变体（BuildVariant），不再按包名 contains() 猜。
+                // 这样各变体的无障碍截图各写各的目录，不再互相串（原实现会让社区版写进正式版目录）。
+                File d = new File(new File(ext, BuildVariant.EXT_DIR_NAME), "screenshots");
                 if (d.exists() || d.mkdirs()) return d;
             }
         } catch (Throwable ignored) {}
