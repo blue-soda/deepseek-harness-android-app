@@ -226,6 +226,69 @@
 })();
 
 /**
+ * v1.21：接管 window.open → 用**系统浏览器**打开（插件登录授权页专用）。
+ *
+ * 背景：ds-harness-remote 点「DS 登录」时是
+ *     let tab = window.open("", "_blank");       // 先拿一个空白窗口对象
+ *     ... await 服务端拿 authorizeUrl ...         // 几秒后
+ *     tab.location = authorizeUrl;               // 再往里塞地址
+ * 走 WebView 的 onCreateWindow 通道要拿一个隐形 WebView 兜住这个空白窗口，
+ * 而隐形 WebView 会被 Chromium 节流 → **第一次点击经常丢地址**（用户实测：第一次没反应，
+ * 关掉插件再进第二次才跳浏览器）。所以这里直接在页面层接管：
+ *   · 有地址的 window.open → 立刻交给系统浏览器；
+ *   · 空地址的 window.open（就是上面那个空白窗）→ 返回一个"假窗口"，
+ *     它的 location 赋值同样转交浏览器，且 closed=false、close() 只是标记 ——
+ *     这样插件两条分支（tab 存在 / tab.closed）都走到我们这里，且不会重复开两个标签页。
+ * 插件的结果回收本来就靠主页面轮询服务端，不依赖弹窗回调，所以这条路完全成立。
+ * 桥方法由 App 侧提供：addJavascriptInterface(..., "dshshell").openExternal(url)。
+ */
+(function () {
+  try {
+    if (window.__dshOpenPatched) return;
+    var tries = 0;
+    function install() {
+      try {
+        if (window.__dshOpenPatched) return;
+        // 桥（addJavascriptInterface）可能比本脚本晚一步就绪 —— 实测 mobile.js 先执行、
+        // 那时 dshshell 还没挂上；不重试的话 shim 会静默失效（用户看到"第一次点击没反应"）。
+        if (!window.dshshell || typeof window.dshshell.openExternal !== 'function') {
+          if (++tries < 60) setTimeout(install, 200);   // 最多等 12 秒
+          return;
+        }
+        window.__dshOpenPatched = true;
+        var origOpen = window.open;
+        function hand(url) {
+          try { window.dshshell.openExternal(String(url)); return true; } catch (e) { return false; }
+        }
+        window.open = function (url, name, features) {
+          try {
+            if (url) { hand(url); return null; }
+            var target = '';
+            var fake = {
+              closed: false, opener: null, name: name || '',
+              close: function () { fake.closed = true; },
+              focus: function () {}, blur: function () {}, postMessage: function () {}
+            };
+            Object.defineProperty(fake, 'location', {
+              get: function () { return target; },
+              set: function (v) {
+                target = String(v);
+                if (target && target !== 'about:blank') hand(target);
+              }
+            });
+            fake.document = { write: function () {}, close: function () {} };
+            return fake;
+          } catch (e) {
+            try { return origOpen ? origOpen.apply(window, arguments) : null; } catch (e2) { return null; }
+          }
+        };
+      } catch (e) { /* 保持原样，App 侧还有 onCreateWindow 兜底 */ }
+    }
+    install();
+  } catch (e) {}
+})();
+
+/**
  * v1.21：客户端时区兜底。
  *
  * 背景：DSH 创建会话时要求 `clientTimeZone` 是 "UTC" 或合法的 IANA "Area/Location"

@@ -412,6 +412,25 @@ public class MainActivity extends Activity {
                         if (webView != null) webView.setBackgroundColor(c);
                     }});
                 }
+
+                /**
+                 * v1.21：页面请求用**系统浏览器**打开一个地址。
+                 *
+                 * 用途：插件的登录授权页。ds-harness-remote 是 `window.open("")` 先拿窗口对象、
+                 * 之后才 `tab.location = 授权地址` —— 走 WebView 的 onCreateWindow 通道时，
+                 * 用来承接的隐形 WebView 会被 Chromium 节流，**第一次点击常常丢地址**（用户实测）。
+                 * 所以改成在页面里接管 window.open（见 mobile-patch/mobile.js 的 shim），
+                 * 凡是要开新窗口的，直接把 URL 交给系统浏览器，稳定且没有时序问题。
+                 */
+                @android.webkit.JavascriptInterface
+                public void openExternal(String url) {
+                    final String u = url == null ? "" : url.trim();
+                    if (u.isEmpty()) return;
+                    ui.post(new Runnable() { @Override public void run() {
+                        Log.i(TAG, "dshshell.openExternal → " + u);
+                        if (!openInSystemBrowser(u)) conToast("没有可用的浏览器，无法打开链接");
+                    }});
+                }
             }, "dshshell");
         } catch (Throwable ignored) {}
 
@@ -494,8 +513,13 @@ public class MainActivity extends Activity {
                     });
                     android.view.ViewGroup contentRoot = findViewById(android.R.id.content);
                     if (contentRoot != null) {
+                        // 用**全尺寸 + alpha 0 + 放到最底层**，而不是 1×1：
+                        // Chromium 会把 1×1/不可见的小 WebView 当后台页面节流，
+                        // 插件"先开空窗、几秒后再 tab.location=授权地址"这一步就可能丢（用户实测第一次点击没反应）。
                         pop.setAlpha(0f);
-                        contentRoot.addView(pop, new android.view.ViewGroup.LayoutParams(1, 1));
+                        contentRoot.addView(pop, 0, new android.view.ViewGroup.LayoutParams(
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                android.view.ViewGroup.LayoutParams.MATCH_PARENT));
                         hiddenPopups.add(pop);
                     }
                     ((WebView.WebViewTransport) resultMsg.obj).setWebView(pop);
