@@ -32,8 +32,12 @@
    - Bash 工具卡片防横向溢出（pre-wrap + word-break）
    - 后台任务菜单右对齐（.QsffPG_menu right:0）
    - 设置页单栏（.VOzbGW_panel 上下排列 + 内容可滚动）
-   - 插件按钮定位到三条杠下方（[data-cordis-badge] fixed 52/8，不动 DOM）
-   注意：类名是运行时插件动态注入的 CSS module 类名，改前先确认真实类名。
+   - 插件按钮定位到三条杠下方（[data-cordis-badge] fixed 52/8，不动 DOM；v1.20 已删，见下）
+   - v1.20：右侧面板不再压住三条杠：三条杠抬到 z-index 80、隐藏面板 guide 里的冗余 "Start" 入口
+   注意：类名是运行时插件动态注入的 CSS module 类名，改前先确认真实类名；
+        且**不要**把这类哈希类名当选择器写死（会随前端版本静默失配）—— 只按
+        稳定标识匹配：自定义类名（.dsh-mobile-menu-btn）、data-* 属性
+        （[data-slot="…"]、[data-cordis-badge]）。
    ============================================================ */
 
 :root {
@@ -358,6 +362,19 @@ input[type="search"] {
     background: transparent !important;
   }
   .wSkVaW_headerUtilities [data-cordis-badge] > span {
+    display: none !important;
+  }
+}
+
+/* ============ 窄屏：第三栏打开时隐去三条杠（v1.20）============
+   用户反馈 + 实测：第三栏（右侧 dockkit 面板）在小屏上是**全屏**的，其标签条里的
+   "Start" 标签正好落在左上角三条杠的位置；而且此时点三条杠、三条杠本身也会消失。
+
+   所以正确修法**不是**动 Start（它保持原样），而是：**面板打开时把三条杠隐去**、
+   面板关闭时照旧显示。打开状态由 mobile.js 判定并写到
+   `html[data-dsh-right-panel]`（dockkit 活动 pane 宽度占视口一半以上 = 打开）。 */
+@media (max-width: 1024px) {
+  html[data-dsh-right-panel] .dsh-mobile-menu-btn {
     display: none !important;
   }
 }

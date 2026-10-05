@@ -224,3 +224,41 @@
       { passive: false, capture: true });
   });
 })();
+
+/**
+ * v1.20：第三栏（右侧 dockkit 面板）打开状态 → `html[data-dsh-right-panel]`。
+ *
+ * 用途：小屏下第三栏是**全屏**的，它的标签条（含 "Start"）正好落在左上角三条杠的位置；
+ *   用户实测「此时点三条杠，三条杠本身也会消失」——也就是面板打开时三条杠本就不该在那儿。
+ *   于是 mobile.css 按 `html[data-dsh-right-panel]` 把三条杠隐去，Start 保持原样。
+ *
+ * 判定：dockkit 的**活动 pane**（[data-dockkit-pane-active="true"]）宽度占视口一半以上即视为打开。
+ *   （不用 CSS-module 哈希类名，也不依赖 i18n 文案；面板开关都会触发 DOM 变更 → MutationObserver。）
+ */
+(function () {
+  function update() {
+    var open = false;
+    try {
+      var pane = document.querySelector('[data-dockkit-pane-active="true"]');
+      if (pane) {
+        var r = pane.getBoundingClientRect();
+        open = r.width > window.innerWidth * 0.5 && r.height > 0;
+      }
+    } catch (e) { open = false; }
+    try {
+      if (open) document.documentElement.setAttribute('data-dsh-right-panel', '');
+      else document.documentElement.removeAttribute('data-dsh-right-panel');
+    } catch (e) { /* 忽略 */ }
+  }
+  update();
+  try {
+    new MutationObserver(update).observe(document.documentElement, {
+      subtree: true, childList: true, attributes: true,
+      attributeFilter: ['style', 'class', 'data-dockkit-pane-active', 'hidden']
+    });
+  } catch (e) { /* 老 WebView 没 MutationObserver 也不致命 */ }
+  window.addEventListener('resize', update);
+  window.addEventListener('orientationchange', update);
+  setTimeout(update, 400);
+  setTimeout(update, 1500);
+})();

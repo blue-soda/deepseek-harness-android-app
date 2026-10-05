@@ -2145,11 +2145,16 @@ public class MainActivity extends Activity {
                         if (dshrootNeedsSync(internalBase)) {
                             boolean revisionChanged = dshrootRevisionChanged(internalBase);
                             boolean full = dshrootNeedsFullSync(internalBase);
-                            boolean layoutOnly = !full && dshrootLayoutChanged(internalBase);
+                            // v1.20：payload.zip 变了也走「增量补齐」——fast 同步只看 REVISION +
+                            // 白名单，**不解压本次新增的文件**（踩过：新增的 node-pty 替身包
+                            // 在 fast 模式下永远不落地，终端一直报 Cannot find module 'node-pty'）。
+                            boolean payloadChanged = payloadZipChanged();
+                            boolean layoutOnly = !full && (dshrootLayoutChanged(internalBase) || payloadChanged);
                             fastSyncedThisBoot = !full;
                             String mode = full ? "dshroot" : (layoutOnly ? "dshroot-add" : "dshroot-fast");
                             extractPayload(payload, null, mode);
                             writeDshrootComplete(internalBase);
+                            rememberPayloadZipSha();
                             if (revisionChanged) refreshInternalConfig(payload);
                         }
                         dshrootDir = internalDshroot;
@@ -2161,9 +2166,10 @@ public class MainActivity extends Activity {
                         if (useExternal) {
                             if (dshrootNeedsSync(externalRoot)) {
                                 boolean full = dshrootNeedsFullSync(externalRoot);
-                                boolean layoutOnly = !full && dshrootLayoutChanged(externalRoot);
+                                boolean layoutOnly = !full && (dshrootLayoutChanged(externalRoot) || payloadZipChanged());
                                 extractPayload(payload, externalRoot, full ? "dshroot" : (layoutOnly ? "dshroot-add" : "dshroot-fast"));
                                 writeDshrootComplete(externalRoot);
+                                rememberPayloadZipSha();
                             }
                             dshrootDir = new File(externalRoot, "dshroot");
                             kernelOnExternal = true;
@@ -3984,6 +3990,16 @@ public class MainActivity extends Activity {
         env.put("DSH_HOME", home.getAbsolutePath());
         env.put("TMPDIR", tmp.getAbsolutePath());
         env.put("TERM", "xterm");
+        // v1.20：终端/子进程的默认 shell。dsh-subprocess-local 取
+        //   `process.env.SHELL || os.userInfo().shell`
+        // 而我们的 node 是 **Termux 构建**：Android 上 os.userInfo().shell 直接返回
+        // "/data/data/com.termux/files/usr/bin/bash"（本机没装 Termux，路径不存在）→
+        // 界面里「新建终端」必报
+        //   Terminal error: subprocess-local: command ".../com.termux/.../bash" is not an executable file
+        // （DSH 官方 Android 形态是"装在 Termux 里跑"，所以那个默认值对它是对的。）
+        // 这里显式给出 payload 自带的 bash（42 字节 wrapper → /system/bin/sh），
+        // 终端即可用；注意它是 mksh 而非真 bash，bash 专属的 shell 集成会弱一些。
+        env.put("SHELL", new File(bin, "bash").getAbsolutePath());
         env.put("SHIZUKU_DEX", rishDex != null ? rishDex.getAbsolutePath() : "");
         // v1.9 虚拟屏 server dex：app_process 特权加载 VirtualScreenServer
         env.put("VS_DEX", vscreenDex != null ? vscreenDex.getAbsolutePath() : "");
@@ -7324,6 +7340,48 @@ public class MainActivity extends Activity {
         while (end < text.length() && text.charAt(end) >= '0' && text.charAt(end) <= '9') end++;
         if (end == p) return -1;
         try { return Long.parseLong(text.substring(p, end)); } catch (Throwable t) { return -1; }
+    }
+
+    /** 从清单里取一个**字符串**字段（形如 `key=value` 的整行）；取不到返回 ""。 */
+    private static String manifestStr(String text, String key) {
+        if (text == null) return "";
+        for (String raw : text.split("\n")) {
+            String line = raw.trim();
+            if (line.startsWith(key + "=")) return line.substring(key.length() + 1).trim();
+        }
+        return "";
+    }
+
+    private static final String PREF_PAYLOAD_SHA = "payload_zip_sha256";
+
+    /**
+     * 本次安装的 payload.zip 与上次解压过的那份是否不同。
+     *
+     * 为什么需要：`dshroot-fast` 同步只刷 REVISION + 官方白名单，**不 stat 也不解压新增文件**。
+     * 于是本次打包如果**新增了文件**（踩过的例子：node-pty 替身包 `dshroot/lib/node_modules/node-pty/`），
+     * fast 同步会让它永远不落地 —— 表现为"新补丁装了却没生效"，报错还停在旧状态。
+     * payload.zip 的 SHA-256（打包时写进 assets/payload_manifest.txt）一变，就改走
+     * `dshroot-add`：缺失文件会写、白名单照旧覆盖，代价只是一次 stat（仅升级那次）。
+     */
+    private boolean payloadZipChanged() {
+        try {
+            String builtin = manifestStr(readAssetText(PAYLOAD_MANIFEST_ASSET), "payload_zip_sha256");
+            if (builtin.isEmpty()) return false;   // 旧包没有清单 → 维持原行为
+            String done = getSharedPreferences("dsh_prefs", MODE_PRIVATE).getString(PREF_PAYLOAD_SHA, "");
+            return !builtin.equals(done);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 同步成功后记住本次 payload.zip 的 SHA-256（下次比较用）。 */
+    private void rememberPayloadZipSha() {
+        try {
+            String builtin = manifestStr(readAssetText(PAYLOAD_MANIFEST_ASSET), "payload_zip_sha256");
+            if (!builtin.isEmpty()) {
+                getSharedPreferences("dsh_prefs", MODE_PRIVATE).edit().putString(PREF_PAYLOAD_SHA, builtin).apply();
+            }
+        } catch (Throwable ignored) {}
     }
 
     /**

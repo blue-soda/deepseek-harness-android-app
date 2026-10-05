@@ -260,7 +260,43 @@ HTTP 经 `adb forward` 打到模拟器上真实运行的 App 服务（33xx/9xxx�
   overlay 不挂载 → 上一轮补齐的库“消失” → 引擎起不来、`打开主界面` 一直转圈。Android Studio 里可在
   Device Manager → 编辑 AVD → *Additional emulator command line options* 填 `-writable-system`。
 
-### 十四、未完成 / 已知限制
+### 十四、第三栏遮挡三条杠（Q3）与终端依赖链（Q4）
+
+**Q3：第三栏打开时隐去三条杠**（维护者定的口径）
+- 现象：进入右侧「第三栏」后，它标签条上的 **"Start"** 标签正落在左上角三条杠的位置；
+  且此时点三条杠、三条杠本身也会消失。
+- 结论：正确修法**不是**动 Start，而是「**面板打开时把三条杠隐去**」。
+- 实现：`mobile.js` 用 MutationObserver 判定 dockkit 活动 pane 是否占视口过半，写到
+  `html[data-dsh-right-panel]`；`mobile.css` 据此隐藏 `.dsh-mobile-menu-btn`。
+  Start 原有样式保持不动（v1.20 早先那条"挪 Start / 抬 z-index"的改动已回退）。
+- 教训（也写进 mobile-patch 说明）：**别把 CSS-module 哈希类名写进选择器**
+  （`.wSkVaW_headerUtilities` 这类会随前端版本静默失配），只用稳定标识
+  —— 自定义类名 `.dsh-mobile-menu-btn`、`data-*` 属性。
+
+**Q4：新建终端 —— 三层依赖链，逐层修**
+1. **默认 shell 指向 Termux**（已修）：`dsh-subprocess-local` 取
+   `process.env.SHELL || os.userInfo().shell`；我们打包的 node 是 Termux 构建，
+   Android 上 `os.userInfo().shell` 直接返回 `/data/data/com.termux/files/usr/bin/bash`
+   （本机没 Termux）→ 报 `command "…/com.termux/…/bash" is not an executable file`。
+   ⇒ `MainActivity` 引擎 env 显式注入 `SHELL=<payload>/bin/bash`。
+2. **平台门禁不认 android**（已修）：`dsh-subprocess-local` 的 `createProcessInspector()`
+   只认 linux/darwin/win32 → 报 `terminal inspection is unsupported on platform android`。
+   Android 就是 Linux（`/proc` 俱全）⇒ 补丁把 android 与 linux 同等对待，
+   文件落在 `dsh-patches/overlay/.../dsh-subprocess-local/lib/runner-launch-B2zsQ1Dz.js`。
+3. **缺原生模块 node-pty**（**未真正解决**）：0.2.0-rc.2 的终端走原生 PTY（node-pty），
+   而我们的 payload 不打包原生模块。已放一个纯 JS 替身
+   （`dsh-patches/overlay/lib/node_modules/node-pty/`），实测模块能解析、shell 也能被拉起
+   （面板显示 `bash | 进程已退出(1)` 与 mksh 自己的报错），但**管道没有 TTY**：
+   无提示符/回显、`resize` 无效、TUI 不可用，面板就绪判定也等不到 → 停在「正在启动…」。
+   ⇒ 要真正可用需打包**原生 node-pty**（方案与代价见报告）。
+
+**顺带修掉一个真问题：新增文件在 fast 同步下永远不落地**
+- 现象：node-pty 替身打进 APK 了，设备上却没有（`dshroot-fast` 只刷 REVISION + 白名单，
+  不 stat、也不解压新增文件）。
+- 修法：`payload_manifest.txt` 的 `payload_zip_sha256` 与上次记录不同 → 改走
+  `dshroot-add`（增量补齐：缺失文件会写、白名单照旧覆盖）。实测同步模式 fast → add，新包成功落地。
+
+### 十五、未完成 / 已知限制
 
 - **compat 变体尚未并入本机制**：`android-app/compat/` 仍是一套独立差异文件（GeckoView），
   其 `build.sh` / `MainActivity.java` 未同步 BuildVariant 与变体 staging，其虚拟屏端口仍为 8999/8998
