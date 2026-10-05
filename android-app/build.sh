@@ -87,6 +87,9 @@ for f in $(find "$H/runtime/lib" -maxdepth 1 -type f); do
   cp -L "$f" "$P/staging/runtime/lib/"
 done
 
+# ⚠ v1.18（B8）：devhome 里的 soname 别名（libicudata.so → libicudata.so.78.3 等）往往是**实体副本**
+#（payload.zip 存不了符号链接，解压出来就是真文件）。上面的批量复制会把它们一起带进包，
+# 于是设备侧真的存在 3 份独立 inode（实测 libicudata 33MB × 3，见 LINKS.txt 之后的删除步骤）。
 cat > "$P/staging/runtime/lib/LINKS.txt" <<'EOF'
 libcrypto.so	libcrypto.so.3
 libicudata.so	libicudata.so.78.3
@@ -108,25 +111,51 @@ libz.so	libz.so.1.3.2
 libz.so.1	libz.so.1.3.2
 EOF
 
-# 补全 soname 为实体文件（关键修复）：
-# jar 打包会把符号链接压平成普通内容，且部分设备解压后无法创建软链接（FUSE/权限），
-# 导致 node 启动报 "library libz.so.1 not found"。这里直接把链接目标复制成同名实体文件，
-# 动态加载器按名字找文件即可，不依赖任何链接支持。
-cd "$P/staging/runtime/lib"
-while IFS=$'\t' read -r _link _target; do
-  case "$_link" in ""|\#*) continue ;; esac
-  [ -n "$_target" ] || continue
-  if [ ! -e "$_link" ] && [ -f "$_target" ]; then
-    cp -L "$_target" "$_link"
-    echo "  soname 实体化: $_link"
-  fi
-done < LINKS.txt
-cd - >/dev/null
+# v1.18（B8）：按 LINKS.txt 把"别名文件"从包里剔掉 —— 只留真实文件 + LINKS.txt，
+# 由 App 解压时的 applyLinks()（硬链 → 软链 → 复制兜底）重建这些名字。
+# 收益：设备侧不再有 ICU 三份独立 inode（实测 −73MB），包内也少一份压缩体积。
+# 需要旧行为（包内自带实体别名，排查链接问题时最省事）：export DSH_MATERIALIZE_LINKS=1
+if [ -z "$DSH_MATERIALIZE_LINKS" ]; then
+  _removed=0
+  while IFS=$'\t' read -r _link _target; do
+    case "$_link" in ""|\#*) continue ;; esac
+    [ -n "$_target" ] || continue
+    if [ -f "$P/staging/runtime/lib/$_link" ] && [ "$_link" != "$_target" ]; then
+      rm -f "$P/staging/runtime/lib/$_link"
+      _removed=$((_removed + 1))
+    fi
+  done < "$P/staging/runtime/lib/LINKS.txt"
+  echo "  soname 别名（$_removed 个）不打进包，改由 App 解压时按 LINKS.txt 重建（硬链优先）"
+fi
+
+# soname 实体化（历史修复，v1.18 起默认**关闭**）：
+#   · 为什么曾经要实体化：APK/jar 打包会把符号链接压平成普通内容，部分设备解压后又建不了软链
+#     （FUSE/权限）→ node 启动报 "library libz.so.1 not found"。
+#   · 为什么现在可以不做：App 解压后会调用 AccessibilityService 之外的 applyLinks()
+#     （MainActivity.applyLinks，顺序 = 硬链 Os.link → 软链 → **复制兜底**），
+#     按同一份 LINKS.txt 重建这些名字 —— 复制兜底保证任何设备都不会起不来。
+#   · 实测代价（B8，2026-10-05 模拟器）：实体化会让 ICU 三份成为**独立 inode**，
+#     设备侧多占 ~73MB、APK 内也多一份压缩体积（libicudata 33MB × 3）。
+#   · 需要旧行为（例如排查链接问题）时：export DSH_MATERIALIZE_LINKS=1
+if [ -n "$DSH_MATERIALIZE_LINKS" ]; then
+  cd "$P/staging/runtime/lib"
+  while IFS=$'\t' read -r _link _target; do
+    case "$_link" in ""|\#*) continue ;; esac
+    [ -n "$_target" ] || continue
+    if [ ! -e "$_link" ] && [ -f "$_target" ]; then
+      cp -L "$_target" "$_link"
+      echo "  soname 实体化: $_link"
+    fi
+  done < LINKS.txt
+  cd - >/dev/null
+else
+  echo "  soname 链接留给 App 解压时按 LINKS.txt 重建（硬链优先→软链→复制兜底），包内不留重复实体"
+fi
 
 # 模拟器调试可选开关（x86_64 + ndk_translation）：
 # 转译器 /system/bin/ndk_translation_program_runner_binfmt_misc_arm64 自己是 x86_64，
 # 它按「裸名」从 LD_LIBRARY_PATH 解析 libz.so / libssl.so / libcrypto.so。
-# 上面刚把这三个裸名实体化成了 arm64 副本 → 转译器报
+# 若这三个裸名指向 arm64 副本 → 转译器报
 #   CANNOT LINK EXECUTABLE ... is for EM_AARCH64 (183) instead of EM_X86_64 (62)
 # 把 DSH_X64_BARE_LIBS 指向一个含 x86_64 版这三个库的目录即可在构建期一次做完
 #（docs/开发指南.md 第六节原本要求解压后手工 push 进设备，且每次重解压都要重做）。
@@ -136,29 +165,43 @@ if [ -n "$DSH_X64_BARE_LIBS" ]; then
     [ -f "$DSH_X64_BARE_LIBS/$_l" ] || { echo "!! DSH_X64_BARE_LIBS 缺少 $_l：$DSH_X64_BARE_LIBS"; exit 1; }
     cp -f "$DSH_X64_BARE_LIBS/$_l" "$P/staging/runtime/lib/$_l"
   done
-  # 从 LINKS.txt 移除这三条：App 首次启动会按它把裸名重建为指向 arm64 的软链，
-  # 那样会覆盖掉刚注入的 x86_64 库。libz.so.1 等带版本号的条目保留（node 本体要 arm64）。
+  # 从 LINKS.txt 移除这三条：否则 App 解压后会把裸名重建为指向 arm64 的链接，覆盖掉刚注入的 x86_64 库。
+  # ⚠ v1.18：**不要**再清空整个 LINKS.txt（旧的 DSH_X64_NO_LINKS 做法）。当时清空是因为
+  #    "App 会按 LINKS.txt 把实体文件重建为软链、而 ndk_translation 下软链加载不了" —— 那是
+  #    链接**实体化**时代的因果。现在 App 侧 applyLinks() 是**硬链优先**（Os.link），
+  #    硬链对 guest 加载器就是普通文件，没有软链问题；带版本号的条目必须保留，
+  #    否则 node 会报 "library libz.so.1 not found"。
   grep -v -E '^(libcrypto\.so|libssl\.so|libz\.so)[[:space:]]' \
     "$P/staging/runtime/lib/LINKS.txt" > "$P/staging/runtime/lib/LINKS.txt.x64"
   mv -f "$P/staging/runtime/lib/LINKS.txt.x64" "$P/staging/runtime/lib/LINKS.txt"
-  # 设置 DSH_X64_NO_LINKS=1 时进一步清空 LINKS.txt：App 会按它把实体文件重建为软链，
-  # 而 ndk_translation 环境下软链会导致 node 报 "library libz.so.1 not found"
-  #（即上面第 96-98 行注释描述的同一失败模式）。清空后全部按实体文件保留。
   if [ -n "$DSH_X64_NO_LINKS" ]; then
-    : > "$P/staging/runtime/lib/LINKS.txt"
-    echo "  [模拟器] LINKS.txt 已清空（全部保留为实体文件）"
+    echo "  [模拟器] 注意：DSH_X64_NO_LINKS 自 v1.18 起不再清空 LINKS.txt（硬链优先已足够，清空会让 node 缺 libz.so.1）"
   fi
   echo "  [模拟器] 已注入 x86_64 裸名库并从 LINKS.txt 移除对应条目"
 fi
 
 mkdir -p "$P/staging/dshroot/lib"
-# 两个排除项：
+# 排除项（B7 体积优化；实测 dshroot 树里这些占 ~76MB / ~12000 个文件）：
 #   1) dsh 的 node_modules/.bin（原脚本即排除）
 #   2) dsh/node_modules/@deepseek-ai/dsh —— 开发树里被误造的「dsh 自我递归嵌套」
 #      （实测 632 层、路径约 19000 字符）。tar 的 --exclude 会在深入前跳过它，
 #      构建产物不需要它，复制耗时也从「卡死」降到数分钟。
-# ⚠ 不要在这里改用 robocopy：它遇到这棵病态目录会不返回（实测挂住）或报错 16。
-( cd "$H/dshroot/lib" && tar cf - --exclude='./node_modules/@deepseek-ai/dsh/node_modules/.bin' --exclude='./node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh' . ) \
+#   3) *.map / *.d.ts / *.d.mts / *.d.cts —— sourcemap 与 TypeScript 类型声明，运行时（纯 JS）不需要
+#   4) __pycache__ / *.pyc —— Python 字节码缓存，python 运行时按需自己生成
+# ⚠ **不要**一刀切排除 *.md：dsh-agent-preset/skills/**/SKILL.md 与 skill 模板是运行时真读的，
+#    排掉会打断技能目录（收益也只有 ~8MB，不值）。
+# ⚠ 也不要排除 licenses —— MIT/Apache 分发要求随附声明。
+# ⚠ 不要在这里改用 robocopy：它遇到那棵病态目录会不返回（实测挂住）或报错 16。
+( cd "$H/dshroot/lib" && tar cf - \
+    --exclude='./node_modules/@deepseek-ai/dsh/node_modules/.bin' \
+    --exclude='./node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh' \
+    --exclude='*.map' \
+    --exclude='*.d.ts' \
+    --exclude='*.d.mts' \
+    --exclude='*.d.cts' \
+    --exclude='__pycache__' \
+    --exclude='*.pyc' \
+    . ) \
   | ( cd "$P/staging/dshroot/lib" && tar xf - )
 
 # dshroot 版本标记：App 用它判断「外部 /sdcard/DeepSeekHarness/dshroot」是否需要补齐。

@@ -425,8 +425,10 @@ if [ "$DO_EMULATOR" = 1 ]; then
    （从模拟器取：adb pull /system/lib64/libz.so $X64/ 等三个；详见 tools/LOCAL-BUILD.md 第四节）"
   fi
   export DSH_X64_BARE_LIBS="$X64"
-  export DSH_X64_NO_LINKS=1
-  echo "   已启用模拟器适配（DSH_X64_BARE_LIBS + DSH_X64_NO_LINKS）"
+  # v1.18：不再设置 DSH_X64_NO_LINKS（清空 LINKS.txt）。App 侧 applyLinks() 现在是**硬链优先**
+  # （Os.link → 软链 → 复制兜底），带版本号的 soname 必须由 LINKS.txt 重建，
+  # 清空反而会让 node 报 "library libz.so.1 not found"。
+  echo "   已启用模拟器适配（DSH_X64_BARE_LIBS；LINKS.txt 保留带版本号条目）"
 fi
 
 mkdir -p "$(dirname "$OUT")"
