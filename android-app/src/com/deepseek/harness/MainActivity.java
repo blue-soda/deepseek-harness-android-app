@@ -991,6 +991,15 @@ public class MainActivity extends Activity {
     /** 最近一次交给浏览器的弹窗地址（去重，避免同一地址开两个标签页）。 */
     private String lastPopupUrl = null;
     private long lastPopupAt = 0L;
+    /** v1.21：最近一次把**授权页**交给浏览器的时间（>0 表示"回来后该刷新一次界面"）。 */
+    private volatile long authHandoffAt = 0L;
+
+    /** 判断一个 URL 是不是插件登录的授权页（用于决定"回来后刷新界面"）。 */
+    private static boolean looksLikeAuthUrl(String url) {
+        if (url == null) return false;
+        return url.contains("/dsh/authorize") || url.contains("authorize_id=")
+                || url.contains("/auth/authorize") || url.contains("sign-in");
+    }
 
     /**
      * v1.21：把授权页交给**系统浏览器**打开（返回是否成功交出去）。
@@ -1002,6 +1011,8 @@ public class MainActivity extends Activity {
      */
     private boolean openInSystemBrowser(String url) {
         if (url == null || url.isEmpty()) return false;
+        // 记下"刚把授权页交出去"，用于从浏览器回来时刷新界面（见 maybeReloadAfterAuth）
+        if (looksLikeAuthUrl(url)) authHandoffAt = System.currentTimeMillis();
         try {
             Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -2842,6 +2853,28 @@ public class MainActivity extends Activity {
         if (permRows != null && !permRows.isEmpty()) probeShizuku();
         // v1.13.12：切回前台时补采样一次页面底色（离开期间前端主题可能被改过）
         refreshPageBackground();
+        // v1.21：授权页交给浏览器后，用户回来时刷新一次页面。
+        // 为什么：登录是在浏览器 + 引擎侧完成的（日志里能看到 "Host authorized as an owned device"、
+        // "server control connection online"），但插件的**网页客户端**仍停在授权前的错误上
+        // （用户看到卡片还是"登录失败 / AUTH_INVALID"）。刷新一次，客户端就会重新拉状态。
+        maybeReloadAfterAuth();
+    }
+
+    /**
+     * v1.21：授权跳转后回到前台 → 刷新一次 WebView（见 onResume 注释）。
+     * 只在"确实把授权页交给了浏览器"之后触发，且回到前台至少 8 秒（留够用户完成授权的时间）。
+     */
+    private void maybeReloadAfterAuth() {
+        try {
+            if (authHandoffAt == 0L || webView == null) return;
+            long dt = System.currentTimeMillis() - authHandoffAt;
+            if (dt < 8000L) return;                 // 太快了，用户还没在浏览器里点完
+            authHandoffAt = 0L;
+            Log.i(TAG, "授权跳转后回到前台 → 刷新界面以重新拉取登录状态");
+            webView.reload();
+        } catch (Throwable t) {
+            Log.w(TAG, "maybeReloadAfterAuth failed", t);
+        }
     }
 
     @Override
