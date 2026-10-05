@@ -229,10 +229,14 @@ HTTP 经 `adb forward` 打到模拟器上真实运行的 App 服务（33xx/9xxx�
 
 ### 十三、图标与命名（v1.19）
 
-- **启动图标换成全身立绘**：源图 `android-app/icon-src/source.png`（由维护者提供，986×1024 去透明边）。
-  取景对比后定为：自适应前景内容占 108dp 画布 **0.80**（长边）、传统图标 **0.96**、背景纯白 ——
-  0.66 太小、1.00 会把头带与脚裁掉。可用 `python tools/gen-icons.py` 一条命令重新生成。
-  （上一版用的是 `dsh-desktop.ico`，那是**头像特写**，桌面上只看得到大半张脸。）
+- **启动图标 = `icon-src/icon-windows.png`（头像特写，直接使用）**，悬浮窗头像 = `icon-src/source.png`（全身立绘），
+  两张素材各司其职；可用 `python tools/gen-icons.py` 一条命令重新生成。
+  取景：启动图标自适应前景**铺满** 108dp 画布 + 纯白背景（上一版试过全身立绘按 0.80 缩放，
+  维护者反馈不必要且姿势看着偏歪，已回退）；悬浮窗头像按 alpha 去边后 320px。
+- **悬浮窗图标从"小鲸鱼剪影"换成人物立绘**：`OverlayService` 的 `iconView` 改用
+  `R.drawable.overlay_avatar`（由 `source.png` 生成到 `res/drawable-nodpi/`）。
+  连带把 `TUCK_VISIBLE_FRACTION` 由 0.45 改为 **1.0**：原来静置"半藏"只露 45%，
+  对小鲸鱼剪影没问题，但会把人物裁掉一半、认不出是谁；改后完整贴边（想恢复半藏改回 0.45 即可）。
 - **变体名称统一**：official / lite / compat / community 四个变体的 `android:label` 全部为
   **DeepSeek Harness**（此前是 "DeepSeek Harness 社区版 / Lite / 兼容版"）。Android 允许不同包名同名的
   App 共存，桌面会出现三个同名图标，靠图标位置区分；无障碍服务名随之变成统一的 "DeepSeek Harness 屏幕助手"。

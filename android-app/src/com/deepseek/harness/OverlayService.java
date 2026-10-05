@@ -71,8 +71,13 @@ public class OverlayService extends Service {
     private static final String CHANNEL_ID = "dsh_overlay";
     private static final int NOTIF_ID = 9002;
     private static final long PROBE_MS = 2000L;
-    /** 静置半藏时露在外面的比例（另一半越界到屏幕外）。 */
-    private static final float TUCK_VISIBLE_FRACTION = 0.45f;
+    /**
+     * 静置贴边时露在外面的比例（其余越界到屏幕外）。
+     * v1.19：悬浮窗图标从"小鲸鱼剪影"换成**人物立绘**（res/drawable-nodpi/overlay_avatar.png），
+     * 原来 0.45 的半藏会把人物裁掉一半、认不出是谁，所以改为 1.0 = 完整贴边。
+     * 想恢复半藏把这里改回 0.45 即可（越界靠 FLAG_LAYOUT_NO_LIMITS）。
+     */
+    private static final float TUCK_VISIBLE_FRACTION = 1.0f;
     /** 拖到距底部多少 dp 内松手 = 隐藏。 */
     private static final int DISMISS_ZONE_DP = 84;
     /** AI "已完成"提示在状态切换后保留的时长（毫秒）。 */
@@ -255,7 +260,8 @@ public class OverlayService extends Service {
         iconRow.setPadding(dp(4), dp(2), dp(4), dp(2));
 
         iconView = new ImageView(this);
-        iconView.setImageResource(R.drawable.ic_whale_black); // DSH 鲸鱼（品牌蓝+白描边）
+        iconView.setImageResource(R.drawable.overlay_avatar); // 悬浮窗头像：icon-src/source.png（全身立绘）
+                                                              // 由 tools/gen-icons.py 生成到 res/drawable-nodpi/
         iconView.setLayoutParams(new LinearLayout.LayoutParams(dp(40), dp(40)));
         iconRow.addView(iconView);
         rootView.addView(iconRow);

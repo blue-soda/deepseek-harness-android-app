@@ -1,39 +1,42 @@
 #!/usr/bin/env python3
-"""从 android-app/icon-src/source.png 生成 Android 启动图标资源。
+"""生成 Android 图标资源 + 悬浮窗头像资源。
 
 用法（仓库根目录）：
     python tools/gen-icons.py
 
-产出（覆盖式写入 android-app/res/）：
-    mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png          传统图标 48/72/96/144/192
-    mipmap-{...}/ic_launcher_foreground.png                          自适应图标前景（108dp 画布）
-    mipmap-anydpi-v26/ic_launcher.xml                                自适应图标（前景 + 纯色背景）
-    values/colors.xml 里的 ic_launcher_background                    背景色（纯白）
+两张源图，各司其职（都是维护者提供的素材）：
+  · android-app/icon-src/icon-windows.png  —— **启动图标**（头像特写，1024→768 存库）
+  · android-app/icon-src/source.png        —— **悬浮窗头像**（全身立绘）
+  （icon-src/dsh-desktop.ico 是最早那版 Windows 图标的原件，未被本脚本使用，留作参考。）
 
-取景（2026-10 定的，改图标时按需重选）：
-  · 源图是**全身立绘**（不是头像），先按 alpha 包围盒去掉透明边，再等比缩放居中：
-    - 自适应前景：内容占画布 **0.80**（长边）。对比过 66/108 安全区（太小、四周一圈白）、
-      1.00 铺满（头带与脚被圆形蒙版裁掉）—— 0.80 既完整又够大。
-    - 传统图标：内容占 **0.96**，方形透明底，交给老启动器。
-  · 背景纯白：与立绘自身的浅色底一致。
+产出：
+    mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png        传统图标 48/72/96/144/192
+    mipmap-{...}/ic_launcher_foreground.png                        自适应图标前景（108dp 画布，图像铺满）
+    mipmap-anydpi-v26/ic_launcher.xml                              自适应图标（前景 + 纯色背景）
+    drawable-nodpi/overlay_avatar.png                              悬浮窗头像（悬浮窗里 40dp 显示）
+    values/colors.xml 里的 ic_launcher_background                  背景色（纯白）
 
-注意：`drawable/ic_launcher.xml`（小鲸鱼矢量图）不在这里生成 —— 它是**通知小图标**与启动页 logo。
+取景：
+  · 启动图标按"直接使用素材"处理 —— 自适应前景**铺满** 108dp 画布（蒙版只裁到边角头发），
+    背景纯白（素材自身顶部两角透明，白色与它的浅色底无缝）。
+  · 悬浮窗头像先按 alpha 包围盒去掉透明边，再缩到 320px（40dp 在 xxxhdpi 下 160px，留 2 倍余量）。
+
+注意：`drawable/ic_launcher.xml`（小鲸鱼矢量图）不在这里生成 —— 它仍是**通知小图标**与启动页 logo。
 """
 import os
-import re
 import sys
 from PIL import Image
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = os.path.join(ROOT, "android-app", "icon-src", "source.png")
+SRC_ICON = os.path.join(ROOT, "android-app", "icon-src", "icon-windows.png")
+SRC_AVATAR = os.path.join(ROOT, "android-app", "icon-src", "source.png")
 RES = os.path.join(ROOT, "android-app", "res")
 DENS = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
 BG = "#FFFFFF"
-LEGACY_SCALE = 0.96      # 传统图标：内容占方形画布的比例
-ADAPTIVE_SCALE = 0.80    # 自适应前景：内容占 108dp 画布的比例（长边）
+AVATAR_PX = 320          # 悬浮窗头像边长（nodpi）
 
 XML = """<?xml version="1.0" encoding="utf-8"?>
-<!-- 自适应图标（API 26+）：前景 = icon-src/source.png 的立绘（占画布 0.80，全身完整），白色背景。
+<!-- 自适应图标（API 26+）：前景 = icon-src/icon-windows.png（铺满 108dp 画布），白色背景。
      传统图标见 mipmap-*/ic_launcher.png。重新生成：python tools/gen-icons.py -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
@@ -42,33 +45,27 @@ XML = """<?xml version="1.0" encoding="utf-8"?>
 """
 
 
-def fit(art: Image.Image, box: int, scale: float) -> Image.Image:
-    """把 art 等比缩放到 box*scale 内，返回居中贴在透明 box 画布上的图。"""
-    w, h = art.size
-    k = (box * scale) / max(w, h)
-    inner = (max(1, round(w * k)), max(1, round(h * k)))
-    canvas = Image.new("RGBA", (box, box), (0, 0, 0, 0))
-    canvas.alpha_composite(art.resize(inner, Image.LANCZOS),
-                           ((box - inner[0]) // 2, (box - inner[1]) // 2))
-    return canvas
+def trim(im: Image.Image) -> Image.Image:
+    box = im.getchannel("A").getbbox()
+    return im.crop(box) if box else im
 
 
 def main() -> int:
-    if not os.path.isfile(SRC):
-        print(f"找不到源图：{SRC}", file=sys.stderr)
-        return 1
-    src = Image.open(SRC).convert("RGBA")
-    box = src.getchannel("A").getbbox()
-    art = src.crop(box) if box else src
-    print(f"源图 {os.path.basename(SRC)} {src.size} → 去透明边后 {art.size}"
-          f"（传统 {LEGACY_SCALE:.2f} / 自适应 {ADAPTIVE_SCALE:.2f}）")
+    for p in (SRC_ICON, SRC_AVATAR):
+        if not os.path.isfile(p):
+            print(f"找不到素材：{p}", file=sys.stderr)
+            return 1
 
+    icon = Image.open(SRC_ICON).convert("RGBA")
+    print(f"启动图标素材 {os.path.basename(SRC_ICON)} {icon.size}（铺满 + 白底）")
     for name, size in DENS.items():
         d = os.path.join(RES, f"mipmap-{name}")
         os.makedirs(d, exist_ok=True)
-        fit(art, size, LEGACY_SCALE).save(os.path.join(d, "ic_launcher.png"))
+        icon.resize((size, size), Image.LANCZOS).save(os.path.join(d, "ic_launcher.png"))
         canvas = round(size * 108 / 48)
-        fit(art, canvas, ADAPTIVE_SCALE).save(os.path.join(d, "ic_launcher_foreground.png"))
+        fg = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
+        fg.alpha_composite(icon.resize((canvas, canvas), Image.LANCZOS), (0, 0))
+        fg.save(os.path.join(d, "ic_launcher_foreground.png"))
         print(f"  mipmap-{name}: ic_launcher.png {size}px + ic_launcher_foreground.png {canvas}px")
 
     anydpi = os.path.join(RES, "mipmap-anydpi-v26")
@@ -77,14 +74,26 @@ def main() -> int:
         f.write(XML)
     print("  mipmap-anydpi-v26/ic_launcher.xml")
 
+    avatar = trim(Image.open(SRC_AVATAR).convert("RGBA"))
+    w, h = avatar.size
+    k = AVATAR_PX / max(w, h)
+    avatar = avatar.resize((max(1, round(w * k)), max(1, round(h * k))), Image.LANCZOS)
+    nd = os.path.join(RES, "drawable-nodpi")
+    os.makedirs(nd, exist_ok=True)
+    avatar.save(os.path.join(nd, "overlay_avatar.png"), optimize=True)
+    print(f"悬浮窗头像 {os.path.basename(SRC_AVATAR)} {Image.open(SRC_AVATAR).size}"
+          f" → drawable-nodpi/overlay_avatar.png {avatar.size}")
+
     cpath = os.path.join(RES, "values", "colors.xml")
     css = open(cpath, encoding="utf-8").read()
-    if "ic_launcher_background" in css:
+    marker = '<color name="ic_launcher_background">'
+    if marker in css:
+        import re
         css = re.sub(r'<color name="ic_launcher_background">#[0-9A-Fa-f]{6}</color>',
                      f'<color name="ic_launcher_background">{BG}</color>', css)
     else:
         css = css.replace("</resources>",
-                          "    <!-- 应用图标（icon-src/source.png）：自适应图标的背景色 —— 纯白。 -->\n"
+                          "    <!-- 应用图标（icon-src/icon-windows.png）：自适应图标的背景色 —— 纯白。 -->\n"
                           f'    <color name="ic_launcher_background">{BG}</color>\n</resources>')
     open(cpath, "w", encoding="utf-8", newline="\n").write(css)
     print(f"  values/colors.xml: ic_launcher_background={BG}")
