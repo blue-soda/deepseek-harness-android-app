@@ -79,7 +79,7 @@
 | `android_type` | 输入文本到输入框（WebView / 网页输入框用 `paste:true` 走剪贴板粘贴） |
 | `android_back` / `android_home` | 系统返回键 / 回桌面 |
 | `android_scroll` | 上 / 下 / 左 / 右滚动 |
-| `android_see` | 无障碍截图并发送给视觉模型理解（需 Android 11+ 与支持图片的模型，如 `deepseek-v4-flash-vision-exp`） |
+| `android_see` | 无障碍截图并发送给视觉模型理解（需 Android 11+ 与支持图片的模型，如 `deepseek-v4-flash-vision-exp`）。支持 **`select=<节点文字>` / `region="x,y,w,h"` 区域截图**：只截一块，小字看得清；返回 `cropX/Y/W/H` 与 `scaleX/Y` 精确换算，可直接用 `ix/iy`（图内像素）交给点击类工具**自动换算**，模型不用手算坐标 |
 
 > 无障碍通道与特权通道互补：无障碍不依赖授权、擅长读屏与点击；Shizuku/root 通道擅长系统级操作（装应用 / 改设置 / 系统输入）。
 

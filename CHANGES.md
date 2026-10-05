@@ -89,13 +89,29 @@ LISTEN 127.0.0.1:8999 (official 虚拟屏桥)  LISTEN 127.0.0.1:9029 (community 
   同时**停止清空 `LINKS.txt`**（旧 `DSH_X64_NO_LINKS` 行为会让 node 缺 `libz.so.1`）。
   需要旧行为时 `export DSH_MATERIALIZE_LINKS=1`。
 
+**D. 区域截图（A6）：小字看清、坐标不靠手算**
+
+- `android_see` 新增 `select=<节点文字>`（按无障碍节点取景）与 `region="x,y,w,h"`（显式矩形），可选 `pad`
+  外扩。原生 `/screenshot` 支持同参数，且**返回精确换算契约**：
+  `screenX = cropX + ix × scaleX`、`screenY = cropY + iy × scaleY`（cropX/Y/W/H 都是屏幕坐标）。
+  整屏截图的 `scaleX/scaleY` 语义与旧版一致（crop =(0,0,screenW,screenH)）。
+- 为免模型做三点算术，`android_tap` / `android_hold` / `android_swipe` / `android_touch` / `android_gesture`
+  新增 **`ix/iy`（以及 swipe/gesture 的 `ix2/iy2`）**：直接传"最近一张截图里的像素"，**由工具换算**成屏幕坐标；
+  没有几何时返回明确错误而不是猜。
+- `select` 命中时额外返回该节点中心的 `selectFx/selectFy`，可直接 `android_tap(fx,fy)`。
+- 为什么有效：模型侧的网格投影会把整屏缩到约 0.65× 线性（1280×2856 → 835×1862），而小图会被
+  `MIN_PIXELS=544×544` 的规则**视为小图放大**——所以同一块信息用区域截图发，等效清晰度高得多。
+- 设备实测（社区版，模拟器）：`select="日志"` → 裁剪 579×89、**PNG 517 B**（整屏 260,979 B，约 1/500）；
+  节点 bounds 中心 (327.5, 1641.5) 与"裁剪图中心 → 换算回屏幕"的 (328, 1642) **1px 内吻合**；
+  用 `ix/iy` 点击后控制台**确实切到了日志页**（端到端验证，不是只看返回值）。
+
 ### 六、模拟器测试台（本机工具，不入仓库）
 
 为了不经过模型也能验证工具行为，本轮加了一个本机测试台（`.cache/tooltest/`，随 `.cache/` 忽略）：
 把插件文件复制到带 `node_modules` 链接的目录后直接 `execute()`，
 HTTP 经 `adb forward` 打到模拟器上真实运行的 App 服务（33xx/9xxx），并打印 `render()` 出来的文本
 （模型实际看到的内容）。A2/A3/A4/A5/A7/A8 的验证全部走它 + 真机路径，另有一个 mock 服务用来
-确定性地验证"同图/操作后同图"分支。
+确定性地验证"同图/操作后同图"分支；A6 另做了**设备内**端到端（payload 的 node 跑插件 + 真实截图 + 真实点击）。
 
 ### 七、设备端技能：让 AI 知道"该怎么改自己"（D1）
 

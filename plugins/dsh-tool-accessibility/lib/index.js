@@ -34,6 +34,59 @@ const noteInputEvent = () => { inputEventSeq += 1; };
 let lastShot = { hash: "", seq: 0, at: 0 };
 
 /**
+ * 上一次区域截图（A6）的几何 —— 用来把"裁剪图里的像素"换算回屏幕坐标。
+ * 契约（原生 /screenshot 返回，这里原样保存）：
+ *   screenX = cropX + ix * scaleX ； screenY = cropY + iy * scaleY
+ * 整屏截图时 cropX/Y = 0、cropW/H = 屏幕尺寸，所以同一套公式对整屏也成立。
+ */
+let lastCrop = null;   // { cropX, cropY, cropW, cropH, scaleX, scaleY, imageW, imageH, at }
+
+/** 把 /screenshot 的返回值记成 lastCrop（整屏也记，公式统一）。 */
+function rememberCrop(v) {
+  const num = (x, d) => (typeof x === "number" && isFinite(x) ? x : d);
+  const imageW = num(v.imageW, 0), imageH = num(v.imageH, 0);
+  if (imageW <= 0 || imageH <= 0) return;
+  lastCrop = {
+    cropX: num(v.cropX, 0),
+    cropY: num(v.cropY, 0),
+    cropW: num(v.cropW, num(v.screenW, imageW)),
+    cropH: num(v.cropH, num(v.screenH, imageH)),
+    scaleX: num(v.scaleX, 1),
+    scaleY: num(v.scaleY, 1),
+    imageW, imageH,
+    at: Date.now()
+  };
+}
+
+/** 裁剪图内像素 → 屏幕像素；没有可用几何时返回 null（让调用方报错而不是猜）。 */
+function cropToScreen(ix, iy) {
+  if (lastCrop === null) return null;
+  if (typeof ix !== "number" || typeof iy !== "number" || !isFinite(ix) || !isFinite(iy)) return null;
+  return {
+    x: Math.round(lastCrop.cropX + ix * lastCrop.scaleX),
+    y: Math.round(lastCrop.cropY + iy * lastCrop.scaleY)
+  };
+}
+
+/**
+ * A6：把 ix/iy（上一张 android_see 截图里的像素）换算成屏幕绝对坐标并写进 params。
+ * 这样"看图 → 点击"全程由工具做算术，模型只抄图上看到的数字，避免三点换算出错。
+ * @returns "" = 正常（或本次没用 ix/iy）；非空 = 需要返回给模型的错误说明。
+ */
+function applyCropPoint(args, ixKey, iyKey, params, xKey, yKey) {
+  const ix = args[ixKey], iy = args[iyKey];
+  if (ix === undefined && iy === undefined) return "";
+  if (ix === undefined || iy === undefined) return "需要同时提供 " + ixKey + " 与 " + iyKey + "（分别是图内 x/y 像素）";
+  const p = cropToScreen(Number(ix), Number(iy));
+  if (p === null) {
+    return "没有可用的截图几何：先用 android_see（可带 select 或 region 做区域截图）截一次图，再用 " + ixKey + "/" + iyKey + " 传图内像素";
+  }
+  params[xKey] = String(p.x);
+  params[yKey] = String(p.y);
+  return "";
+}
+
+/**
  * 边缘手势防呆（A5）：分数起点落在系统手势区时给警告。
  * 系统导航/返回手势在屏幕底部与左右边缘，起点落在那里的滑动会被系统吃掉
  * （表现为回桌面/返回/切应用），而工具本身无法分辨"用户就是想从边缘划"。
@@ -327,7 +380,9 @@ function apply(ctx) {
       x: { type: "number", description: "屏幕绝对 x 坐标（像素）" },
       y: { type: "number", description: "屏幕绝对 y 坐标（像素）" },
       fx: { type: "number", description: "分数 x 坐标（0~1，相对屏幕宽度比例；推荐，避免截图缩放误差）" },
-      fy: { type: "number", description: "分数 y 坐标（0~1，相对屏幕高度比例；推荐，避免截图缩放误差）" }
+      fy: { type: "number", description: "分数 y 坐标（0~1，相对屏幕高度比例；推荐，避免截图缩放误差）" },
+      ix: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 x 像素（工具会自动换算回屏幕坐标，免手算）" },
+      iy: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 y 像素" }
     },
     output: {
       schema: {
@@ -352,8 +407,11 @@ function apply(ctx) {
       if (args.y !== undefined) params.y = String(Number(args.y));
       if (args.fx !== undefined) params.fx = String(Number(args.fx));
       if (args.fy !== undefined) params.fy = String(Number(args.fy));
+      // A6：ix/iy（区域截图内的像素）→ 自动换算成屏幕 x/y
+      const cropErr = applyCropPoint(args, "ix", "iy", params, "x", "y");
+      if (cropErr) return { ok: false, error: cropErr };
       if (Object.keys(params).length === 0) {
-        return { ok: false, error: "android_tap 需要至少一个参数：text / desc / x / y / fx / fy" };
+        return { ok: false, error: "android_tap 需要至少一个参数：text / desc / x / y / fx / fy（或区域截图的 ix/iy）" };
       }
       // A5：底部/边缘点击也可能落在系统手势区或导航栏上
       const warning = edgeGestureWarning(args.fx, args.fy);
@@ -562,7 +620,10 @@ function apply(ctx) {
         "需要当前模型支持图片输入；模型不支持图片时请改用 android_screen 读控件文字。" +
         "需要已开启无障碍服务且设备 Android 11+（截图能力），低版本可用 android_screen。",
       parameters: {
-        grid: { type: "boolean", description: "true 时在截图上叠加 4×4 网格线，方便按行列定位（游戏/无控件界面推荐）" }
+        grid: { type: "boolean", description: "true 时在截图上叠加 4×4 网格线，方便按行列定位（游戏/无控件界面推荐）" },
+        select: { type: "string", description: "**区域截图**：按无障碍节点文字取景（模糊包含匹配），只截该节点（可配 pad 外扩）。适合看清小字/一条数据，比整屏清晰得多" },
+        region: { type: "string", description: "**区域截图**：显式矩形 \"x,y,w,h\"（屏幕像素，左上角为原点）。与 select 二选一" },
+        pad: { type: "number", description: "select 时四周外扩的像素（默认 0，建议 8~24 留点上下文）" }
       },
       output: {
         schema: {
@@ -585,6 +646,14 @@ function apply(ctx) {
             sha256: { type: "string" },
             capturedAt: { type: "number" },
             sameAsPrevious: { type: "boolean" },
+            // A6：区域截图几何（屏幕坐标）与精确换算：screenX = cropX + ix*scaleX
+            cropped: { type: "boolean" },
+            cropX: { type: "number" },
+            cropY: { type: "number" },
+            cropW: { type: "number" },
+            cropH: { type: "number" },
+            selectFx: { type: "number" },
+            selectFy: { type: "number" },
             image: {
               type: "object",
               additionalProperties: false,
@@ -607,7 +676,16 @@ function apply(ctx) {
             `屏幕尺寸 ${value.screenW}x${value.screenH}, 截图尺寸 ${value.imageW}x${value.imageH}, 换算系数 scaleX=${value.scaleX} scaleY=${value.scaleY}${value.grid ? `, 已叠加 ${value.grid}x${value.grid} 网格` : ""}`,
             value.capturedAt ? `截取时间 ${new Date(value.capturedAt).toISOString()}，sha256=${value.sha256 || "?"}${value.sameAsPrevious ? "（与上一次截图内容相同）" : ""}` : "",
             value.warning ? `⚠ ${value.warning}` : "",
-            "操作优先用分数坐标 fx/fy（0~1）：图中位置 (ix,iy) → fx=ix/imageW, fy=iy/imageH；用绝对像素 = 图中像素 × scaleX/Y"
+            value.cropped
+              ? `区域截图：屏幕坐标 (${value.cropX},${value.cropY}) 起的 ${value.cropW}x${value.cropH} 区域`
+              : "",
+            value.cropped
+              ? `换算（ix/iy = 图中像素）：screenX = ${value.cropX} + ix×${value.scaleX}，screenY = ${value.cropY} + iy×${value.scaleY}；`
+                + "也可以把 ix/iy 直接交给 android_tap/android_swipe/android_hold/android_touch 的 ix/iy 参数，由工具自动换算（推荐，免手算）"
+              : "操作优先用分数坐标 fx/fy（0~1）：图中位置 (ix,iy) → fx=ix/imageW, fy=iy/imageH；用绝对像素 = 图中像素 × scaleX/Y",
+            value.selectFx !== undefined
+              ? `命中该节点的中心：fx=${value.selectFx}, fy=${value.selectFy}（可直接 android_tap(fx=${value.selectFx}, fy=${value.selectFy})）`
+              : ""
           ].filter(Boolean).join("\n");
           return [{
             type: "text",
@@ -630,8 +708,12 @@ function apply(ctx) {
         if (attachments === void 0) {
           return { ok: false, error: "cannot screenshot: no attachment service is mounted" };
         }
-        const params = args.grid === true ? { grid: "4" } : undefined;
-        const raw = await a11yRequest("/screenshot", params, 20000);
+        const params = {};
+        if (args.grid === true) params.grid = "4";
+        if (args.select !== undefined && String(args.select).length > 0) params.select = String(args.select);
+        else if (args.region !== undefined && String(args.region).length > 0) params.region = String(args.region);
+        if (args.pad !== undefined) params.pad = String(Number(args.pad));
+        const raw = await a11yRequest("/screenshot", Object.keys(params).length ? params : undefined, 20000);
         const v = parseResult(raw);
         if (!v.ok || !v.path) {
           return { ok: false, error: v.error || "截图失败（可能设备低于 Android 11，或当前页面禁止截图）" };
@@ -665,6 +747,7 @@ function apply(ctx) {
           const sameAsPrevious = prev.hash !== "" && prev.hash === hash;
           const staleAfterInput = sameAsPrevious && inputEventSeq > prev.seq;
           lastShot = { hash, seq: inputEventSeq, at };
+          rememberCrop(v);   // A6：记录裁剪几何（整屏也记，换算公式统一）
           const hints = [];
           if (typeof v.hint === "string" && v.hint) hints.push(v.hint);
           if (staleAfterInput) {
@@ -683,6 +766,13 @@ function apply(ctx) {
             sha256: hash.slice(0, 16),
             capturedAt: at,
             sameAsPrevious,
+            // A6：记住本次截图几何，供 ix/iy（裁剪图像素）自动换算
+            cropped: v.cropped === true,
+            cropX: typeof v.cropX === "number" ? v.cropX : 0,
+            cropY: typeof v.cropY === "number" ? v.cropY : 0,
+            cropW: typeof v.cropW === "number" ? v.cropW : 0,
+            cropH: typeof v.cropH === "number" ? v.cropH : 0,
+            ...(typeof v.selectFx === "number" ? { selectFx: v.selectFx, selectFy: v.selectFy } : {}),
             ...(hints.length ? { hint: hints.join(" ") } : {}),
             image: {
               attachmentId: ref.attachmentId,
@@ -753,6 +843,10 @@ function apply(ctx) {
       fy1: { type: "number", description: "起点分数 y（0~1，推荐）" },
       fx2: { type: "number", description: "终点分数 x（0~1，推荐）" },
       fy2: { type: "number", description: "终点分数 y（0~1，推荐）" },
+      ix1: { type: "number", description: "**区域截图专用**：起点在最近一张 android_see 图里的 x 像素（自动换算）" },
+      iy1: { type: "number", description: "**区域截图专用**：起点在图里的 y 像素" },
+      ix2: { type: "number", description: "**区域截图专用**：终点在图里的 x 像素" },
+      iy2: { type: "number", description: "**区域截图专用**：终点在图里的 y 像素" },
       durationMs: { type: "number", description: "滑动时长毫秒（默认 300）" },
       finger: { type: "number", description: "可选：指定手指（0~7）；若该手指正按住则从当前位置滑到终点并抬起" }
     },
@@ -762,6 +856,11 @@ function apply(ctx) {
       for (const k of ["x1", "y1", "x2", "y2", "fx1", "fy1", "fx2", "fy2"]) {
         if (args[k] !== undefined) params[k] = String(Number(args[k]));
       }
+      // A6：起点/终点都支持"图内像素"（ix1/iy1、ix2/iy2）→ 自动换算成屏幕坐标
+      const cropErr1 = applyCropPoint(args, "ix1", "iy1", params, "x1", "y1");
+      if (cropErr1) return { ok: false, error: cropErr1 };
+      const cropErr2 = applyCropPoint(args, "ix2", "iy2", params, "x2", "y2");
+      if (cropErr2) return { ok: false, error: cropErr2 };
       if (args.durationMs !== undefined) params.duration = String(Number(args.durationMs));
       if (args.finger !== undefined) params.finger = String(Number(args.finger));
       if (!(("x1" in params || "fx1" in params) && ("y1" in params || "fy1" in params) &&
@@ -795,6 +894,8 @@ function apply(ctx) {
       y: { type: "number", description: "按住 y（像素）" },
       fx: { type: "number", description: "分数 x（0~1，推荐）" },
       fy: { type: "number", description: "分数 y（0~1，推荐）" },
+      ix: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 x 像素（自动换算）" },
+      iy: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 y 像素" },
       durationMs: { type: "number", description: "按住时长毫秒（默认 500）" },
       finger: { type: "number", description: "可选：指定手指（0~7）" }
     },
@@ -806,8 +907,11 @@ function apply(ctx) {
       }
       if (args.durationMs !== undefined) params.duration = String(Number(args.durationMs));
       if (args.finger !== undefined) params.finger = String(Number(args.finger));
+      // A6：hold 也支持图内像素 ix/iy
+      const cropErr = applyCropPoint(args, "ix", "iy", params, "x", "y");
+      if (cropErr) return { ok: false, error: cropErr };
       if (!(("x" in params || "fx" in params) && ("y" in params || "fy" in params))) {
-        return { ok: false, error: "android_hold 需要 x/y 或 fx/fy" };
+        return { ok: false, error: "android_hold 需要 x/y 或 fx/fy（或区域截图的 ix/iy）" };
       }
       const warning = edgeGestureWarning(args.fx, args.fy);
       noteInputEvent();
@@ -838,7 +942,9 @@ function apply(ctx) {
       x: { type: "number", description: "目标 x（像素）" },
       y: { type: "number", description: "目标 y（像素）" },
       fx: { type: "number", description: "分数 x（0~1，推荐）" },
-      fy: { type: "number", description: "分数 y（0~1，推荐）" }
+      fy: { type: "number", description: "分数 y（0~1，推荐）" },
+      ix: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 x 像素（自动换算）" },
+      iy: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 y 像素" }
     },
     output: touchOutput,
     async execute(args, exec) {
@@ -848,6 +954,9 @@ function apply(ctx) {
       for (const k of ["x", "y", "fx", "fy"]) {
         if (args[k] !== undefined) params[k] = String(Number(args[k]));
       }
+      // A6：down/move 支持图内像素 ix/iy
+      const cropErr = applyCropPoint(args, "ix", "iy", params, "x", "y");
+      if (cropErr) return { ok: false, error: cropErr };
       // A5：down 的落点若在系统手势区，按住可能被系统抢走
       const warning = args.action === "down" ? edgeGestureWarning(args.fx, args.fy) : "";
       noteInputEvent();
@@ -891,6 +1000,10 @@ function apply(ctx) {
             y2: { type: "number", description: "swipe 终点 y（像素）" },
             fx2: { type: "number", description: "swipe 终点分数 x（0~1）" },
             fy2: { type: "number", description: "swipe 终点分数 y（0~1）" },
+            ix: { type: "number", description: "**区域截图专用**：笔起点在图内 x 像素（自动换算）" },
+            iy: { type: "number", description: "**区域截图专用**：笔起点在图内 y 像素" },
+            ix2: { type: "number", description: "**区域截图专用**：swipe 终点在图内 x 像素" },
+            iy2: { type: "number", description: "**区域截图专用**：swipe 终点在图内 y 像素" },
             durationMs: { type: "number", description: "时长（wait=等待毫秒；tap 默认60；swipe 默认300；hold 默认500；move/up 默认100）" },
             ms: { type: "number", description: "wait 的等待毫秒" }
           }
@@ -907,6 +1020,7 @@ function apply(ctx) {
       const ALLOWED = ["kind", "finger", "x", "y", "fx", "fy", "x2", "y2", "fx2", "fy2", "durationMs", "ms"];
       const clean = [];
       let total = 0;
+      let strokeIdx = 0;
       for (const s of strokes) {
         if (!s || typeof s !== "object") return { ok: false, error: "strokes 元素必须是对象" };
         const kind = s.kind;
@@ -922,7 +1036,13 @@ function apply(ctx) {
         for (const k of Object.keys(s)) {
           if (ALLOWED.includes(k)) o[k] = s[k];
         }
+        // A6：每根笔都支持"图内像素"（ix/iy，swipe 还可 ix2/iy2）→ 自动换算成屏幕坐标
+        const cErr1 = applyCropPoint(s, "ix", "iy", o, "x", "y");
+        if (cErr1) return { ok: false, error: "strokes[" + strokeIdx + "]: " + cErr1 };
+        const cErr2 = applyCropPoint(s, "ix2", "iy2", o, "x2", "y2");
+        if (cErr2) return { ok: false, error: "strokes[" + strokeIdx + "]: " + cErr2 };
         clean.push(o);
+        strokeIdx++;
       }
       const raw = await a11yPost("/gesture", clean, total + 15000);
       const v = parseResult(raw);

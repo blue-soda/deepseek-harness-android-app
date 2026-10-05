@@ -1297,6 +1297,15 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
         }
         final String gridStr = queryParam(path, "grid");
         final int grid = "8".equals(gridStr) ? 8 : ("4".equals(gridStr) || "true".equals(gridStr) ? 4 : 0);
+        // v1.19（A6）：区域截图参数（屏幕坐标）
+        final String selectText = queryParam(path, "select");
+        final String region = queryParam(path, "region");
+        int cropPadTmp = 0;
+        try {
+            String pd = queryParam(path, "pad");
+            if (!pd.isEmpty()) cropPadTmp = Math.max(0, Integer.parseInt(pd.trim()));
+        } catch (Throwable ignored) {}
+        final int cropPad = cropPadTmp;
         // 虚拟屏支持（v1.8）：?display=N 截指定显示（overlay 虚拟屏等）；缺省截主屏
         final String displayStr = queryParam(path, "display");
         int displayId = Display.DEFAULT_DISPLAY;
@@ -1329,6 +1338,93 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
                             Bitmap soft = bmp.copy(Bitmap.Config.ARGB_8888, true); // isMutable=true：后面要叠网格（new Canvas 需要可变位图）
                             bmp.recycle();
                             if (hb != null) hb.close();
+                            // ====================================================
+                            // v1.19（A6）区域截图：只截一块，让模型看清小字。
+                            //   select=<文字>  → 按无障碍节点取景（节点 bounds 是屏幕坐标，最准）
+                            //   region=x,y,w,h → 显式矩形（屏幕坐标）
+                            //   pad=N          → select 时的外扩像素（默认 0）
+                            // 换算契约（返回给调用方，插件再原样转述给模型）：
+                            //   screenX = cropX + ix * scaleX      // ix 是**裁剪图内**的像素
+                            //   screenY = cropY + iy * scaleY
+                            //   scaleX  = cropW / imageW（screenW/screenH 仍是整屏物理尺寸）
+                            // 整屏截图等价于 crop=(0,0,screenW,screenH)，此时 scaleX 与旧版语义一致。
+                            // ====================================================
+                            int fullW = soft.getWidth(), fullH = soft.getHeight();
+                            int[] ssz = screenSize();
+                            int scw = ssz[0] > 0 ? ssz[0] : fullW;
+                            int sch = ssz[1] > 0 ? ssz[1] : fullH;
+                            double imgScaleX = scw > 0 ? (double) fullW / scw : 1.0;   // 截图px / 屏幕px
+                            double imgScaleY = sch > 0 ? (double) fullH / sch : 1.0;
+                            int cropX = 0, cropY = 0, cropW = scw, cropH = sch;        // 屏幕坐标
+                            boolean cropped = false;
+                            double selectFx = -1, selectFy = -1;
+                            Rect selBounds = null;
+                            if (!selectText.isEmpty()) {
+                                AccessibilityNodeInfo sel = findNodeByText(selectText);
+                                if (sel != null) {
+                                    Rect b = new Rect();
+                                    try { sel.getBoundsInScreen(b); } catch (Throwable ignored) {}
+                                    sel.recycle();
+                                    if (b.width() > 0 && b.height() > 0) {
+                                        selBounds = b;
+                                        cropX = Math.max(0, b.left - cropPad);
+                                        cropY = Math.max(0, b.top - cropPad);
+                                        cropW = Math.min(scw - cropX, b.width() + cropPad * 2);
+                                        cropH = Math.min(sch - cropY, b.height() + cropPad * 2);
+                                        selectFx = (b.left + b.right) / 2.0 / scw;
+                                        selectFy = (b.top + b.bottom) / 2.0 / sch;
+                                        cropped = true;
+                                    }
+                                }
+                                if (!cropped) {
+                                    result[0] = jsonError("select 未匹配到可见节点：" + selectText);
+                                    latch.countDown();
+                                    return;
+                                }
+                            } else if (!region.isEmpty()) {
+                                String[] pp = region.split("[,\\sx]+");
+                                if (pp.length < 4) {
+                                    result[0] = jsonError("region 需要 4 个数字：x,y,w,h");
+                                    latch.countDown();
+                                    return;
+                                }
+                                try {
+                                    cropX = Math.max(0, Integer.parseInt(pp[0].trim()));
+                                    cropY = Math.max(0, Integer.parseInt(pp[1].trim()));
+                                    cropW = Integer.parseInt(pp[2].trim());
+                                    cropH = Integer.parseInt(pp[3].trim());
+                                } catch (NumberFormatException e) {
+                                    result[0] = jsonError("region 解析失败：" + region);
+                                    latch.countDown();
+                                    return;
+                                }
+                                if (cropW <= 0 || cropH <= 0) {
+                                    result[0] = jsonError("region 宽高必须为正");
+                                    latch.countDown();
+                                    return;
+                                }
+                                if (cropX >= scw || cropY >= sch) {
+                                    result[0] = jsonError("region 起点超出屏幕（" + scw + "x" + sch + "）");
+                                    latch.countDown();
+                                    return;
+                                }
+                                cropW = Math.min(cropW, scw - cropX);
+                                cropH = Math.min(cropH, sch - cropY);
+                                cropped = true;
+                            }
+                            if (cropped) {
+                                int ix = (int) Math.round(cropX * imgScaleX);
+                                int iy = (int) Math.round(cropY * imgScaleY);
+                                int iw = (int) Math.round(cropW * imgScaleX);
+                                int ih = (int) Math.round(cropH * imgScaleY);
+                                ix = Math.max(0, Math.min(ix, fullW - 1));
+                                iy = Math.max(0, Math.min(iy, fullH - 1));
+                                iw = Math.max(1, Math.min(iw, fullW - ix));
+                                ih = Math.max(1, Math.min(ih, fullH - iy));
+                                Bitmap sub = Bitmap.createBitmap(soft, ix, iy, iw, ih);
+                                soft.recycle();
+                                soft = sub;
+                            }
                             // 网格叠加（半透明细线，帮模型按行列定位）
                             if (grid > 0 && soft.getWidth() > 0) {
                                 Canvas cv = new Canvas(soft);
@@ -1359,8 +1455,25 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
                             o.put("screenH", size[1]);
                             o.put("imageW", soft.getWidth());
                             o.put("imageH", soft.getHeight());
-                            o.put("scaleX", soft.getWidth() > 0 ? (double) size[0] / soft.getWidth() : 1.0);
-                            o.put("scaleY", soft.getHeight() > 0 ? (double) size[1] / soft.getHeight() : 1.0);
+                            // v1.19（A6）：裁剪几何（全部屏幕坐标）+ 精确换算
+                            //   screenX = cropX + ix * scaleX ； screenY = cropY + iy * scaleY
+                            o.put("cropped", cropped);
+                            o.put("cropX", cropX);
+                            o.put("cropY", cropY);
+                            o.put("cropW", cropW);
+                            o.put("cropH", cropH);
+                            o.put("scaleX", soft.getWidth() > 0 ? (double) cropW / soft.getWidth() : 1.0);
+                            o.put("scaleY", soft.getHeight() > 0 ? (double) cropH / soft.getHeight() : 1.0);
+                            if (selBounds != null) {
+                                o.put("selectLeft", selBounds.left);
+                                o.put("selectTop", selBounds.top);
+                                o.put("selectRight", selBounds.right);
+                                o.put("selectBottom", selBounds.bottom);
+                            }
+                            if (selectFx >= 0) {
+                                o.put("selectFx", selectFx);   // 命中节点的中心（分数坐标，可直接给 android_tap）
+                                o.put("selectFy", selectFy);
+                            }
                             o.put("grid", grid);
                             o.put("bytes", out.length());
                             result[0] = o.toString();
