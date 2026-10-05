@@ -494,7 +494,7 @@ const en = {
   openLocalWorkspaces: 'Open local workspaces',
   clientSignInHint: 'Sign in to this Server to list your remote Hosts.',
   deepseekSignIn: 'Sign in with DeepSeek account',
-  deepseekSignInWaiting: 'Finish signing in to DeepSeek in the browser tab that just opened.',
+  deepseekSignInWaiting: 'Starting DeepSeek sign-in — finish it in the browser.',
   deepseekSignInOpen: 'Open the sign-in page',
   deepseekSignInTimeout: 'DeepSeek sign-in was not completed. Try again.',
   changeServerUrl: 'Change address',
@@ -741,7 +741,7 @@ const zh: Record<keyof typeof en, string> = {
   openLocalWorkspaces: '打开本地工作区',
   clientSignInHint: '登录 Server 后即可查看自己的远端主机。',
   deepseekSignIn: '使用 DeepSeek 账号登录',
-  deepseekSignInWaiting: '请在弹出的浏览器标签页中完成 DeepSeek 登录。',
+  deepseekSignInWaiting: '正在发起 DeepSeek 登录，请在浏览器中完成。',
   deepseekSignInOpen: '手动打开登录页',
   deepseekSignInTimeout: 'DeepSeek 登录未完成，请重试。',
   changeServerUrl: '修改地址',
@@ -1578,6 +1578,16 @@ window.__ModuleLoader__.load({
       const codexWorkspaceListId = 'dsh-remote-codex-workspace-list'
       const [busy, setBusy] = React.useState(false)
       const [needsAuthorization, setNeedsAuthorization] = React.useState(false)
+      /**
+       * Whether the local credential check has answered yet.
+       *
+       * Until it does, neither panel is rendered: showing a conclusion the
+       * plugin has not actually reached is what produced an empty Host list and
+       * a "checking connection" line in front of a sign-in that was never asked
+       * for. The check reads local credentials, so this window is a few
+       * milliseconds rather than a network timeout.
+       */
+      const [authorizationResolved, setAuthorizationResolved] = React.useState(false)
       const [email, setEmail] = React.useState('')
       const [password, setPassword] = React.useState('')
       const [loginServerUrl, setLoginServerUrl] = React.useState(DEFAULT_REMOTE_SERVER_URL)
@@ -1869,6 +1879,7 @@ window.__ModuleLoader__.load({
           if (!nextStatus.available) {
             setDevices([])
             setNeedsAuthorization(false)
+            setAuthorizationResolved(true)
             setSelectedHost(undefined)
             setWorkspaces([])
             setCodexWorkspaces([])
@@ -1880,6 +1891,20 @@ window.__ModuleLoader__.load({
             setAddingWorkspace(false)
             setDirectory(undefined)
             return
+          }
+          // Ask the Host what this installation already stores. It answers from
+          // local credentials, so a signed-out install reaches the sign-in panel
+          // right away instead of waiting for the Server round trip below to
+          // fail — the round trip then only refines the answer.
+          try {
+            const local = await props.control<{ stored?: boolean }>('authorization.local')
+            setNeedsAuthorization(local?.stored !== true)
+          } catch {
+            // A Host without this endpoint keeps the old order: the Host list
+            // first, corrected by the device query's outcome.
+            setNeedsAuthorization(false)
+          } finally {
+            setAuthorizationResolved(true)
           }
           try {
             const nextDevices = await props.control<RemoteDevice[]>('devices')
@@ -1918,6 +1943,8 @@ window.__ModuleLoader__.load({
           }
         } catch (reason) {
           setError(messageOf(reason))
+          // A failed status read must not leave the panel undecided forever.
+          setAuthorizationResolved(true)
         } finally {
           setBusy(false)
         }
@@ -1992,6 +2019,9 @@ window.__ModuleLoader__.load({
         if (tab !== null) { try { tab.opener = null } catch { /* cross-origin handle */ } }
         setBusy(true)
         setError(undefined)
+        // Mark the attempt from its first moment, so the panel states what is
+        // actually happening instead of borrowing the generic busy line.
+        setAwaitingDeepSeek(true)
         try {
           let state = await requestDeepSeekSignIn()
           if (state.pending) {
@@ -2004,15 +2034,9 @@ window.__ModuleLoader__.load({
             } else {
               tab?.close()
             }
-            setAwaitingDeepSeek(true)
-            try {
-              for (let poll = 0; poll < 40 && state.pending; poll++) {
-                await new Promise(resolve => { setTimeout(resolve, 3_000) })
-                state = await requestDeepSeekSignIn()
-              }
-            } finally {
-              setAwaitingDeepSeek(false)
-              setPendingAuthorizeUrl(undefined)
+            for (let poll = 0; poll < 40 && state.pending; poll++) {
+              await new Promise(resolve => { setTimeout(resolve, 3_000) })
+              state = await requestDeepSeekSignIn()
             }
             if (state.pending) throw new Error(t('deepseekSignInTimeout'))
           } else {
@@ -2022,10 +2046,13 @@ window.__ModuleLoader__.load({
           setDevices(await props.control<RemoteDevice[]>('devices'))
           setStatus(await props.control<RemoteStatus>('status'))
           setNeedsAuthorization(false)
+          setAuthorizationResolved(true)
           setPassword('')
         } catch (reason) {
           setError(messageOf(reason))
         } finally {
+          setAwaitingDeepSeek(false)
+          setPendingAuthorizeUrl(undefined)
           setBusy(false)
         }
       }
@@ -2240,7 +2267,7 @@ window.__ModuleLoader__.load({
               onClick: () => void openLocalWorkspaces(),
             }, t('openLocalWorkspaces')) : null,
             React.createElement(React.Fragment, null,
-                needsAuthorization ? React.createElement('section', { className: 'dshRemoteEnable' },
+                authorizationResolved && needsAuthorization ? React.createElement('section', { className: 'dshRemoteEnable' },
                   React.createElement('div', { className: 'dshRemoteClientLogin' },
                     editingServerUrl
                       ? React.createElement('input', {
@@ -2268,7 +2295,7 @@ window.__ModuleLoader__.load({
                         href: pendingAuthorizeUrl, target: '_blank', rel: 'noreferrer',
                         style: { marginLeft: '6px', color: 'var(--dsw-alias-brand-primary)' },
                       }, t('deepseekSignInOpen'))) : null)) : null,
-                needsAuthorization ? null : React.createElement(React.Fragment, null,
+                !authorizationResolved || needsAuthorization ? null : React.createElement(React.Fragment, null,
                 selectedHost === undefined ? React.createElement('section', { className: 'dshRemoteHosts', 'aria-label': t('chooseHost') },
                   React.createElement('div', { className: 'dshRemoteSectionHeading' },
                     React.createElement('div', { className: 'dshRemoteSectionTitle' },

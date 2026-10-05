@@ -233,6 +233,20 @@ export class ClientModeRuntime {
     }
   }
 
+  /**
+   * Whether this installation already holds stored Server credentials for its
+   * Client identity.
+   *
+   * This is the local answer to "is this installation signed in", available
+   * without contacting the Server, so the UI can choose its panel immediately
+   * instead of inferring the answer from a failed network round trip.
+   */
+  async hasStoredAuthorization(): Promise<boolean> {
+    return this.server.hasStoredAuthorization === undefined
+      ? false
+      : await this.server.hasStoredAuthorization()
+  }
+
   async authorizeHostByDefault(): Promise<void> {
     try {
       if (this.host === undefined) return

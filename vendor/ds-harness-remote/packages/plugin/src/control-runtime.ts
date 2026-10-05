@@ -124,6 +124,18 @@ export class PluginControlRuntime {
       if (endpoint === 'settings.acp.add') return ok(await this.addAcp(payload))
       if (endpoint === 'settings.acp.remove') return ok(await this.removeAcp(payload))
       if (endpoint === 'settings.logout') return ok(await this.logout())
+      if (endpoint === 'authorization.local') {
+        // Answer from what this installation already stores, without touching the
+        // Server. The panel choice must not wait for a network round trip to
+        // fail: that is what left the UI in an unanswerable state, and it lasted
+        // as long as the Server's timeout.
+        const client = this.client === undefined ? false : await this.client.hasStoredAuthorization()
+        const host = this.host?.hasStoredAuthorization === undefined
+          ? false
+          : await this.host.hasStoredAuthorization()
+        // Device discovery is a Client operation, so Client credentials decide.
+        return ok({ stored: client, client, host })
+      }
       if (endpoint === 'host.authorization.set' && this.client !== undefined) {
         const value = record(payload)
         if (typeof value.enabled !== 'boolean') throw new ClientModeError('INVALID_MESSAGE', 'Host authorization state is required.')

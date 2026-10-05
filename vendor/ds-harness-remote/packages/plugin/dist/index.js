@@ -20178,6 +20178,17 @@ var ClientModeRuntime = class {
       }
     }
   }
+  /**
+   * Whether this installation already holds stored Server credentials for its
+   * Client identity.
+   *
+   * This is the local answer to "is this installation signed in", available
+   * without contacting the Server, so the UI can choose its panel immediately
+   * instead of inferring the answer from a failed network round trip.
+   */
+  async hasStoredAuthorization() {
+    return this.server.hasStoredAuthorization === void 0 ? false : await this.server.hasStoredAuthorization();
+  }
   async authorizeHostByDefault() {
     try {
       if (this.host === void 0) return;
@@ -21634,6 +21645,11 @@ var PluginControlRuntime = class {
       if (endpoint === "settings.acp.add") return ok3(await this.addAcp(payload));
       if (endpoint === "settings.acp.remove") return ok3(await this.removeAcp(payload));
       if (endpoint === "settings.logout") return ok3(await this.logout());
+      if (endpoint === "authorization.local") {
+        const client = this.client === void 0 ? false : await this.client.hasStoredAuthorization();
+        const host = this.host?.hasStoredAuthorization === void 0 ? false : await this.host.hasStoredAuthorization();
+        return ok3({ stored: client, client, host });
+      }
       if (endpoint === "host.authorization.set" && this.client !== void 0) {
         const value = record5(payload);
         if (typeof value.enabled !== "boolean") throw new ClientModeError("INVALID_MESSAGE", "Host authorization state is required.");

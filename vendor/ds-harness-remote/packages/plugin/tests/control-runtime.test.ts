@@ -3,7 +3,7 @@ import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { HostAuthorizationControl, HostConnectionHandle } from '../src/client-runtime.js'
+import type { ClientModeRuntime, HostAuthorizationControl, HostConnectionHandle } from '../src/client-runtime.js'
 import { resolveConfig, type Config } from '../src/config.js'
 import { CONTROL_RPC_PREFIX } from '../src/control-route.js'
 import { PluginControlRuntime, type PluginSettingsBinding } from '../src/control-runtime.js'
@@ -300,6 +300,53 @@ describe('PluginControlRuntime settings setup', () => {
     expect(calls[1]?.init?.headers).toMatchObject({ Authorization: 'Bearer access-token-value' })
     expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({
       device: { name: hostname(), role: 'client' },
+    })
+  })
+})
+
+describe('PluginControlRuntime local authorization', () => {
+  /**
+   * The panel choice must not depend on a network round trip, so this endpoint
+   * answers purely from stored credentials. A regression here reintroduces a
+   * sign-in prompt that appears only after the Server times out.
+   */
+  it('reports signed in from stored Client credentials', async () => {
+    const client = { hasStoredAuthorization: vi.fn(async () => true) }
+    const handler = register(new PluginControlRuntime(
+      resolveConfig({ serverUrl: 'https://sakakibara.ink:8443' }), '/unused', undefined,
+      client as unknown as ClientModeRuntime, undefined,
+    ))
+
+    await expect(handler('authorization.local', {}, signal())).resolves.toMatchObject({
+      ok: true,
+      value: { stored: true, client: true, host: false },
+    })
+  })
+
+  it('stays signed out when only Host credentials exist', async () => {
+    const client = { hasStoredAuthorization: vi.fn(async () => false) }
+    const host = { hasStoredAuthorization: vi.fn(async () => true) }
+    const handler = register(new PluginControlRuntime(
+      resolveConfig({ serverUrl: 'https://sakakibara.ink:8443' }), '/unused', undefined,
+      client as unknown as ClientModeRuntime, host as unknown as HostAuthorizationControl,
+    ))
+
+    // Device discovery is a Client operation: Host credentials alone cannot list
+    // Hosts, so the installation still needs the sign-in panel.
+    await expect(handler('authorization.local', {}, signal())).resolves.toMatchObject({
+      ok: true,
+      value: { stored: false, client: false, host: true },
+    })
+  })
+
+  it('reports signed out when no Client runtime is mounted', async () => {
+    const handler = register(new PluginControlRuntime(
+      resolveConfig({ serverUrl: 'https://sakakibara.ink:8443' }), '/unused', undefined, undefined, undefined,
+    ))
+
+    await expect(handler('authorization.local', {}, signal())).resolves.toMatchObject({
+      ok: true,
+      value: { stored: false },
     })
   })
 })
