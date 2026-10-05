@@ -232,7 +232,11 @@
  *   用户实测「此时点三条杠，三条杠本身也会消失」——也就是面板打开时三条杠本就不该在那儿。
  *   于是 mobile.css 按 `html[data-dsh-right-panel]` 把三条杠隐去，Start 保持原样。
  *
- * 判定：dockkit 的**活动 pane**（[data-dockkit-pane-active="true"]）宽度占视口一半以上即视为打开。
+ * 判定：dockkit 的**活动 pane** 必须「真的占住了屏幕左侧」才算打开。
+ *   ⚠ v1.20 修正：不能只看"pane 宽度占视口一半"——面板**关闭**时那一列依然存在
+ *   （实测：rect.x = 视口宽度，排在视口右侧之外，且 computed visibility = hidden），
+ *   只看宽度会恒为真 → 三条杠在欢迎页上也被隐去（已回归过）。
+ *   现在要求 visibility !== 'hidden' 且 rect.x < 视口 25%（实测：打开时 x=0，关闭时 x=视口宽）。
  *   （不用 CSS-module 哈希类名，也不依赖 i18n 文案；面板开关都会触发 DOM 变更 → MutationObserver。）
  */
 (function () {
@@ -241,8 +245,9 @@
     try {
       var pane = document.querySelector('[data-dockkit-pane-active="true"]');
       if (pane) {
+        var cs = getComputedStyle(pane);
         var r = pane.getBoundingClientRect();
-        open = r.width > window.innerWidth * 0.5 && r.height > 0;
+        open = cs.visibility !== 'hidden' && r.width > 0 && r.x < window.innerWidth * 0.25;
       }
     } catch (e) { open = false; }
     try {
@@ -254,7 +259,7 @@
   try {
     new MutationObserver(update).observe(document.documentElement, {
       subtree: true, childList: true, attributes: true,
-      attributeFilter: ['style', 'class', 'data-dockkit-pane-active', 'hidden']
+      attributeFilter: ['style', 'class', 'hidden', 'aria-hidden', 'data-dockkit-pane-active']
     });
   } catch (e) { /* 老 WebView 没 MutationObserver 也不致命 */ }
   window.addEventListener('resize', update);

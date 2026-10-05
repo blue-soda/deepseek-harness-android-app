@@ -228,6 +228,18 @@ fi
 
 cat > "$P/staging/bin/bash" <<'EOF'
 #!/system/bin/sh
+# v1.20：本文件**不是真 bash**，而是 /system/bin/sh（mksh）的包装。
+#   DSH 内置终端按 bash 语义传 `--noprofile --norc -i` 之类，mksh 不认这些长选项 →
+#   直接报 `/system/bin/sh: --: unknown option` 然后退出(1)。
+#   这里丢掉开头的 bash 专有选项；若丢完没有参数（终端只传了 --noprofile --norc），
+#   补 `-i` 当交互式 shell 起，真 PTY 里才有提示符。其余调用（如 `bash -c 'cmd'`）原样转发。
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --noprofile|--norc|--|--login|--posix|--verbose|--debugger|--restricted) shift ;;
+    *) break ;;
+  esac
+done
+[ "$#" -eq 0 ] && set -- -i
 exec /system/bin/sh "$@"
 EOF
 chmod +x "$P/staging/bin/bash"

@@ -283,12 +283,26 @@ HTTP 经 `adb forward` 打到模拟器上真实运行的 App 服务（33xx/9xxx�
    只认 linux/darwin/win32 → 报 `terminal inspection is unsupported on platform android`。
    Android 就是 Linux（`/proc` 俱全）⇒ 补丁把 android 与 linux 同等对待，
    文件落在 `dsh-patches/overlay/.../dsh-subprocess-local/lib/runner-launch-B2zsQ1Dz.js`。
-3. **缺原生模块 node-pty**（**未真正解决**）：0.2.0-rc.2 的终端走原生 PTY（node-pty），
-   而我们的 payload 不打包原生模块。已放一个纯 JS 替身
-   （`dsh-patches/overlay/lib/node_modules/node-pty/`），实测模块能解析、shell 也能被拉起
-   （面板显示 `bash | 进程已退出(1)` 与 mksh 自己的报错），但**管道没有 TTY**：
-   无提示符/回显、`resize` 无效、TUI 不可用，面板就绪判定也等不到 → 停在「正在启动…」。
-   ⇒ 要真正可用需打包**原生 node-pty**（方案与代价见报告）。
+3. **缺原生模块 node-pty**（**已解决**）：0.2.0-rc.2 的终端走原生 PTY，而 payload 不打包原生模块。
+   - 先放纯 JS 替身（管道）验证依赖链：模块能解析、shell 能拉起，但**没有真 TTY**
+     （无提示符/回显、resize 无效、TUI 不可用，面板停在「正在启动…」）→ 只算诊断，不是可用终端。
+   - 最终方案：放入 **Android arm64 预编译版** `@mmmbuto/node-pty-android-arm64@1.1.2`
+     （`dsh-patches/overlay/lib/node_modules/node-pty/`，含 `prebuilds/android-arm64/pty.node`）。
+     关键判断：该 `pty.node` 是 **N-API**（含 `napi_register_module_v1`、无 V8 ABI 符号）
+     → **与 Node 版本无关**，能在 payload 的 Node 26（ABI 147）上直接加载，**不需要编译**。
+   - 设备实测（payload 的 node 直接跑，不经 UI）：
+     ```
+     ① node-pty 加载成功 1.1.2        ③ PTY 已分配 pid=21779
+     ④ 提示符 emu64xa:/data/…/dshhome #
+     ⑥ tty → /dev/pts/1 ；echo MARK-$((1+1)) → MARK-2
+     ```
+   - 配套两处修复：
+     · `payload/bin/bash` 其实是 mksh 包装，DSH 按 bash 语义传 `--noprofile --norc --` →
+       mksh 报 `--: unknown option` 退出(1)。wrapper 改为**丢掉这些 bash 专有选项**、
+       参数为空时补 `-i`，真 PTY 里才有提示符。
+     · `bin/` 与 `dshroot/lib/node_modules/node-pty/` 加入强制覆盖白名单
+       （否则 internal-patch/dshroot-add 只写缺失文件，老设备会留着旧 wrapper / 旧替身）。
+   - 复用方式：`tools/install-node-pty.sh <目录|tgz>` 校验并安装（N-API，无 ABI 顾虑）。
 
 **顺带修掉一个真问题：新增文件在 fast 同步下永远不落地**
 - 现象：node-pty 替身打进 APK 了，设备上却没有（`dshroot-fast` 只刷 REVISION + 白名单，

@@ -119,6 +119,11 @@ public class MainActivity extends Activity {
         // 必须加白名单——否则同内核版本下 fast 同步不会覆盖它，补丁形同没打
         // → 真机上发图 / read_image / android_see 仍报 `EINVAL: invalid argument, fsync`。
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-storage-json/",
+        // v1.20：内置终端的原生依赖 node-pty。这不是上游 npm 包，而是我们塞进 payload 的
+        // **Android arm64 预编译版**（@mmmbuto/node-pty-android-arm64，N-API，ABI 无关）。
+        // 必须加白名单：否则同内核版本下 dshroot-add 只写"缺失文件"，上一版留下的纯 JS 替身
+        // （同名 index.js / package.json）不会被覆盖 → 终端仍然没有真 PTY。
+        "dshroot/lib/node_modules/node-pty/",
         // v1.3.x 核心 UI 改动（侧栏改造/插件按钮）必须随 APK 覆盖：
         // 否则旧版升级用户的外部 dshroot 保留旧 client.js → 页面仍是旧 UI（无竖屏适配）
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-layout/lib/client.js",
@@ -126,6 +131,10 @@ public class MainActivity extends Activity {
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/mobile.css",
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/mobile.js",
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html",
+        // v1.20：payload/bin/* 全部由 build.sh 生成（bash 包装、pnpm/python/npm/git 的 wrapper），
+        // 属于「官方维护」文件。必须随 APK 覆盖：否则 internal-patch 同步只写缺失文件，
+        // 老设备会一直留着旧版 bin/bash（踩过：终端因 mksh 不认 bash 长选项而退出(1)）。
+        "bin/",
         // v1.15.9：dsh-app-boot 打了「插件 warn 落盘」补丁（$DSH_HOME/logs/plugins.log）。
         // 必须加白名单，否则同内核版本下 fast 同步不会覆盖它，补丁形同没打。
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js",
