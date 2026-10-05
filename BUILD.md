@@ -33,6 +33,21 @@ export ANDROID_HOME=/path/to/Android/Sdk     # 或 ANDROID_SDK_ROOT
 `ANDROID_HOME` 没设时脚本会自己探测常见位置（Windows 的 `%LOCALAPPDATA%\Android\Sdk`、
 Linux/macOS 的 `~/Android/Sdk`、`~/Library/Android/sdk`）。
 
+### 最小集与"不需要什么"（B2/B3/B4/B10）
+
+- **最小组件集** = JDK 17+ + `build-tools`（aapt/d8/zipalign/apksigner）+ **任意一个** `platforms/android-*/android.jar`。
+  本仓库**不用 Gradle、不用 AGP、不碰 Maven 仓库** —— 打包是 `aapt2 + javac + d8 + zipalign + apksigner`
+  的直接调用（见 `android-app/build.sh`）。所以"maven.google.com 超时 / AGP 不认 SDK 布局"这类问题
+  **在本仓库不存在**；`sdkmanager` 只在下载上面那几个组件时需要联网。
+- **源码获取**：本仓库自身用 tarball / `git clone` 均可。**不需要 clone 上游 DSH**：一键脚本走的是
+  "下载上游 Release APK → 取出里面的 `assets/payload.zip`"这条更短的路（第 3 节）。
+  若所在网络 `github.com` clone 卡死，用 `codeload.github.com` 的 tarball，或直接用 Release 里的 APK
+  （`--apk <路径>`）。
+- **不要在手机/平板 App 内构建 APK**：设备上没有、也不应该塞进构建工具链（最小集 raw 就 ~525MB，
+  加 Gradle/AGP/SDK 要 +1~2GB，加 NDK 更不可行，与 APK 体积模型冲突）。手机上能做的是**运行期定制**
+  （装插件 / 改 profile 补丁，见 `docs/开发指南.md` 的「定制面」一节）；要重建 APK 就在 PC 上做，
+  或者用公开社区密钥构建可与官方共存的社区版（`--variant community`）。
+
 **平台支持**：Windows 用 **Git Bash**（`C:\WINDOWS\system32\bash.exe` 是 WSL，不行）；
 Linux、macOS 理论上同样可用，但**仅在 Windows + Git Bash 上实测过**。
 

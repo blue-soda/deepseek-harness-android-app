@@ -52,7 +52,52 @@ LISTEN 127.0.0.1:8999 (official 虚拟屏桥)  LISTEN 127.0.0.1:9029 (community 
 - 应用显示名分别为 `DeepSeek Harness` / `DeepSeek Harness 社区版`；两个 provider authority 不同，
   因此第二个包能正常安装（同 authority 会导致 `INSTALL_FAILED_CONFLICTING_PROVIDER`）。
 
-### 五、未完成 / 已知限制
+### 五、工具体验与体积（本轮同批落地，均有实测）
+
+**A. 工具可用性透明化（不再让模型逐个试错）**
+
+- 新增 **`android_capabilities`**：一次返回无障碍开关 / 截图能力 / Shizuku·root 特权通道 / 系统操作能力 /
+  虚拟屏服务是否就绪，并附"不可用时该做什么"。放在无障碍插件里（不是 `dsh-tool-android`）是**故意的**——
+  后者在无特权时整体不注册，探测工具若放那里，恰好在最需要它的时候消失。
+- `android_type` 失败时给**可执行下一步**；服务端 `handleInput` 改为**错误分层**并在 JSON 里带 `hint`：
+  「没有活动窗口 / 没有可编辑节点 / 有节点但动作未执行（附节点类名与聚焦状态）」。实测输出示例：
+  `输入动作未被执行（ACTION_SET_TEXT 返回 false，节点类=android.widget.FrameLayout，聚焦=false）`。
+- 新增 **`android_paste_text`**（中文/WebView 输入的标准动作）：写剪贴板 → `ACTION_PASTE`，
+  失败时返回回退路径（截图找输入法「粘贴」键，底部约 y≈0.586）。如实说明 ACTION_PASTE 依赖输入法实现。
+- README 的插件表加「需要特权？」列，并写明**未授权时这些工具根本不在工具列表里**。
+  `android_clipboard` / `shizuku_status` 无特权也可用。
+
+**B. 防呆与可判定性**
+
+- **A5 边缘手势防呆**：`android_swipe` / `android_hold` / `android_gesture` / `android_touch` / `android_tap`
+  的起点若 `fy>0.95` 或 `fx<0.05`/`>0.95`（系统导航/返回手势区），返回值与渲染文本都带 ⚠ 警告。
+- **A7 截图可判定**：`android_see` 返回 `sha256`(16) / `capturedAt` / `sameAsPrevious`；
+  若两次截图内容相同**且期间发生过输入操作**，附"截图可能未刷新或操作未生效"的提示。
+- **A8 前台判定提示**：`android_screen` 在「前台=宿主 App / 节点数=0 / 节点数<3」时提示
+  "前台判定可能不准，结论以 android_see 截图为准"。
+
+**C. 体积：两项实测削减**
+
+- **B7 打包排除**：`*.map`、`*.d.ts`/`*.d.mts`/`*.d.cts`、`__pycache__`、`*.pyc` 不进包。
+  实测 dshroot **25,787 → 12,816 个文件**（197MB → 117MB）。
+  ⚠ **不排除 `*.md`**（`dsh-agent-preset/skills/**/SKILL.md` 运行时真读，收益也只 ~8MB）、
+  不排除 licenses（合规）。
+- **B8 soname 别名不再打进包**：`build.sh` 会把 `LINKS.txt` 里的别名文件（18 个）从包里剔除，
+  改由 App 解压时 `applyLinks()` 重建（硬链 → 软链 → 复制兜底）。
+  实测（社区版）：payload.zip **126.8MB → 97MB**、APK **127MB → 97MB**；
+  设备侧 `runtime/lib` **140MB → 63MB**（ICU 不再有 3 份独立 inode），引擎正常启动。
+  同时**停止清空 `LINKS.txt`**（旧 `DSH_X64_NO_LINKS` 行为会让 node 缺 `libz.so.1`）。
+  需要旧行为时 `export DSH_MATERIALIZE_LINKS=1`。
+
+### 六、模拟器测试台（本机工具，不入仓库）
+
+为了不经过模型也能验证工具行为，本轮加了一个本机测试台（`.cache/tooltest/`，随 `.cache/` 忽略）：
+把插件文件复制到带 `node_modules` 链接的目录后直接 `execute()`，
+HTTP 经 `adb forward` 打到模拟器上真实运行的 App 服务（33xx/9xxx），并打印 `render()` 出来的文本
+（模型实际看到的内容）。A2/A3/A4/A5/A7/A8 的验证全部走它 + 真机路径，另有一个 mock 服务用来
+确定性地验证"同图/操作后同图"分支。
+
+### 七、未完成 / 已知限制
 
 - **compat 变体尚未并入本机制**：`android-app/compat/` 仍是一套独立差异文件（GeckoView），
   其 `build.sh` / `MainActivity.java` 未同步 BuildVariant 与变体 staging，其虚拟屏端口仍为 8999/8998

@@ -47,12 +47,18 @@
 
 ## 🛠️ 手机端插件（本项目的核心特色）
 
-| 插件 | 能力 |
-|---|---|
-| `dsh-tool-shizuku` | 特权 shell：任意系统命令（pm/am/settings/dumpsys…），异步执行 + 环境消毒 + dex 只读自愈 |
-| `dsh-tool-android` | 结构化系统操作：包管理 / 应用管理 / 系统设置 / 截图 / 模拟输入 |
-| `dsh-tool-accessibility` | 无障碍读屏 + 模拟操作（v1.7.0）：读控件树 / 点击 / 输入 / 返回主页 / 滚动 / 无障碍截图理解 |
-| `dsh-tool-vscreen` | **虚拟屏（v1.10+）**：建屏 / 把 App 启动到虚拟屏 / 看虚拟屏画面 / 在虚拟屏上点击·滑动·按键 / 关屏（8 个工具） |
+| 插件 | 能力 | 需要特权？ |
+|---|---|---|
+| `dsh-tool-shizuku` | 特权 shell：任意系统命令（pm/am/settings/dumpsys…），异步执行 + 环境消毒 + dex 只读自愈 | **是**（root 或 Shizuku）；`android_clipboard`、`shizuku_status` 无特权也可用 |
+| `dsh-tool-android` | 结构化系统操作：包管理 / 应用管理 / 系统设置 / 截图 / 模拟输入 | **是**（root 或 Shizuku） |
+| `dsh-tool-accessibility` | 无障碍读屏 + 模拟操作（v1.7.0）：读控件树 / 点击 / 输入 / 返回主页 / 滚动 / 无障碍截图理解 | 否（需在系统设置开启无障碍服务） |
+| `dsh-tool-vscreen` | **虚拟屏（v1.10+）**：建屏 / 把 App 启动到虚拟屏 / 看虚拟屏画面 / 在虚拟屏上点击·滑动·按键 / 关屏（8 个工具） | **是**（服务端必须以 shell 身份运行） |
+
+> ⚠️ **可用性如实说明**：未授予 root/Shizuku 时，上面标「是」的工具**不会被注册**（AI 的工具列表里
+> 根本没有 `android_input` / `android_package` / `android_app` / `android_setting` / `android_screenshot` /
+> `android_vscreen_*`），AI 不会反复尝试它们；此时文件读写走 DSH 自带 fs/bash 工具，
+> 读屏点击走无障碍插件，中文输入用剪贴板方案。**上手前建议让 AI 先调用一次 `android_capabilities`**，
+> 一次性拿到「当前到底能做什么」及不可用项的下一步。
 
 > 通过这四个插件，AI 不再只是"聊聊天"，而是能**真正控制你的手机**——特权通道（root/Shizuku）负责系统级操作，无障碍通道（无需授权）负责读屏与交互，虚拟屏通道让 AI 在**不打扰主屏**的前提下跑自动化任务。
 
