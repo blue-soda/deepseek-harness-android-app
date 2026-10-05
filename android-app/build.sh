@@ -204,6 +204,32 @@ mkdir -p "$P/staging/dshroot/lib"
     . ) \
   | ( cd "$P/staging/dshroot/lib" && tar xf - )
 
+# v1.21：内置默认插件 ds-harness-remote（维护者要求 Android 默认就装好它）——
+# 等价于 `dsh plugin --profile web add github:blue-soda/ds-harness-remote`，但走**构建期内置**：
+#   · 运行时装不了的原因（实测）：Android 侧 git 调用报 "Unable to get realpath of git"、
+#     pnpm 对 github: 默认走 ssh、且该插件 git-hosted 需要 pnpm 允许 prepare 构建；
+#   · **必须放到 profile 的 node_modules**（`dshhome/profiles/web/node_modules/`）：
+#     实测 bundle 名是从 profile 解析的（`dsh plugin add` 也是装到那儿），
+#     放 DSH 树会报 `ds-harness-remote: failed to import`；
+#   · 插件自带构建产物（dist/index.js + dist/client.github.js），设备端无需再构建；
+#   · 依赖自带齐全（qrcode/werift/ws/zod + 传递依赖）—— zod/ws/schemastery 其实 DSH 也有，
+#     但版本要对得上才敢共用，这里自带给全（源文件 ~22MB，压缩进 APK 实测 +11MB）。
+# 说明：vendor/ 与 dsh-patches/overlay（快照式补丁）是两套东西 —— 前者是"新增一个包"，后者是"替换已有文件"。
+VENDOR_PLUGIN="$P/../vendor/ds-harness-remote"
+if [ -d "$VENDOR_PLUGIN" ]; then
+  DEST="$P/staging/dshhome/profiles/web/node_modules/ds-harness-remote"
+  mkdir -p "$DEST"
+  ( cd "$VENDOR_PLUGIN" && tar cf - \
+      --exclude='*.map' --exclude='*.d.ts' --exclude='*.d.mts' --exclude='*.d.cts' \
+      --exclude='__pycache__' --exclude='*.pyc' \
+      --exclude='./node_modules/*/test' --exclude='./node_modules/*/tests' \
+      --exclude='./node_modules/*/docs' \
+      . ) | ( cd "$DEST" && tar xf - )
+  echo "内置插件 -> profiles/web/node_modules/ds-harness-remote ($(du -sh "$DEST" 2>/dev/null | cut -f1))"
+else
+  echo "⚠ 未找到 vendor/ds-harness-remote，跳过内置插件"
+fi
+
 # dshroot 版本标记：App 用它判断「外部 /sdcard/DeepSeekHarness/dshroot」是否需要补齐。
 # 外部已有的文件永不覆盖（保留 AI 运行时修改），缺失文件才从 APK 补上。
 DSHROOT_REV="$(date +%Y%m%d%H%M%S)"

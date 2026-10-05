@@ -1033,20 +1033,56 @@ public class MainActivity extends Activity {
     private volatile boolean defaultPluginBusy = false;
 
     /**
+     * v1.21：内置插件注册（**同步**，必须在引擎启动前完成）。
+     *
+     * 内置包在 payload 里（构建期 vendor 到 DSH 的 bundle 解析根
+     * `dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/ds-harness-remote`），
+     * 但还要把它写进 profile 的 `dsh.profile.bundles`，DSH 才会把它组合进插件树
+     * （dsh-base / dsh-web-app 也是这样列着的）。这一步只是改一个小 JSON，秒级完成。
+     */
+    private void ensureDefaultPluginRegisteredSync(File payload) {
+        try {
+            File vendored = new File(payload,
+                    "dshhome/profiles/web/node_modules/" + DEFAULT_PLUGIN_NAME);
+            if (!vendored.isDirectory()) return;   // 没有内置包（旧 APK）→ 交给联网安装兜底
+            File pkg = new File(payload, "dshhome/profiles/web/package.json");
+            String txt = readFileText(pkg);
+            if (txt == null || txt.isEmpty()) return;
+            if (txt.contains("\"" + DEFAULT_PLUGIN_NAME + "\"")) return;   // 已注册，别重复写
+            org.json.JSONObject o = new org.json.JSONObject(txt);
+            org.json.JSONObject dsh = o.optJSONObject("dsh");
+            if (dsh == null) { dsh = new org.json.JSONObject(); o.put("dsh", dsh); }
+            org.json.JSONObject prof = dsh.optJSONObject("profile");
+            if (prof == null) { prof = new org.json.JSONObject(); dsh.put("profile", prof); }
+            org.json.JSONArray arr = prof.optJSONArray("bundles");
+            if (arr == null) { arr = new org.json.JSONArray(); prof.put("bundles", arr); }
+            arr.put(DEFAULT_PLUGIN_NAME);
+            writeFileText(pkg, o.toString(2) + "\n");
+            Log.i(TAG, "default plugin: 已注册到 profile bundles（内置包，无需联网安装）");
+        } catch (Throwable t) {
+            Log.w(TAG, "default plugin: 注册到 profile 失败", t);
+        }
+    }
+
+    /**
      * v1.21：把默认插件装进 profile（等价于维护者手敲的
      * `dsh plugin --profile web add github:blue-soda/ds-harness-remote`）。
      *
-     * 设计取舍：
-     *  · **另起线程**：安装要联网 + pnpm 解析依赖，可能几十秒 —— 绝不能挂在启动链上
-     *    （启动链上每一秒都是用户等待）。装好后**下次启动引擎生效**（本轮已经在跑的不加载）。
-     *  · **幂等**：`profiles/web/package.json` 里已出现包名就跳过，不需要额外标记。
-     *  · **失败可重试但有限**：跨启动累计最多 3 次；再失败就不自动试了（日志留话，
-     *    用户仍可用控制台/命令行手装）。离线设备不会每次开机都白等。
-     *  · 与引擎同一套环境（payload node + LD_LIBRARY_PATH + git/CA 适配），
-     *    否则 https clone 会因找不到 remote helper 或证书失败（实测过同类问题）。
+     * ⚠ 这是**兜底路径**：正常情况下插件已在构建期内置（见 build.sh 的 vendor 段 +
+     * {@link #ensureDefaultPluginRegisteredSync}），本方法会直接跳过、不联网。
+     * 只有内置包缺失（例如极旧 APK 升上来）才会真的走 pnpm 安装 —— 而实测那条路在 Android 上
+     * 有多处坑（git 调用报 realpath、pnpm 默认 ssh、git-hosted 需 allowBuilds），
+     * 所以保留但不指望它。
+     *
+     * 设计：另起线程（安装可能几十秒，绝不挂启动链）；幂等（profile 里已有该包名就跳过）；
+     * 失败最多自动重试 3 次（跨启动累计）。输出写 files/plugin-install.log。
      */
     private void ensureDefaultPluginsAsync(final File payload) {
         if (defaultPluginBusy) return;
+        // 内置包已就位 → 什么都不用做（避免无谓联网与重试计数）
+        try {
+            if (new File(payload, "dshhome/profiles/web/node_modules/" + DEFAULT_PLUGIN_NAME).isDirectory()) return;
+        } catch (Throwable ignored) {}
         final File profileDir = new File(payload, "dshhome/profiles/web");
         try {
             String txt = readFileText(new File(profileDir, "package.json"));
@@ -2822,8 +2858,9 @@ public class MainActivity extends Activity {
                         ui.post(new Runnable() { @Override public void run() { conExtractDone(); } });
                         return;
                     }
-                    // v1.21：默认插件（ds-harness-remote）—— 文件就绪后**另起线程**安装，
-                    // 不占用这条启动链（安装要联网、可能几十秒；绝不能拖慢起引擎）。
+                    // v1.21：默认插件 —— 先把内置包注册进 profile（同步、秒级，必须在引擎启动前完成），
+                    // 再另起线程跑"联网安装"兜底（内置包在时它会直接跳过）。
+                    ensureDefaultPluginRegisteredSync(payload);
                     ensureDefaultPluginsAsync(payload);
                     launchEngine(payload);
                 } catch (Throwable t) {
@@ -3745,6 +3782,17 @@ public class MainActivity extends Activity {
         while ((n = in.read(b)) > 0) out.write(b, 0, n);
         in.close();
         return new String(out.toByteArray(), "UTF-8");
+    }
+
+    /** v1.21：写文本文件（覆盖）。用于把内置插件注册进 profile/package.json。 */
+    private void writeFileText(File f, String text) throws IOException {
+        java.io.FileOutputStream out = new java.io.FileOutputStream(f, false);
+        try {
+            out.write(text.getBytes("UTF-8"));
+            out.flush();
+        } finally {
+            try { out.close(); } catch (Throwable ignored) {}
+        }
     }
 
     private String builtinDshrootRevision() {

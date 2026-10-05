@@ -513,6 +513,23 @@ L1（DSH 设置页诊断面板）与 L2（本机资产救援页）暂不做，�
      pnpm 会拦下来要求先在 `profiles/web/pnpm-workspace.yaml` 里加 `allowBuilds`。
 - 可选后续（待定）：① 把 spec 换成 https 形态 + 预置 allowBuilds + 定位 realpath 报错；
   ② 改成**构建期内置**（在有 GitHub 的机器上装好并把产物/vendor 进 payload），APK 会变大。
+- **后续：已按维护者选择走构建期内置（见下一节）**。
+
+**v1.21 默认插件改为构建期内置（维护者选定方案，已实现）**
+- 新增 `vendor/ds-harness-remote/`（插件包 + 自带 `dist` 产物 + 运行时依赖 `qrcode/werift/ws/zod`，
+  源文件 22MB；`vendor/README.md` 写了目录约定与更新步骤）。
+- `android-app/build.sh` 把它拷到
+  `staging/dshhome/profiles/web/node_modules/ds-harness-remote`。
+  ⚠ 位置很关键：**必须放 profile 的 node_modules** —— 实测 bundle 名是从 profile 解析的
+  （`dsh plugin add` 也装那儿）；放 DSH 树里引擎报 `<插件名>: failed to import`。
+- App 侧 `ensureDefaultPluginRegisteredSync()` 把插件名写进 `profiles/web/package.json` 的
+  `dsh.profile.bundles`（幂等、同步、引擎启动前完成）；原来的联网安装器降级为**兜底**
+  （内置包在时直接跳过，不联网、不计数）。
+- 实测（模拟器 community，APK 98MB → 104MB）：
+  · 插件随 APK 出厂并被同步到设备、注册进 bundles ✅；
+  · 引擎加载成功：`[dsh-remote] host identity ready {…,"server":"https://dsh.r2049.cn"}`、
+    `[dsh-remote] client remote-mode identity ready {…}` ✅（此前放错位置时的 `failed to import` 消失）；
+  · 未验完：本环境解析不了 `dsh.r2049.cn` → 中继连接一直 `CONNECTION_FAILED`；客户端面板未在界面确认。
 - 实测（模拟器 community）：引擎端口 0 ✅ / 活跃通知 0 ✅ / 无任何服务在跑 ✅ / **进程彻底消失** ✅；
   之后点图标 → `用户主动启动，清除退出标记` → 秒进起引擎 ✅。
 
