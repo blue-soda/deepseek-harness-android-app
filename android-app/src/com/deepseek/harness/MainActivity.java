@@ -309,19 +309,44 @@ public class MainActivity extends Activity {
             @Override
             public void onReceivedError(WebView view, android.webkit.WebResourceRequest request,
                                          android.webkit.WebResourceError error) {
-                // 主框架加载失败（如 ERR_CONNECTION_REFUSED）时自动重试，直到服务器就绪
-                if (request != null && request.isForMainFrame() && errorRetries < 120) {
+                if (request == null || !request.isForMainFrame()) return;
+                // v1.21（Q1 第 3 批）：区分"还在等引擎"和"真出不来"。
+                //   引擎启动中 → ERR_CONNECTION_REFUSED 属正常，重试到引擎就绪（每次 2.5s）；
+                //   连续失败超过预算 → 不是等引擎，而是真加载不出来 → 落控制台（那里能看日志/重启）。
+                if (errorRetries < WEBVIEW_RETRY_BUDGET) {
                     errorRetries++;
                     final WebView wv = view;
                     view.postDelayed(new Runnable() {
                         @Override public void run() { wv.loadUrl(webHomeUrl()); }
                     }, 2500L);
+                } else {
+                    String d = (error == null) ? "unknown" : String.valueOf(error.getDescription());
+                    fallbackToConsole("界面加载失败（" + d + "），已打开控制台");
                 }
+            }
+
+            /**
+             * v1.21：渲染进程崩溃/被回收。必须让这个 WebView 实例退场（{@code webViewBroken}），
+             * 恢复时走 Activity 重建 —— 直接对已崩溃的 WebView 调 loadUrl 会二次崩溃。
+             * 返回 true = "我们处理了"，系统不会因此把整个 App 杀掉。
+             */
+            @Override
+            public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
+                boolean crashed = detail != null && detail.didCrash();
+                webViewBroken = true;
+                fallbackToConsole("界面渲染进程" + (crashed ? "崩溃" : "被系统回收") + "，已打开控制台");
+                return true;
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 errorRetries = 0;
+                // v1.21：白页探针 —— "加载完成"不等于"渲染出来了"（老 WebView / 前端插件加载失败
+                // 都是加载成功但 #root 空着）。8 秒后探一次，仍空则落控制台。
+                final String finishedUrl = url;
+                view.postDelayed(new Runnable() {
+                    @Override public void run() { probeBlankPage(finishedUrl); }
+                }, 8000L);
                 // v1.13.11：页面底色决定状态栏/导航栏颜色（前端主题可独立于系统设置），
                 // 且主题可能在页面挂载后才被前端插件应用 → 多试几次，取到即刷新。
                 final int[] delays = {0, 700, 2000, 5000};
@@ -537,6 +562,14 @@ public class MainActivity extends Activity {
             conToast("引擎处于你上次手动停止的状态，点「启动引擎」即可恢复");
             return;
         }
+        // v1.21：上次界面加载失败过（白页/渲染进程崩溃/版本过旧）→ 直接进控制台，
+        // 别让用户再对着一个注定失败的 WebView 等 8 秒白页探针。
+        if (uiFailures() >= 2) {
+            Log.i(TAG, "autoEnter: 界面连续失败 " + uiFailures() + " 次 → 直接进控制台");
+            showConsole();
+            conToast("上次界面加载失败，已打开控制台（界面恢复后会自动进入）");
+            return;
+        }
         Log.i(TAG, "autoEnter: 秒进模式（不显示控制台），直接起引擎");
         startEngine();
     }
@@ -552,7 +585,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * v1.21（Q2-C）：权限向导展示期间后台预热 payload（首次解压 1.5 万条目 / ~290MB）。
+     * v1.21（Q1 第 3 批）：权限向导展示期间后台预热 payload（首次解压 1.5 万条目 / ~290MB）。
      *
      * 复用「只解压、不启动」的既有路径（{@code extractOnlyMode} + {@code startEngine(true)}）：
      *   · 文件准备逻辑只有一份，不会和启动路径走偏；
@@ -566,6 +599,108 @@ public class MainActivity extends Activity {
         extractOnlyMode = true;
         extracting = true;
         startEngine(true);
+    }
+
+    // ================= v1.21（Q1 第 3 批）：界面故障 → 自动落控制台 =================
+    /** 主框架加载失败的重试预算（每次 2.5s）→ 约 30 秒。超过就认为"不是等引擎"而是真出不来。 */
+    private static final int WEBVIEW_RETRY_BUDGET = 12;
+    /** 界面故障计数（连续）：与 engine_boot_failures 分开记，便于分别提示与复位。 */
+    private static final String KEY_UI_FAILS = "ui_fail_streak";
+    /** 渲染进程崩溃后该 WebView 实例不可用（恢复要走 Activity 重建）。 */
+    private volatile boolean webViewBroken = false;
+    /** 一次启动只报一次故障，避免重试/回退互相刷屏。 */
+    private volatile boolean uiFallbackReported = false;
+
+    private int uiFailures() {
+        try { return prefs().getInt(KEY_UI_FAILS, 0); } catch (Throwable t) { return 0; }
+    }
+    private void bumpUiFailure() {
+        try { prefs().edit().putInt(KEY_UI_FAILS, uiFailures() + 1).apply(); } catch (Throwable ignored) {}
+    }
+    private void resetUiFailures() {
+        try { if (uiFailures() != 0) prefs().edit().putInt(KEY_UI_FAILS, 0).apply(); } catch (Throwable ignored) {}
+    }
+
+    /**
+     * v1.21：界面（WebView / 前端）出故障时把用户送到控制台 —— 控制台是原生层，
+     * 不依赖引擎也不依赖前端渲染，正好用来恢复（看日志 / 重启引擎 / 重新解压 / 安全模式）。
+     */
+    private void fallbackToConsole(final String reason) {
+        if (uiFallbackReported) return;
+        uiFallbackReported = true;
+        bumpUiFailure();
+        Log.w(TAG, "fallbackToConsole: " + reason);
+        ui.post(new Runnable() { @Override public void run() {
+            try {
+                showEngineScreenIfNeeded();
+                showConsole();
+                conToast(reason);
+            } catch (Throwable t) { Log.w(TAG, "fallbackToConsole failed", t); }
+        }});
+    }
+
+    /**
+     * v1.21：白页 / 前端卡死探针（两段）。
+     *
+     * 判据来自实测的两种形态：
+     *   · 健康：`#root` 有子树、整页元素 ≈150+、正文数百字（SPA 渲染完成）；
+     *   · 白页：整页只剩 1~3 个元素、正文为空（HTML 拿到了但什么都没渲染）。
+     * 另外 DSH 前端有一层"启动壳"（正文含 "Loading plugins…"），插件加载失败时会**一直停在壳上**
+     * —— 这种"加载完成但其实没起来"靠 onReceivedError 是发现不了的，所以 45 秒后再探一次：
+     * `#root` 仍无子树且正文还停在 Loading/Failed 文案 → 同样落控制台。
+     */
+    private void probeBlankPage(String url) {
+        final WebView wv = webView;
+        if (wv == null || webViewBroken || consoleVisible) return;
+        try {
+            wv.evaluateJavascript(
+                    "(function(){try{var b=document.body||document.documentElement;"
+                    + "var e=b?b.getElementsByTagName('*').length:0;"
+                    + "var t=(b&&b.innerText?b.innerText:'').trim().length;"
+                    + "return e+'|'+t;}catch(x){return '-1|-1'}})()",
+                    new android.webkit.ValueCallback<String>() {
+                        @Override public void onReceiveValue(String v) {
+                            if (v == null) return;
+                            String[] parts = v.replace("\"", "").split("\\|");
+                            int e = -1, t = -1;
+                            try { e = Integer.parseInt(parts[0]); t = Integer.parseInt(parts[1]); } catch (Throwable ignored) {}
+                            if (e >= 0 && e < 8 && t < 20) {
+                                fallbackToConsole("界面空白（前端未渲染），已打开控制台");
+                            } else if (e >= 8) {
+                                resetUiFailures();   // 页面确实渲染出了内容 → 界面故障计数清零
+                            }
+                        }
+                    });
+        } catch (Throwable ignored) {}
+        // 第二段：45 秒后看 SPA 到底起来没有（启动壳卡住 / 插件加载失败）
+        wv.postDelayed(new Runnable() {
+            @Override public void run() { probeSpaStuck(); }
+        }, 45000L);
+    }
+
+    /** v1.21：第二阶段探针 —— `#root` 仍无子树且正文停在 Loading/Failed 文案 → 前端没起来。 */
+    private void probeSpaStuck() {
+        final WebView wv = webView;
+        if (wv == null || webViewBroken || consoleVisible) return;
+        try {
+            wv.evaluateJavascript(
+                    "(function(){try{var r=document.getElementById('root');var n=r?r.children.length:0;"
+                    + "var t=document.body?document.body.innerText:'';"
+                    + "return n+'|'+(/Loading plugins|Failed to load|Error/i.test(t)?1:0);}catch(x){return '0|0'}})()",
+                    new android.webkit.ValueCallback<String>() {
+                        @Override public void onReceiveValue(String v) {
+                            if (v == null) return;
+                            String[] parts = v.replace("\"", "").split("\\|");
+                            int n = 0, flag = 0;
+                            try { n = Integer.parseInt(parts[0]); flag = Integer.parseInt(parts[1]); } catch (Throwable ignored) {}
+                            if (n == 0 && flag == 1) {
+                                fallbackToConsole("前端加载超时（插件未就绪），已打开控制台");
+                            } else if (n > 0) {
+                                resetUiFailures();
+                            }
+                        }
+                    });
+        } catch (Throwable ignored) {}
     }
 
     /**
@@ -640,7 +775,13 @@ public class MainActivity extends Activity {
                                 .setPositiveButton("去更新", new DialogInterface.OnClickListener() {
                                     @Override public void onClick(DialogInterface d, int w) { openWebViewUpdate(); }
                                 })
-                                .setNegativeButton("继续尝试", null)
+                                .setNegativeButton("继续尝试", new DialogInterface.OnClickListener() {
+                                    @Override public void onClick(DialogInterface d, int w) {
+                                        // v1.21：老 WebView 大概率白屏 → 直接落到控制台，
+                                        // 那里有"兼容版"引导、日志与重新解压等恢复手段。
+                                        fallbackToConsole("系统 WebView 版本过旧（Chromium " + ver + "），已打开控制台");
+                                    }
+                                })
                                 .show();
                     } catch (Throwable ignored) {}
                 }
@@ -7357,6 +7498,13 @@ public class MainActivity extends Activity {
     }
 
     private void enterMainUi() {
+        // v1.21：渲染进程崩溃过的 WebView 实例已不可用（loadUrl 会二次崩溃）→ 重建 Activity
+        // （等同"刷新界面"；重建后窗口恢复路径会直接起引擎/进主界面）。
+        if (webViewBroken) {
+            Log.i(TAG, "enterMainUi: WebView 已损坏，重建界面");
+            webViewBroken = false;
+            try { recreate(); return; } catch (Throwable ignored) {}
+        }
         consoleVisible = false;
         if (consoleLayer != null) consoleLayer.setVisibility(View.GONE);
         if (consoleLayerBox != null) consoleLayerBox.setVisibility(View.GONE);   // v1.17.4：背景图一起收

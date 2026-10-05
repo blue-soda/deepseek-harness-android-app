@@ -388,6 +388,43 @@ L1（DSH 设置页诊断面板）与 L2（本机资产救援页）暂不做，�
   ⇒ 首启「开始使用 → 主界面可交互」从"解压 + 起引擎"变成**只有起引擎（~30 s）**；
   预热本身在向导期间完成（~11.7 s，模拟器）。
 
+### 十五之三、启动体验（v1.21 第 3 批）：WebView 故障自动回退到控制台
+
+至此"引擎挂 / 界面挂都能进控制台"闭环（引擎侧的回退早就有：超时 → `bumpBootFailure()` +
+`conEngineTimedOut()` 回控制台 + 后台守望自动进入）。
+
+**四个触发点**（都在 WebViewClient 里 / 兼容检测处）
+1. **主框架加载失败**：`onReceivedError`（仅 main frame）区分"还在等引擎"与"真出不来"——
+   `WEBVIEW_RETRY_BUDGET=12` 次（每次 2.5s，约 30s）内继续重试；超预算 → `fallbackToConsole()`。
+   旧实现是 120 次（5 分钟）无差别重试，用户只会看到一个不动的白屏。
+2. **渲染进程崩溃/被回收**：`onRenderProcessGone` → 标记 `webViewBroken`（该实例已不可用，
+   之后再 `loadUrl` 会二次崩溃）+ 落控制台；控制台的「打开主界面」会走
+   `enterMainUi()` 里的 `recreate()` 重建 Activity（等于"刷新界面"）。返回 `true` 表示已处理，
+   避免系统因此杀掉整个 App。
+3. **白页探针**（8 秒）：实测健康页面是 `#root` 有子树、整页 ≈150 元素、正文数百字；
+   白页只剩 1~3 个元素且正文为空。`onPageFinished` 后 8 秒探一次，判白页则落控制台。
+   注：最初按 `<div id="root">` 子节点数判定是**错的** —— 真实 DSH 首屏是"启动壳"
+   （没有 #root），所以改成"整页元素数 + 正文长度"。
+4. **前端卡在启动壳**（45 秒）：DSH 前端插件加载失败时会一直停在
+   "Loading plugins…"（`onReceivedError` 发现不了）。45 秒后若 `#root` 仍无子树且正文仍是
+   Loading/Failed 文案 → 落控制台。
+5. **WebView 版本过旧**：兼容检测弹窗的「继续尝试」不再单纯放行，而是直接落控制台
+   （那里有兼容版引导、日志、重新解压等恢复手段）。
+
+**故障记忆**：界面故障单独计数（`KEY_UI_FAILS = ui_fail_streak`），连续 ≥2 次 → 冷启动直接进控制台
+（`autoEnterOnBoot()` 里判断），不再让用户对着注定失败的 WebView 等 8 秒探针；
+探针判定"渲染正常"时清零。
+
+**实测（模拟器 community；把 `dsh-web-frontend/dist/index.html` 换成 48 字节空白页制造白页）**
+```
+19:26:47.907  autoEnter: 秒进模式（不显示控制台），直接起引擎
+19:26:47.931  internal-patch 跳过（载荷未变）/ plugins refresh 跳过（载荷未变）   ← Q2-A 闸门同时复核通过
+19:27:16.184  dsh web 就绪
+19:27:25.280  fallbackToConsole: 界面空白（前端未渲染），已打开控制台            ← 探针命中（加载后 ~9s）
+19:27:25.282  showConsole: 控制台已显示
+（还原 index.html 后，点控制台「打开主界面」→ DSH 前端恢复，截图确认）
+```
+
 ### 十六、未完成 / 已知限制
 
 - **compat 变体尚未并入本机制**：`android-app/compat/` 仍是一套独立差异文件（GeckoView），
