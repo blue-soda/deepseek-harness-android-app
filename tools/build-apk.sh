@@ -489,6 +489,7 @@ if [ "$DO_VERIFY" = 1 ]; then
   rm -f "$MAN_TMP"
 
   # 6.2 补丁特征串（证明拿到的是「已打补丁」的内核树）
+  #   rel 支持 shell 通配（内核某些 bundle 名带哈希，如 subprocess-local 的 runner-launch-*.js）
   PATCHES="
 @deepseek-ai/dsh-fs-local/lib/index.js:isHardlinkUnsupported
 @deepseek-ai/dsh-fs-local/lib/index.js:publishCreateWithoutHardlink
@@ -503,14 +504,26 @@ if [ "$DO_VERIFY" = 1 ]; then
 @deepseek-ai/dsh-tool-fs-search/lib/index.js:android
 @deepseek-ai/dsh-llm-deepseek/lib/index.js:attachment layer
 @deepseek-ai/dsh-bash-local/lib/index.js:sandboxMode
+# 本 fork 的补丁（v1.20 起）：
+@deepseek-ai/dsh-bash-local/lib/index.js:DSH_BASH_PATH
+@deepseek-ai/dsh-subprocess-local/lib/runner-launch-*.js:dsh-android-patch
 "
   LAYER="$H/dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules"
+  TOTAL=0
   MISSING="$(printf '%s\n' "$PATCHES" | while IFS=: read -r rel sig; do
       [ -z "$rel" ] && continue
-      grep -qF -- "$sig" "$LAYER/$rel" 2>/dev/null || echo "$rel  ($sig)"
+      case "$rel" in \#*) continue ;; esac
+      matched=0
+      for f in $LAYER/$rel; do            # 通配展开（无通配时就是它自己）
+        [ -f "$f" ] || continue
+        if grep -qF -- "$sig" "$f" 2>/dev/null; then matched=1; break; fi
+      done
+      [ "$matched" = "1" ] || echo "$rel  ($sig)"
     done)"
+  TOTAL=$(printf '%s\n' "$PATCHES" | grep -c '[^ 	]' || true)
+  TOTAL=$(( TOTAL - $(printf '%s\n' "$PATCHES" | grep -c '^#' || true) ))
   if [ -z "$MISSING" ]; then
-    echo "   ✅ 补丁特征串：13/13 命中（确认拿到的是已打补丁的内核树）"
+    echo "   ✅ 补丁特征串：$TOTAL/$TOTAL 命中（确认拿到的是已打补丁的内核树）"
   else
     echo "$MISSING" | sed 's/^/   !! 补丁特征缺失：/'
     warn "上游补丁集可能已变化，请对照 dsh-patches/ 更新本脚本的 PATCHES 清单"
