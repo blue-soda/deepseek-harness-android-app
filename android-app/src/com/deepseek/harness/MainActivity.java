@@ -267,6 +267,7 @@ public class MainActivity extends Activity {
         // 放在 applyStatusBar() 之前 —— statusBar 颜色要参与状态栏/导航栏取色；坏配置在 load() 里自动回退。
         conThemeReloadIfChanged(true);
         ensureConsoleThemeAssets();
+        ensureAgentSkills(); // D1：把内置「自我定制」技能落到 <filesDir>/.agents/skills（引擎默认扫描目录）
         applyStatusBar(); // 状态栏/导航栏底色跟随 App 主题（浅色模式不再是一条黑条）
         installCrashHandler();
         checkAbiCompat(); // ② ABI 检测：非 arm64 设备引擎可能无法运行，弹提示
@@ -2184,6 +2185,7 @@ public class MainActivity extends Activity {
                     ensurePatchConfig(payload); // ③ 补丁启动自检：cordis.patch.yml 缺失/被改则自动补齐
                     filesPreparedThisBoot = true;
                     conMarkPayloadDone();   // 记录“内部这棵树是本次安装解压的”（供控制台/校验判定）
+                    checkPayloadIntegrity();  // B9：启动自检 —— 与打包清单核对 runtime/（只记日志+落文件）
                     } // end if (!filesPreparedThisBoot)
                     if (extractOnlyMode) {
                         // 控制台「解压文件」：到此为止，不碰引擎
@@ -3471,6 +3473,20 @@ public class MainActivity extends Activity {
             String target = parts[1].trim();
             File link = new File(lib, linkName);
             File src = new File(lib, target);
+            if (!src.exists()) continue;
+            if (link.exists()) {
+                // v1.18（B9 自愈）：别名若与目标**不是同一个 inode**，说明它是旧版打包"实体化"出来的
+                // 独立副本（历史上 ICU 因此占 3 份、升级用户的 runtime/lib 会一直多背几十 MB）。
+                // 删掉它，交给下面按硬链→软链→复制重建；stat() 会跟随软链，所以软链/硬链都会判为同一 inode 而跳过。
+                boolean sameInode = false;
+                try {
+                    android.system.StructStat a = Os.stat(link.getAbsolutePath());
+                    android.system.StructStat b = Os.stat(src.getAbsolutePath());
+                    sameInode = (a.st_dev == b.st_dev && a.st_ino == b.st_ino);
+                } catch (Throwable ignored) {}
+                if (sameInode) continue;
+                if (!link.delete()) continue;   // 删不掉就保持原样（宁可多占，也不要冒风险）
+            }
             if (!link.exists() && src.exists()) {
                 try {
                     Os.link(src.getAbsolutePath(), link.getAbsolutePath());
@@ -4630,6 +4646,62 @@ public class MainActivity extends Activity {
             Log.i(TAG, "console-theme assets -> " + dir.getAbsolutePath() + " ok=" + all);
         } catch (Throwable t) {
             Log.w(TAG, "ensureConsoleThemeAssets: " + t.getMessage());
+        }
+    }
+
+    // ============ D1：设备端「自我定制」技能 ============
+    /** 技能根目录：<filesDir>/.agents/skills —— 引擎默认扫描（DSH_AGENTS_HOME 缺省 = ~/.agents）。
+     *  刻意放在 filesDir 而不是 payload/dshhome：payload 会被解压/同步重写，这里永远不会。 */
+    private static final String AGENT_SKILLS_DIR = ".agents/skills";
+    /** 本壳管理的技能会在正文里带这个标记；只有带标记的文件才允许被覆盖（用户自己写的技能不动）。 */
+    private static final String SKILL_MANAGED_MARKER = "dsh-android-managed";
+    private boolean agentSkillsSeeded = false;
+
+    /**
+     * 把 assets/skills/&lt;name&gt;/SKILL.md 落到 &lt;filesDir&gt;/.agents/skills/&lt;name&gt;/SKILL.md。
+     * 写入规则：文件不存在 → 写；文件存在且**含本壳管理标记**且长度变了 → 覆盖；否则一律不动。
+     * （技能内容真源在仓库 skills/，由 build.sh 打进 assets；改内容只需改仓库 + 重打包。）
+     */
+    private void ensureAgentSkills() {
+        if (agentSkillsSeeded) return;
+        try {
+            String[] names = getAssets().list("skills");
+            if (names == null || names.length == 0) { agentSkillsSeeded = true; return; }
+            File root = new File(getFilesDir(), AGENT_SKILLS_DIR);
+            boolean all = true;
+            for (int i = 0; i < names.length; i++) {
+                String n = names[i];
+                byte[] data = null;
+                InputStream in = null;
+                try {
+                    in = getAssets().open("skills/" + n + "/SKILL.md");
+                    data = readAllBytes(in);
+                } catch (Throwable e) {
+                    continue;   // 不是"目录 + SKILL.md"形态（例如将来的扁平技能），本轮跳过
+                } finally {
+                    if (in != null) { try { in.close(); } catch (Throwable ignored) {} }
+                }
+                try {
+                    File dir = new File(root, n);
+                    File out = new File(dir, "SKILL.md");
+                    String old = out.exists() ? readFileText(out) : null;
+                    boolean managed = old != null && old.indexOf(SKILL_MANAGED_MARKER) >= 0;
+                    boolean need = old == null || (managed && old.length() != data.length);
+                    if (need) {
+                        if (!dir.exists() && !dir.mkdirs()) { all = false; continue; }
+                        java.io.FileOutputStream fos = new java.io.FileOutputStream(out);
+                        fos.write(data);
+                        fos.close();
+                    }
+                } catch (Throwable e) {
+                    all = false;
+                    Log.w(TAG, "agent skill write " + n + ": " + e.getMessage());
+                }
+            }
+            agentSkillsSeeded = all;
+            Log.i(TAG, "agent skills -> " + root.getAbsolutePath() + " ok=" + all);
+        } catch (Throwable t) {
+            Log.w(TAG, "ensureAgentSkills: " + t.getMessage());
         }
     }
 
@@ -6767,6 +6839,10 @@ public class MainActivity extends Activity {
                 : t("status.extract.working", "正在解压运行时与内核树…");
         if (ready) {
             String s = conFilesSummary != null ? conFilesSummary : "运行环境与内核树已就绪";
+            // B9：把完整性结论直接摆在文件行上（OK 不打扰，DRIFT 才显眼）
+            String pi = payloadIntegrity;
+            if (pi != null) s += pi.startsWith("DRIFT") ? " · ⚠ 完整性异常" : " · 完整性 OK";
+            else if (consoleDetailOpen) s += " · 正在核对完整性…";
             return s + (consoleDetailOpen ? "" : " · 点这一行看详情");
         }
         return t("desc.extract", "需要解压运行环境与内核（约 2.5 万个文件 / 约 220 MB）；解压完成后才能启动引擎。");
@@ -7058,6 +7134,7 @@ public class MainActivity extends Activity {
         if (!conFilesReady()) { conFilesSummary = null; return; }
         new Thread(new Runnable() { @Override public void run() {
             final String s = conComputeFilesSummary();
+            payloadIntegrity = checkPayloadIntegrity();   // B9：runtime/ 只有几十个文件，代价可忽略
             ui.post(new Runnable() { @Override public void run() { conFilesSummary = s; refreshConsole(); } });
         }}, "files-summary").start();
     }
@@ -7090,12 +7167,169 @@ public class MainActivity extends Activity {
             final int fdone = done;
             final int cur = conBuildCode();
             final String s = conComputeFilesSummary();
+            final String integrity = checkPayloadIntegrity();   // B9：与打包清单核对 runtime/
             ui.post(new Runnable() { @Override public void run() {
                 if (miss != null) conToast("校验失败：缺 " + miss + "，请点「重新解压」");
                 else if (fdone != cur) conToast("校验失败：内部文件是旧版本解压的（记录 " + fdone + " / 当前 " + cur + "），请重新解压");
+                else if (integrity != null && integrity.startsWith("DRIFT")) conToast("校验：" + integrity);
                 else conToast("校验通过，" + (s == null ? "文件齐全" : s) + " · 已对应当前安装版本");
             }});
         }}, "files-verify").start();
+    }
+
+    // ============ B9：payload 完整性清单核对 ============
+    private static final String PAYLOAD_MANIFEST_ASSET = "payload_manifest.txt";
+    private static final String INTEGRITY_FILE = "payload-integrity.txt";
+    /** 最近一次完整性核对结论（控制台文件行与「校验」按钮共用；null = 还没跑过）。 */
+    private volatile String payloadIntegrity = null;
+
+    /** 从 "files=123 bytes=456" 里取一个字段；取不到返回 -1。 */
+    private static long manifestField(String text, String key) {
+        int i = text.indexOf(key + "=");
+        if (i < 0) return -1;
+        int p = i + key.length() + 1;
+        int end = p;
+        while (end < text.length() && text.charAt(end) >= '0' && text.charAt(end) <= '9') end++;
+        if (end == p) return -1;
+        try { return Long.parseLong(text.substring(p, end)); } catch (Throwable t) { return -1; }
+    }
+
+    /**
+     * 把解压结果与打包清单核对（B9）。**只对 runtime/ 做判定**：这块完全由 App 拥有，
+     * 且 B8 刚改过它的打包方式 —— soname 别名由 applyLinks 重建（不增加字节），
+     * 一旦别名被"实体化"（历史上 ICU 三份独立 inode）就会字节暴涨，正是要抓的静默膨胀。
+     * dshroot/ 只作参考：它含用户改动（.complete、REVISION）与用户层文件，不能严格比对。
+     * @return null=清单缺失（旧包）；"OK …" / "DRIFT …"
+     */
+    private String checkPayloadIntegrity() {
+        try {
+            final String txt = readAssetText(PAYLOAD_MANIFEST_ASSET);
+            long mfFiles = -1, mfBytes = -1, links = -1;
+            for (String raw : txt.split("\n")) {
+                String line = raw.trim();
+                if (line.startsWith("subtree runtime files=")) {
+                    String body = line.substring("subtree runtime ".length());
+                    mfFiles = manifestField(body, "files");
+                    mfBytes = manifestField(body, "bytes");
+                } else if (line.startsWith("links_expected=")) {
+                    links = manifestField(line, "links_expected");
+                }
+            }
+            if (mfBytes <= 0) return null;
+            // ① 别名（LINKS.txt 里的名字）必须排除在字节统计之外：
+            //    File.length() 会跟随软链返回**目标大小**，硬链也会各自计一次 —— 不排除就会把
+            //    一份库算成三份（首版检查就是这么误报 +81MB 的）。
+            java.util.HashSet<String> aliases = new java.util.HashSet<String>();
+            File lf = new File(payloadDir(), "runtime/lib/LINKS.txt");
+            if (lf.exists()) {
+                java.io.BufferedReader lr = new java.io.BufferedReader(new java.io.InputStreamReader(
+                        new java.io.FileInputStream(lf), "UTF-8"));
+                String ln;
+                while ((ln = lr.readLine()) != null) {
+                    ln = ln.trim();
+                    if (ln.isEmpty() || ln.startsWith("#")) continue;
+                    String[] parts = ln.split("\\t+");
+                    if (parts.length >= 2) aliases.add(parts[0].trim());
+                }
+                lr.close();
+            }
+            // ② 遍历 runtime/：非别名文件计字节；别名单独统计"是否存在"与"是否独立 inode"
+            File runtimeDir = new File(payloadDir(), "runtime");
+            long files = 0, bytes = 0, aliasSeen = 0, aliasIndependent = 0;
+            java.util.ArrayDeque<File> q = new java.util.ArrayDeque<File>();
+            q.add(runtimeDir);
+            while (!q.isEmpty()) {
+                File f = q.poll();
+                File[] cs = f.listFiles();
+                if (cs == null) continue;
+                for (int i = 0; i < cs.length; i++) {
+                    if (cs[i].isDirectory()) { q.add(cs[i]); continue; }
+                    String rel = relativize(runtimeDir, cs[i]);
+                    // 运行期**生成**的两个文件（合成 CA bundle / git 证书配置）不在包里，不该算差异；
+                    // runtime/etc/openssl.cnf 是包内文件，必须照常计数。
+                    if (rel.equals("etc/cacert.pem") || rel.equals("etc/gitconfig")) continue;
+                    // LINKS.txt 里的名字是 **runtime/lib 下**的裸名；rel 是相对 runtime/ 的路径 → 去前缀再比对
+                    String aliasKey = rel.startsWith("lib/") ? rel.substring(4) : rel;
+                    if (aliases.contains(aliasKey)) {
+                        aliasSeen++;
+                        String tgt = linkTargetOf(aliases, aliasKey);
+                        if (tgt != null && isIndependentCopy(cs[i], new File(new File(runtimeDir, "lib"), tgt))) {
+                            aliasIndependent++;
+                        }
+                        continue;
+                    }
+                    files++;
+                    bytes += cs[i].length();
+                }
+            }
+            long slack = Math.max(65536L, mfBytes / 50);                       // 2% 且不少于 64KB
+            boolean bytesHigh = bytes > mfBytes + slack;
+            boolean bytesLow  = bytes < mfBytes - slack;
+            boolean filesOff  = files != mfFiles;
+            boolean aliasMissing = links > 0 && aliasSeen < links;
+            String info = "runtime files=" + files + "/" + mfFiles + " bytes=" + bytes + "/" + mfBytes
+                    + " 别名=" + aliasSeen + "/" + (links < 0 ? "?" : links)
+                    + (aliasIndependent > 0 ? "（其中 " + aliasIndependent + " 个是独立副本，下次启动自愈）" : "");
+            String verdict;
+            if (bytesHigh)           verdict = "DRIFT 体积异常偏大（可能有重复实体）：" + info;
+            else if (bytesLow)       verdict = "DRIFT 体积偏小（可能缺文件）：" + info;
+            else if (filesOff)       verdict = "DRIFT 文件数不符：" + info;
+            else if (aliasMissing)   verdict = "DRIFT 别名缺失（soname 链接没建起来）：" + info;
+            else if (aliasIndependent > 0) verdict = "DRIFT 别名被实体化（已标记自愈）：" + info;
+            else                     verdict = "OK " + info;
+            try {
+                java.io.FileOutputStream fos = new java.io.FileOutputStream(new File(getFilesDir(), INTEGRITY_FILE));
+                fos.write((verdict + "\n").getBytes("UTF-8"));
+                fos.close();
+            } catch (Throwable ignored) {}
+            if (verdict.startsWith("DRIFT")) Log.w(TAG, "payload integrity " + verdict);
+            else Log.i(TAG, "payload integrity " + verdict);
+            return verdict;
+        } catch (Throwable t) {
+            Log.w(TAG, "checkPayloadIntegrity: " + t.getMessage());
+            return null;
+        }
+    }
+
+    /** runtime/ 内的相对路径（POSIX 分隔符）。 */
+    private static String relativize(File root, File f) {
+        String r = root.getAbsolutePath();
+        String a = f.getAbsolutePath();
+        if (a.startsWith(r)) {
+            String s = a.substring(r.length());
+            while (s.startsWith("/")) s = s.substring(1);
+            return s;
+        }
+        return f.getName();
+    }
+
+    /** 从别名集合里反查目标名（重新读一遍 LINKS.txt 太浪费，这里只在检查里用一次）。 */
+    private String linkTargetOf(java.util.HashSet<String> aliases, String rel) {
+        try {
+            File lf = new File(payloadDir(), "runtime/lib/LINKS.txt");
+            java.io.BufferedReader lr = new java.io.BufferedReader(new java.io.InputStreamReader(
+                    new java.io.FileInputStream(lf), "UTF-8"));
+            String ln;
+            while ((ln = lr.readLine()) != null) {
+                ln = ln.trim();
+                if (ln.isEmpty() || ln.startsWith("#")) continue;
+                String[] parts = ln.split("\\t+");
+                if (parts.length >= 2 && parts[0].trim().equals(rel)) { lr.close(); return parts[1].trim(); }
+            }
+            lr.close();
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    /** 两个路径是否指向**不同**的 inode（软链会跟随，所以软链/硬链都判为同一 inode）。 */
+    private static boolean isIndependentCopy(File a, File b) {
+        try {
+            android.system.StructStat sa = android.system.Os.stat(a.getAbsolutePath());
+            android.system.StructStat sb = android.system.Os.stat(b.getAbsolutePath());
+            return !(sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino);
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     // ---------- 权限页 ----------

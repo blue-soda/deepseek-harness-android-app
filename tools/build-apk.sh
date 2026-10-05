@@ -132,6 +132,16 @@ else
   die "缺少 md5sum 或 md5（coreutils）"
 fi
 
+# sha256（B6）：与 md5 同源，用于公示产物哈希 —— 社区密钥是公开的，
+# 来源信号靠"构建输入可核对 + 产物哈希可复现"，不再靠"谁持有私钥"。
+if command -v sha256sum >/dev/null 2>&1; then
+  file_sha256() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+  file_sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
+else
+  file_sha256() { echo "(缺少 sha256sum/shasum)"; }
+fi
+
 JAVA_BIN="$(dirname "$(command -v javac)")"
 echo "   javac        : $(javac -version 2>&1)"
 echo "   unzip/curl   : ok"
@@ -456,6 +466,28 @@ if [ "$DO_VERIFY" = 1 ]; then
   echo "   payload 顶层目录：$N_TOP 个"
   [ "$N_TOP" -ge 9 ] || { warn "payload 顶层目录数异常"; FAIL=1; }
 
+  # 6.1b payload 完整性清单（B9）：manifest 的 entries/bytes 必须与 payload.zip 实际一致
+  MAN_TMP="$(mktemp)"
+  if unzip -p "$OUT" assets/payload_manifest.txt > "$MAN_TMP" 2>/dev/null && [ -s "$MAN_TMP" ]; then
+    M_ENTRIES="$(sed -n 's/^entries=//p' "$MAN_TMP" | head -1)"
+    M_BYTES="$(sed -n 's/^bytes=//p' "$MAN_TMP" | head -1)"
+    Z_FILES="$(unzip -Z1 "$PAYLOAD" | grep -vc '/$' || true)"
+    # ⚠ 必须要求 NF>=4：unzip -l 末尾那行汇总（"292410597  15701 files"）的第一个字段也是数字，
+    #   不加这个条件会把总量算成两倍（本地实测踩过）。
+    Z_BYTES="$(unzip -l "$PAYLOAD" | awk 'NR>3 && $1 ~ /^[0-9]+$/ && NF>=4 {s+=$1} END {print s+0}')"
+    echo "   清单 entries=$M_ENTRIES bytes=$M_BYTES ／ 实际 files=$Z_FILES bytes=$Z_BYTES"
+    if [ "$M_ENTRIES" = "$Z_FILES" ] && [ "$M_BYTES" = "$Z_BYTES" ]; then
+      echo "   ✅ payload 清单与 payload.zip 一致"
+    else
+      warn "payload 清单与 payload.zip 不一致（B9 检查失败）"
+      FAIL=1
+    fi
+  else
+    warn "APK 内缺少 assets/payload_manifest.txt（B9 清单，旧构建脚本？）"
+    FAIL=1
+  fi
+  rm -f "$MAN_TMP"
+
   # 6.2 补丁特征串（证明拿到的是「已打补丁」的内核树）
   PATCHES="
 @deepseek-ai/dsh-fs-local/lib/index.js:isHardlinkUnsupported
@@ -515,13 +547,17 @@ INFO="$OUT.build-info.txt"
   echo "payload.zip     : $(du -h "$PAYLOAD" | cut -f1)"
   echo "产物            : $OUT"
   echo "产物大小        : $(du -h "$OUT" | cut -f1)"
+  echo "产物 SHA-256    : $(file_sha256 "$OUT")"
   echo "签名指纹 SHA256 : $(keytool -list -v -keystore "$KEYSTORE" -storepass "$KEYSTORE_PASS" 2>/dev/null | sed -n 's/.*SHA256: //p' | head -1)"
   echo "JDK             : $(javac -version 2>&1)"
   echo "build-tools     : $BT_NAME"
   echo "android.jar     : $ANDROID_JAR"
   echo "模拟器适配      : $([ "$DO_EMULATOR" = 1 ] && echo yes || echo no)"
 } > "$INFO"
+# B6：产物哈希单独落一个 sha256sum 兼容的 sidecar，便于 `sha256sum -c` 核对
+( cd "$(dirname "$OUT")" && printf '%s  %s\n' "$(file_sha256 "$OUT")" "$(basename "$OUT")" ) > "$OUT.sha256" 2>/dev/null || true
 sed 's/^/   /' "$INFO"
+[ -f "$OUT.sha256" ] && echo "   产物哈希：$OUT.sha256（$(cat "$OUT.sha256" | awk '{print substr($1,1,16)}')…）"
 
 # ── 可选：装机冒烟 ────────────────────────────────────────────────────────
 if [ "$DO_SMOKE" = 1 ]; then

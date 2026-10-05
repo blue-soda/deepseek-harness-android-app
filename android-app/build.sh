@@ -503,6 +503,21 @@ else
   echo "  !! 未找到 console-theme/（主题页的规范与自检入口将不可用）"; exit 1
 fi
 
+# 设备端技能（D1）：仓库 skills/<name>/SKILL.md → assets/skills/，App 启动时落到
+# <filesDir>/.agents/skills/（引擎默认扫描的用户技能根，见 dsh-skill-filesystem）。
+# 放这里而不是 payload：payload 会被解压/同步重写，filesDir 不会。
+SK_SRC="$P/../skills"
+if [ -d "$SK_SRC" ]; then
+  rm -rf "$P/assets/skills"
+  mkdir -p "$P/assets/skills"
+  cp -r "$SK_SRC/." "$P/assets/skills/"
+  _sk_n=$(ls -1 "$P/assets/skills" | wc -l | tr -d ' ')
+  [ "$_sk_n" -gt 0 ] || { echo "!! assets/skills 为空"; exit 1; }
+  echo "  设备端技能: assets/skills/（$_sk_n 个）"
+else
+  echo "  !! 未找到 skills/（内置技能将不可用）"; exit 1
+fi
+
 cp "$H/.dsh/cordis.patch.yml" "$P/staging/dshhome/"
 cp "$H/.dsh/profiles/web/cordis.patch.yml" "$P/staging/dshhome/profiles/web/"
 cp "$H/.dsh/profiles/web/cordis.yml" "$P/staging/dshhome/profiles/web/"
@@ -523,6 +538,56 @@ du -sh "$P/staging/runtime" "$P/staging/dshroot" "$P/staging/dshhome" "$P/stagin
 
 ( cd "$P/staging" && jar cMf "$P/assets/payload.zip" . )
 echo "payload.zip: $(du -sh "$P/assets/payload.zip" | cut -f1)"
+
+# ============================================================================
+# B9：payload 完整性清单（assets/payload_manifest.txt）
+# 目的：把"静默不一致"变成可读数字 ——
+#   · 打包期：tools/build-apk.sh 核对 entries/bytes 与 payload.zip 是否一致；
+#   · 运行期：App 启动后核对 runtime/ 的 文件数 与 字节数（别名由 applyLinks 重建，
+#     所以期望文件数 = 包内文件数 + LINKS.txt 条目数；**字节数不变**）。
+#     历史上 ICU 被实体化成 3 份独立 inode 的静默膨胀，就是这一条能当场抓到的。
+# 计数口径 = **payload.zip 里的条目**（= staging 树，不含本清单文件自身）。
+# ============================================================================
+if command -v sha256sum >/dev/null 2>&1; then
+  _sha256() { sha256sum "$1" | awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then
+  _sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
+else
+  _sha256() { echo "none"; }
+fi
+_count() {  # $1=目录 → 文件行数
+  find "$1" -type f 2>/dev/null | wc -l | tr -d ' '
+}
+# 字节数：用 stat -c %s（GNU coreutils 与 Android toybox 都支持），避免依赖 GNU find -printf
+_sum_bytes() {
+  find "$1" -type f -exec stat -c %s {} + 2>/dev/null | awk '{s+=$1} END {print s+0}'
+}
+_PAYLOAD_FILES=$(find "$P/staging" -type f | wc -l | tr -d ' ')
+_PAYLOAD_BYTES=$(_sum_bytes "$P/staging")
+_LINKS_N=$(grep -cv '^[[:space:]]*$' "$P/staging/runtime/lib/LINKS.txt" 2>/dev/null || echo 0)
+# 每个目录算一行：files / bytes
+_subtree_line() {  # $1=相对路径
+  echo "subtree $1 files=$(_count "$P/staging/$1") bytes=$(_sum_bytes "$P/staging/$1")"
+}
+{
+  echo "# dsh-payload-manifest v1"
+  echo "# 计数口径：payload.zip 内的全部条目（= staging 树）；runtime/lib 的 soname 别名由 App 侧 applyLinks 重建"
+  echo "variant=$DSH_VARIANT"
+  echo "app_id=$V_APP_ID"
+  echo "entries=$_PAYLOAD_FILES"
+  echo "bytes=$_PAYLOAD_BYTES"
+  echo "payload_zip_bytes=$(stat -c%s "$P/assets/payload.zip")"
+  echo "payload_zip_sha256=$(_sha256 "$P/assets/payload.zip")"
+  echo "links_expected=$_LINKS_N"
+  _subtree_line runtime
+  _subtree_line runtime/lib
+  _subtree_line dshroot
+  _subtree_line dshhome
+  _subtree_line bin
+  _subtree_line rish
+} > "$P/assets/payload_manifest.txt"
+echo "  payload 清单: entries=$_PAYLOAD_FILES bytes=$_PAYLOAD_BYTES links=$_LINKS_N"
+grep -E '^subtree (runtime|runtime/lib) ' "$P/assets/payload_manifest.txt" | sed 's/^/    /'
 
 echo "== 1/7 资源编译 (aapt) =="
 mkdir -p "$P/out/gen" "$P/out/classes" "$P/out/dex"
