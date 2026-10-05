@@ -107,6 +107,25 @@ public class OverlayService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int enginePort = 3080;
 
+    // ============ v1.21（需求 2）：头像上方的 agent 状态气泡 ============
+    /**
+     * 小气泡：透明底、小字，贴在头像上方，显示 agent 当前在做什么 ——
+     * 「思考中…」「正在调用 web_fetch…」以及最重要的「任务已完成 / 会话已结束」，
+     * 空闲几分钟后显示「摸鱼中…」。目的：让用户做屏幕控制类任务时不必靠猜判断是否结束。
+     * 状态由内核侧插件 POST 到 App 本地服务（/overlay?action=bubble）后转到这里。
+     */
+    private TextView statusBubble = null;
+    /** 最近一次收到状态的时间：空闲计时用（超时 → 摸鱼中…）。 */
+    private volatile long lastAgentStatusAt = 0L;
+    /** 空闲多久开始显示"摸鱼中…" */
+    private static final long IDLE_FISH_MS = 3 * 60 * 1000L;
+    /** 瞬时状态（思考中/调用工具）气泡停留时长 */
+    private static final long BUBBLE_TTL_MS = 8000L;
+    /** 气泡自动收起（瞬时状态用；终态/空闲态不排这个）。 */
+    private final Runnable bubbleHide = new Runnable() {
+        @Override public void run() { if (statusBubble != null) statusBubble.setVisibility(View.GONE); }
+    };
+
     private float touchX, touchY, startX, startY;
     private boolean dragging = false;
     private boolean panelVisible = false;
@@ -149,6 +168,10 @@ public class OverlayService extends Service {
                             if (!isRunning) return;
                             engineUp = up;
                             updateEngineStatusUi();
+                            // v1.21（需求 2）：空闲超过 IDLE_FISH_MS → 摸鱼中…（只在没有活跃状态时补）
+                            if (up && System.currentTimeMillis() - lastAgentStatusAt > IDLE_FISH_MS) {
+                                applyBubble("摸鱼中…", true, 0L);
+                            }
                         }
                     });
                 }
@@ -162,6 +185,8 @@ public class OverlayService extends Service {
         super.onCreate();
         isRunning = true;
         instance = this;
+        // v1.21：空闲计时从这里起算（服务刚起来不该立刻显示"摸鱼中…"）
+        lastAgentStatusAt = System.currentTimeMillis();
         enginePort = enginePort(this);
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         startForegroundCompat();
@@ -264,6 +289,31 @@ public class OverlayService extends Service {
                                                               // 由 tools/gen-icons.py 生成到 res/drawable-nodpi/
         iconView.setLayoutParams(new LinearLayout.LayoutParams(dp(40), dp(40)));
         iconRow.addView(iconView);
+
+        // ===== v1.21 需求 2：agent 状态气泡（贴在小人上方；透明底、尽量小，默认隐藏）=====
+        statusBubble = new TextView(this);
+        statusBubble.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
+        statusBubble.setTextColor(0xFFEAF0FF);
+        statusBubble.setSingleLine(true);
+        statusBubble.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        statusBubble.setMaxWidth(dp(132));
+        statusBubble.setPadding(dp(6), dp(2), dp(6), dp(2));
+        GradientDrawable bbg = new GradientDrawable();
+        bbg.setColor(0xB31F2733);                 // 半透明深色：尽量不挡视线
+        bbg.setCornerRadius(dp(8));
+        bbg.setStroke(dp(1), 0x55FFFFFF);
+        statusBubble.setBackground(bbg);
+        statusBubble.setVisibility(View.GONE);
+        LinearLayout.LayoutParams bubLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        bubLp.gravity = Gravity.CENTER_HORIZONTAL;
+        bubLp.bottomMargin = dp(2);
+        statusBubble.setLayoutParams(bubLp);
+        // 点一下收起（尤其"任务已完成/会话已结束"这种常驻终态）
+        statusBubble.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { hideBubble(); }
+        });
+        rootView.addView(statusBubble);           // 先加 = 在小人上方
         rootView.addView(iconRow);
 
         // ===== 状态面板（紧凑版，默认隐藏）=====
@@ -781,6 +831,47 @@ public class OverlayService extends Service {
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    // ==================== v1.21（需求 2）：agent 状态气泡 ====================
+
+    /**
+     * 更新气泡内容（必须主线程）。
+     *
+     * @param text  状态文案；空串/ null = 收起
+     * @param sticky 是否常驻（内核侧对"任务已完成/会话已结束"会置 true；用户点一下才收）
+     * @param ttlMs 瞬时状态的停留时长（0 → 默认 8 秒）
+     */
+    private void applyBubble(String text, boolean sticky, long ttlMs) {
+        if (statusBubble == null) return;
+        if (text == null || text.isEmpty()) { hideBubble(); return; }
+        lastAgentStatusAt = System.currentTimeMillis();
+        statusBubble.setText(text);
+        statusBubble.setVisibility(View.VISIBLE);
+        handler.removeCallbacks(bubbleHide);
+        final boolean idle = text.startsWith("摸鱼");
+        final boolean terminal = text.startsWith("任务已完成") || text.startsWith("会话已结束");
+        // 终态与空闲态常驻（用户点一下收起）；瞬时状态（思考中/调用工具）TTL 后自动收
+        if (!sticky && !terminal && !idle) {
+            handler.postDelayed(bubbleHide, ttlMs > 0 ? ttlMs : BUBBLE_TTL_MS);
+        }
+    }
+
+    private void hideBubble() {
+        handler.removeCallbacks(bubbleHide);
+        if (statusBubble != null) statusBubble.setVisibility(View.GONE);
+    }
+
+    /**
+     * 同进程静态入口：MainActivity 的本地服务收到 `action=bubble` 后调用这里。
+     * （内核侧插件 → HTTP → App 本地服务 → 气泡。）
+     */
+    public static void pushStatus(final String text, final boolean sticky, final long ttlMs) {
+        final OverlayService s = instance;
+        if (s == null) return;   // 悬浮窗没在跑：静默忽略（用户没开悬浮窗就不打扰）
+        s.handler.post(new Runnable() {
+            @Override public void run() { s.applyBubble(text, sticky, ttlMs); }
+        });
     }
 
     /** 更新悬浮窗状态文字 + 常驻通知（在主线程调用）。 */

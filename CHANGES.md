@@ -425,7 +425,42 @@ L1（DSH 设置页诊断面板）与 L2（本机资产救援页）暂不做，�
 （还原 index.html 后，点控制台「打开主界面」→ DSH 前端恢复，截图确认）
 ```
 
-### 十六、未完成 / 已知限制
+### 十六、悬浮窗 agent 状态气泡（v1.21 需求 2）
+
+用户诉求：让 DSH 做屏幕控制类任务时不必靠猜判断是否结束 —— 在小人上方加一个小气泡，
+显示「思考中…」「正在调用 web_fetch…」，以及最重要的「任务已完成 / 会话已结束」；
+空闲几分钟显示「摸鱼中…」；透明、尽量小、不打扰。
+
+**App 侧（已端到端验证）**
+- `OverlayService`：头像上方新增 `statusBubble`（半透明深色圆角、9.5sp、单行省略、最大 132dp），
+  默认隐藏；点一下收起（终态用它关掉）。
+- `applyBubble(text, sticky, ttl)`：瞬时状态（思考中/调用工具）TTL 8 秒后自动收起；
+  **终态（任务已完成/会话已结束）与空闲态（摸鱼中…）常驻**，等用户点掉或被新状态替换。
+- 空闲：`lastAgentStatusAt` 超 3 分钟（`IDLE_FISH_MS`）由既有探测循环补「摸鱼中…」。
+- 入口：App 本地服务新增 `action=bubble`（`/overlay`），转 `OverlayService.pushStatus(...)`；
+  悬浮窗没在跑时静默忽略（用户没开悬浮窗就不打扰）。
+
+**内核侧（补丁已装、HTTP 通路已验证；事件映射待真实会话确认）**
+- `dsh-tool-android`（我们的插件）订阅 cordis 事件并 POST 给 App：
+  · `agent/inbox/claimed` → 思考中…
+  · `agent/assistant-stream`（frame 带工具名）→ 正在调用 &lt;tool&gt;…
+  · `agent/status` 由"忙"回到 idle → **任务已完成**（sticky）；避免启动初期的初始 idle 误报
+  · `agent/error` → 出错了（点开控制台看日志）
+  · `api-session/status(running)` → 思考中…；`api-session/removed` → **会话已结束**
+- 每次推送都打 `[bubble] …` 到引擎日志（`dsh-web.log` / logcat 镜像），便于排查。
+
+**实测（模拟器 community）**
+- 通过 App 本地 API 驱动：思考中… ✅ / 正在调用 web_fetch… ✅ / 任务已完成（12 秒后仍在，sticky）✅ /
+  点一下收起 ✅（截图逐步确认）
+- 从**引擎环境**（同 payload node、同 APP_NOTIFY_PORT）POST → 气泡显示
+  「正在调用 web_fetch…（内核侧模拟）」✅（HTTP 200，`{"ok":true,"bubble":"…"}`）
+- 引擎日志无插件加载错误 ✅
+
+**待办（需要真实凭证）**：模拟器里 dshhome 没有 API key，界面停在 "Add an API key to get started"，
+因此**事件映射这一环无法在模拟器上跑真实会话验证**；有 key 的设备上发一条消息即可确认
+（观察 `[bubble]` 日志与气泡文字是否随 agent 状态变化）。
+
+### 十七、未完成 / 已知限制
 
 - **compat 变体尚未并入本机制**：`android-app/compat/` 仍是一套独立差异文件（GeckoView），
   其 `build.sh` / `MainActivity.java` 未同步 BuildVariant 与变体 staging，其虚拟屏端口仍为 8999/8998

@@ -3194,7 +3194,18 @@ public class MainActivity extends Activity {
                 stopOverlayService();
                 return "{\"ok\":true,\"running\":false}";
             }
-            return "{\"ok\":false,\"error\":\"未知 action（show/hide/toggle/status）\"}";
+            // v1.21（需求 2）：agent 状态气泡。内核侧插件把当前状态 POST 到这里，
+            // 转给 OverlayService 显示在小人上方（text 空 = 收起）。
+            if (action.equals("bubble") || action.equals("agent-status")) {
+                String text = jsonField(raw, "text");
+                boolean sticky = "true".equalsIgnoreCase(jsonField(raw, "sticky"));
+                long ttl = 0L;
+                try { ttl = Long.parseLong(jsonField(raw, "ttl")); } catch (Throwable ignored) {}
+                OverlayService.pushStatus(text, sticky, ttl);
+                return "{\"ok\":true,\"bubble\":\"" + text.replace("\"", "'")
+                        + "\",\"running\":" + OverlayService.isRunning + "}";
+            }
+            return "{\"ok\":false,\"error\":\"未知 action（show/hide/toggle/status/bubble）\"}";
         } catch (Throwable t) {
             return "{\"ok\":false,\"error\":\"" + String.valueOf(t.getMessage()).replace("\"", "'") + "\"}";
         }
