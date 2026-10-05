@@ -59,6 +59,8 @@ function rememberCrop(v) {
 }
 
 /** 裁剪图内像素 → 屏幕像素；没有可用几何时返回 null（让调用方报错而不是猜）。 */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 function cropToScreen(ix, iy) {
   if (lastCrop === null) return null;
   if (typeof ix !== "number" || typeof iy !== "number" || !isFinite(ix) || !isFinite(iy)) return null;
@@ -424,6 +426,11 @@ function apply(ctx) {
         found: v.found === true,
         method: typeof v.method === "string" ? v.method : "",
         ...(warning ? { warning } : {}),
+        // v1.19（真机对话实测）：WebView/网页按钮上无障碍 ACTION_CLICK 常被忽略（返回成功但界面无变化）。
+        // 如实提示替代路径，别让模型把"点了没反应"当成自己坐标算错。
+        ...(v.found === true && v.method === "node-text" && !warning
+          ? { hint: "若界面没有变化：WebView/网页按钮经常忽略无障碍 ACTION_CLICK。改用坐标点击（fx/fy）或 android_gesture 的 tap 笔通常有效。" }
+          : {}),
         ...(v.found === false && v.error ? { error: v.error } : {})
       };
     }
@@ -475,14 +482,16 @@ function apply(ctx) {
               ? "目标节点拒绝粘贴/写文本（常见于 WebView、contenteditable 或第三方输入法）：可改用 android_paste_text，或先 android_see 截图后点击输入法自带的「粘贴」键。"
               : "")
         : "");
-      if (!v.ok) {
+      // v1.19（真机对话实测）：服务端可能"动作返回 false 但仍 ok=true"，
+      // 之前会让工具显示"操作成功"同时附一句失败说明 → 模型误判为成功。现在一律按失败上报。
+      const actionFailed = v.ok === false || (typeof v.error === "string" && v.error.length > 0);
+      if (actionFailed) {
         return { ok: false, error: v.error || GUIDE_TEXT, ...(hint ? { hint } : {}) };
       }
       return {
-        ok: v.ok !== false,
+        ok: true,
         ...(v.focused !== undefined ? { focused: v.focused === true } : {}),
         ...(v.method ? { method: String(v.method) } : {}),
-        ...(v.error ? { error: v.error } : {}),
         ...(hint ? { hint } : {})
       };
     }
@@ -527,16 +536,17 @@ function apply(ctx) {
         "② 用 android_see 截图，找到输入法的「粘贴」键（键盘上方一行，屏幕底部约 y≈0.586 一带）并用 android_tap 点它；" +
         "③ 仍不行则改用特权通道 android_input（action=text，需 Shizuku/root）。";
       const serverHint = typeof v.hint === "string" && v.hint ? String(v.hint) : "";
-      if (!v.ok) {
+      // 同上：动作返回 false 时按失败上报，别显示"操作成功"
+      const actionFailed = v.ok === false || (typeof v.error === "string" && v.error.length > 0);
+      if (actionFailed) {
         return { ok: false, error: v.error || GUIDE_TEXT, hint: serverHint || fallback };
       }
       const method = v.method ? String(v.method) : "paste";
-      const failedAction = v.error && String(v.error).length > 0;
       return {
-        ok: v.ok !== false,
+        ok: true,
         ...(v.focused !== undefined ? { focused: v.focused === true } : {}),
         method,
-        ...(failedAction ? { error: String(v.error), hint: serverHint || fallback } : {})
+        ...(serverHint ? { hint: serverHint } : {})
       };
     }
   }));
@@ -621,7 +631,8 @@ function apply(ctx) {
         "需要已开启无障碍服务且设备 Android 11+（截图能力），低版本可用 android_screen。",
       parameters: {
         grid: { type: "boolean", description: "true 时在截图上叠加 4×4 网格线，方便按行列定位（游戏/无控件界面推荐）" },
-        select: { type: "string", description: "**区域截图**：按无障碍节点文字取景（模糊包含匹配），只截该节点（可配 pad 外扩）。适合看清小字/一条数据，比整屏清晰得多" },
+        select: { type: "string", description: "**区域截图**：按无障碍节点文字取景（完全相等优先，其次更短的包含匹配），只截该节点（可配 pad 外扩）。适合看清小字/一条数据，比整屏清晰得多" },
+        selectIndex: { type: "number", description: "select 命中多个候选时取第几个（0 起，默认 0）。返回里的 selectCount/selectLabel 会告诉你命中是谁、还有几个候选" },
         region: { type: "string", description: "**区域截图**：显式矩形 \"x,y,w,h\"（屏幕像素，左上角为原点）。与 select 二选一" },
         pad: { type: "number", description: "select 时四周外扩的像素（默认 0，建议 8~24 留点上下文）" }
       },
@@ -654,6 +665,9 @@ function apply(ctx) {
             cropH: { type: "number" },
             selectFx: { type: "number" },
             selectFy: { type: "number" },
+            selectLabel: { type: "string" },
+            selectCount: { type: "number" },
+            selectIndex: { type: "number" },
             image: {
               type: "object",
               additionalProperties: false,
@@ -684,7 +698,8 @@ function apply(ctx) {
                 + "也可以把 ix/iy 直接交给 android_tap/android_swipe/android_hold/android_touch 的 ix/iy 参数，由工具自动换算（推荐，免手算）"
               : "操作优先用分数坐标 fx/fy（0~1）：图中位置 (ix,iy) → fx=ix/imageW, fy=iy/imageH；用绝对像素 = 图中像素 × scaleX/Y",
             value.selectFx !== undefined
-              ? `命中该节点的中心：fx=${value.selectFx}, fy=${value.selectFy}（可直接 android_tap(fx=${value.selectFx}, fy=${value.selectFy})）`
+              ? `命中节点：「${value.selectLabel || "?"}」中心 fx=${value.selectFx}, fy=${value.selectFy}（可直接 android_tap(fx,fy)）`
+                + (value.selectCount ? `；候选 ${value.selectCount} 个${value.selectCount > 1 ? `，当前第 ${value.selectIndex || 0} 个（换一个用 selectIndex）` : ""}` : "")
               : ""
           ].filter(Boolean).join("\n");
           return [{
@@ -712,6 +727,7 @@ function apply(ctx) {
         if (args.grid === true) params.grid = "4";
         if (args.select !== undefined && String(args.select).length > 0) params.select = String(args.select);
         else if (args.region !== undefined && String(args.region).length > 0) params.region = String(args.region);
+        if (args.selectIndex !== undefined) params.selectIndex = String(Number(args.selectIndex));
         if (args.pad !== undefined) params.pad = String(Number(args.pad));
         const raw = await a11yRequest("/screenshot", Object.keys(params).length ? params : undefined, 20000);
         const v = parseResult(raw);
@@ -773,6 +789,9 @@ function apply(ctx) {
             cropW: typeof v.cropW === "number" ? v.cropW : 0,
             cropH: typeof v.cropH === "number" ? v.cropH : 0,
             ...(typeof v.selectFx === "number" ? { selectFx: v.selectFx, selectFy: v.selectFy } : {}),
+            ...(typeof v.selectLabel === "string" ? { selectLabel: v.selectLabel } : {}),
+            ...(typeof v.selectCount === "number" ? { selectCount: v.selectCount } : {}),
+            ...(typeof v.selectIndex === "number" ? { selectIndex: v.selectIndex } : {}),
             ...(hints.length ? { hint: hints.join(" ") } : {}),
             image: {
               attachmentId: ref.attachmentId,
@@ -1018,6 +1037,16 @@ function apply(ctx) {
         return { ok: false, error: "android_gesture 需要 strokes 数组" };
       }
       const ALLOWED = ["kind", "finger", "x", "y", "fx", "fy", "x2", "y2", "fx2", "fy2", "durationMs", "ms"];
+      // v1.19（真机对话实测）：模型常用 android_gesture 只传一个 wait 当"睡眠"用，
+      // 而服务端会回"手势没有可执行的笔"→ 白白浪费一次调用。纯 wait 直接在本地睡，不再往返。
+      if (strokes.every((s) => s && s.kind === "wait")) {
+        let ms = 0;
+        for (const s of strokes) ms += typeof s.ms === "number" && s.ms > 0 ? s.ms : 0;
+        ms = Math.min(ms, 60000);
+        noteInputEvent();
+        await sleep(ms);
+        return { ok: true, durationMs: ms, hint: "wait 笔已在本地等待 " + ms + "ms（服务端不接受纯 wait 手势）" };
+      }
       const clean = [];
       let total = 0;
       let strokeIdx = 0;

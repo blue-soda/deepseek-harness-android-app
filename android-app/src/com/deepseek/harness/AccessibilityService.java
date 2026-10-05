@@ -1042,6 +1042,56 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
         return best[0];
     }
 
+    /** select 取景的匹配结果：命中的节点 + 一共几个候选（让模型一步看清"截到的是谁"）。 */
+    private static final class SelectMatch {
+        AccessibilityNodeInfo node;
+        int count;
+        String label;
+    }
+
+    /**
+     * v1.19（A6 修正）：**区域截图专用**的节点匹配。
+     * 与 {@link #findNodeByText} 的区别：那个是给"点击"用的（优先可点击祖先/后代），
+     * 实测会把 select="日志" 匹配到按钮「查看日志」而不是标题「日志」（跑真机对话时踩到）。
+     * 这里按**文字本身**排序：完全相等 &gt; 更短的包含 &gt; 更长的包含，并支持取第 N 个候选。
+     */
+    private SelectMatch selectNodeForShot(String needle, int index) {
+        if (needle == null || needle.isEmpty()) return null;
+        final String target = needle.trim().toLowerCase();
+        final AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return null;
+        final java.util.ArrayList<Object[]> hits = new java.util.ArrayList<Object[]>();
+        walk(root, new NodeVisitor() {
+            @Override
+            public void visit(AccessibilityNodeInfo node, int depth) {
+                if (node == null) return;
+                String text = node.getText() == null ? "" : node.getText().toString().trim();
+                String desc = node.getContentDescription() == null ? "" : node.getContentDescription().toString().trim();
+                String lt = text.toLowerCase(), ld = desc.toLowerCase();
+                boolean exact = lt.equals(target) || ld.equals(target);
+                boolean partial = !exact && ((!lt.isEmpty() && lt.contains(target)) || (!ld.isEmpty() && ld.contains(target)));
+                if (!exact && !partial) return;
+                String label = !text.isEmpty() ? text : desc;
+                hits.add(new Object[]{node, Integer.valueOf(exact ? 0 : 1), Integer.valueOf(label.length()), label});
+            }
+        }, 0);
+        if (hits.isEmpty()) return null;
+        java.util.Collections.sort(hits, new java.util.Comparator<Object[]>() {
+            @Override
+            public int compare(Object[] a, Object[] b) {
+                int r = ((Integer) a[1]).compareTo((Integer) b[1]);
+                if (r != 0) return r;
+                return ((Integer) a[2]).compareTo((Integer) b[2]);   // 更短的更具体（标题 vs 长段落）
+            }
+        });
+        int idx = Math.max(0, Math.min(index, hits.size() - 1));
+        SelectMatch m = new SelectMatch();
+        m.node = (AccessibilityNodeInfo) hits.get(idx)[0];
+        m.label = (String) hits.get(idx)[3];
+        m.count = hits.size();
+        return m;
+    }
+
     /** 包含该坐标的**最深可点击节点**（无则退回最深节点）。 */
     private AccessibilityNodeInfo findNodeByPoint(final int x, final int y) {
         final AccessibilityNodeInfo root = getRootInActiveWindow();
@@ -1300,6 +1350,12 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
         // v1.19（A6）：区域截图参数（屏幕坐标）
         final String selectText = queryParam(path, "select");
         final String region = queryParam(path, "region");
+        int selectIndexTmp = 0;
+        try {
+            String si = queryParam(path, "selectIndex");
+            if (!si.isEmpty()) selectIndexTmp = Math.max(0, Integer.parseInt(si.trim()));
+        } catch (Throwable ignored) {}
+        final int selectIndex = selectIndexTmp;
         int cropPadTmp = 0;
         try {
             String pd = queryParam(path, "pad");
@@ -1359,12 +1415,15 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
                             boolean cropped = false;
                             double selectFx = -1, selectFy = -1;
                             Rect selBounds = null;
+                            String selLabel = "";
+                            int selCount = 0;
                             if (!selectText.isEmpty()) {
-                                AccessibilityNodeInfo sel = findNodeByText(selectText);
-                                if (sel != null) {
+                                SelectMatch sel = selectNodeForShot(selectText, selectIndex);
+                                if (sel != null && sel.node != null) {
                                     Rect b = new Rect();
-                                    try { sel.getBoundsInScreen(b); } catch (Throwable ignored) {}
-                                    sel.recycle();
+                                    try { sel.node.getBoundsInScreen(b); } catch (Throwable ignored) {}
+                                    selLabel = sel.label == null ? "" : sel.label;
+                                    selCount = sel.count;
                                     if (b.width() > 0 && b.height() > 0) {
                                         selBounds = b;
                                         cropX = Math.max(0, b.left - cropPad);
@@ -1473,6 +1532,12 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
                             if (selectFx >= 0) {
                                 o.put("selectFx", selectFx);   // 命中节点的中心（分数坐标，可直接给 android_tap）
                                 o.put("selectFy", selectFy);
+                            }
+                            if (!selectText.isEmpty() && cropped) {
+                                // A6 修正：让模型一眼看到"截到的是谁"，以及共有几个候选（可配 selectIndex 换一个）
+                                o.put("selectLabel", selLabel);
+                                o.put("selectCount", selCount);
+                                o.put("selectIndex", selectIndex);
                             }
                             o.put("grid", grid);
                             o.put("bytes", out.length());
