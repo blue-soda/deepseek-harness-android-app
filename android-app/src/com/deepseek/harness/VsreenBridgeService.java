@@ -612,6 +612,9 @@ public class VsreenBridgeService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // v1.21：正在「完全退出」→ 不自启动。本服务也是 START_STICKY，不管它的话进程被杀后
+        // 系统会把它重建（实测：退出后进程仍被它撑着不释放，虽然用户看不到界面）。
+        if (MainActivity.shutdownPending(this)) { stopSelf(); return START_NOT_STICKY; }
         return START_STICKY;
     }
 

@@ -103,6 +103,14 @@ public class OverlayService extends Service {
     private Button destroyBtn;
     /** v1.21（B）：虚拟屏回程按钮，仅在虚拟屏真的在跑时可见。 */
     private Button vscreenBtn;
+    /** v1.21：「完全退出」按钮（两步确认防误触）。 */
+    private Button exitBtn;
+    /** 退出按钮是否处于"待确认"状态。 */
+    private boolean exitArmed = false;
+    /** 待确认超时自动取消（4 秒）。 */
+    private final Runnable exitDisarm = new Runnable() {
+        @Override public void run() { setExitArmed(false); }
+    };
     // v1.9 虚拟屏预览：悬浮窗实时显示虚拟屏画面（用户可看 AI 操作）
     private ImageView vscreenImageView = null;
     private volatile boolean vscreenPreviewRunning = false;
@@ -191,6 +199,9 @@ public class OverlayService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        // v1.21：正在「完全退出」→ 立刻自停。本服务是 START_STICKY，进程被杀后系统会重建它
+        // （悬浮窗又冒出来）；退出期间必须挡住，否则用户会觉得"没关干净"。
+        if (MainActivity.shutdownPending(this)) { stopSelf(); return; }
         isRunning = true;
         instance = this;
         // v1.21：空闲计时从这里起算（服务刚起来不该立刻显示"摸鱼中…"）
@@ -410,6 +421,13 @@ public class OverlayService extends Service {
         }});
         destroyBtn.setVisibility(View.GONE);
         btnRow.addView(destroyBtn);
+
+        // v1.21：**完全退出**按钮。
+        // 与「打开应用」并排放（常态下 vscreen 两枚按钮隐藏，所以一行放得下）。
+        // 防误触：两步确认 —— 第一次点只进入"待确认"（按钮变红、文案改「确认退出」、
+        //   飘一句提示），4 秒内不点第二次自动取消；确认后才真正执行。
+        exitBtn = pillButton("退出", new Runnable() { @Override public void run() { onExitButtonTap(); } });
+        btnRow.addView(exitBtn);
 
         panelView.addView(btnRow);
         rootView.addView(panelView);
@@ -670,8 +688,7 @@ public class OverlayService extends Service {
     }
 
     /** 面板每次展开时刷新"看场景才该出现"的行（如销毁屏按钮）。 */
-    private void refreshPanelDynamicRows() {
-        try {
+    private void refreshPanelDynamicRows() {        try {
             // v1.21（B）：虚拟屏相关的两个按钮只在**真的有虚拟屏**时出现。
             // 常态下（没开虚拟屏）面板里只有「打开应用」，不会出现点了没反应的按钮。
             boolean vs = VsreenBridgeService.sVscreenRunning;
@@ -680,8 +697,54 @@ public class OverlayService extends Service {
         } catch (Throwable ignored) {}
     }
 
-    /** 位置过渡：从当前 x 平滑滑到目标贴边位（半藏/完整随面板状态）。 */
-    private void animateToEdge() {
+    // ==================== v1.21：「完全退出」按钮 ====================
+
+    /**
+     * 「退出」按钮点击：**两步确认**，防误触。
+     *
+     * 第一步：按钮变红、文案改「确认退出」，并飘一句提示说明会发生什么（此时什么都没做）；
+     * 4 秒内没有第二次点击 → 自动回到「退出」；
+     * 第二步（4 秒内再点）：真正执行 —— 停引擎 → 停服务 → 清通知 → 结束进程。
+     *
+     * 之所以不用系统 AlertDialog：悬浮窗是 TYPE_APPLICATION_OVERLAY 窗口，
+     * 在其上弹对话框体验差（会被其他覆盖层挡住/焦点行为不一致），两步确认更稳。
+     */
+    private void onExitButtonTap() {
+        if (!exitArmed) {
+            setExitArmed(true);
+            try {
+                android.widget.Toast.makeText(getApplicationContext(),
+                        "再点一次「确认退出」将彻底关闭：停引擎、关悬浮窗、结束进程",
+                        android.widget.Toast.LENGTH_LONG).show();
+            } catch (Throwable ignored) {}
+            handler.removeCallbacks(exitDisarm);
+            handler.postDelayed(exitDisarm, 4000);
+            return;
+        }
+        handler.removeCallbacks(exitDisarm);
+        setExitArmed(false);
+        try {
+            android.widget.Toast.makeText(getApplicationContext(),
+                    "正在退出…", android.widget.Toast.LENGTH_SHORT).show();
+        } catch (Throwable ignored) {}
+        MainActivity.shutdownEverything(this);
+    }
+
+    /** 切换「退出」按钮的待确认外观（红底白字 = 危险动作已上膛）。 */
+    private void setExitArmed(boolean armed) {
+        exitArmed = armed;
+        if (exitBtn == null) return;
+        try {
+            exitBtn.setText(armed ? "确认退出" : "退出");
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(armed ? 0xFFE5484D : 0xFFFFFFFF);
+            bg.setCornerRadius(dp(11));
+            exitBtn.setBackground(bg);
+            exitBtn.setTextColor(armed ? 0xFFFFFFFF : getColor(R.color.accent_brand));
+        } catch (Throwable ignored) {}
+    }
+
+    /** 位置过渡：从当前 x 平滑滑到目标贴边位（半藏/完整随面板状态）。 */    private void animateToEdge() {
         try {
             if (lp == null || rootView == null) return;
             int w = rootView.getWidth() > 0 ? rootView.getWidth() : dp(60);

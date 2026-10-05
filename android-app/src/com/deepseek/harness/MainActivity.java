@@ -279,6 +279,19 @@ public class MainActivity extends Activity {
         // v1.13.12 起主题可在控制台选「跟随系统/浅色/深色」，不再只能跟系统。
         setTheme(themePrefersDark() ? R.style.AppTheme : R.style.AppTheme_Light);
         super.onCreate(savedInstanceState);
+        // v1.21：正在「完全退出」——若被系统/通知重新拉起，直接关掉，别再起界面和引擎。
+        // 只有**用户主动点图标**（ACTION_MAIN）才算重新使用：清掉标记正常启动。
+        if (shutdownPending(this)) {
+            boolean userLaunch = getIntent() != null
+                    && Intent.ACTION_MAIN.equals(getIntent().getAction());
+            if (!userLaunch) {
+                Log.i(TAG, "onCreate: 正在完全退出，忽略本次启动");
+                finish();
+                return;
+            }
+            Log.i(TAG, "onCreate: 用户主动启动，清除退出标记");
+            clearShutdownPendingOnUserLaunch();
+        }
         enginePort = defaultEnginePort(this); // 三版本各自独立端口（见 defaultEnginePort）
         // v1.17.4：控制台主题包配置（/sdcard/<包名目录>/console/console.json）。
         // 放在 applyStatusBar() 之前 —— statusBar 颜色要参与状态栏/导航栏取色；坏配置在 load() 里自动回退。
@@ -917,8 +930,98 @@ public class MainActivity extends Activity {
         setContentView(root);
     }
 
-    /** 退出确认对话框（浮动按钮与系统返回键共用） */
-    private void confirmExit() {
+    /** v1.21：悬浮窗面板「完全退出」进行中 —— 期间不让界面/服务被重新拉起。 */
+    public static volatile boolean shuttingDown = false;
+
+    /**
+     * v1.21：「完全退出」标记**必须落盘**。
+     *
+     * 实测踩过：只用一个静态 boolean 挡不住 —— 进程被杀后系统会因 START_STICKY 重建
+     * EngineService / OverlayService（重建发生在**新进程**里，静态字段回到 false），
+     * 于是常驻通知和悬浮窗又冒出来，用户看到的是"没关干净"。
+     * 落盘后，服务/界面在被重建时能读到这个标记并立刻自停。
+     * 用户主动点应用图标（ACTION_MAIN）启动时清除它，正常启动不受影响。
+     */
+    private static final String KEY_SHUTDOWN_PENDING = "shutdown_pending";
+
+    /** 退出标记（静态或落盘任一为真即视为"正在退出"）。 */
+    public static boolean shutdownPending(Context ctx) {
+        if (shuttingDown) return true;
+        try {
+            return ctx.getSharedPreferences(PREFS, MODE_PRIVATE)
+                    .getBoolean(KEY_SHUTDOWN_PENDING, false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 用户主动启动（点图标）时清掉退出标记。 */
+    private void clearShutdownPendingOnUserLaunch() {
+        try {
+            if (getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_SHUTDOWN_PENDING, false)) {
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                        .putBoolean(KEY_SHUTDOWN_PENDING, false).apply();
+            }
+            shuttingDown = false;
+        } catch (Throwable ignored) {}
+    }
+
+    /**
+     * v1.21：**完全退出**（悬浮窗面板的「退出」按钮走的入口）。
+     *
+     * 与 confirmExit() 的区别：
+     *   · confirmExit() 只关界面，引擎 node 是独立子进程、继续在后台跑
+     *     （"手机当服务器"的设计意图，不需要停）；
+     *   · 本方法是用户明确要求"完全关闭 APP"：停引擎 → 停保活/悬浮窗服务 → 清通知 → 结束进程。
+     *
+     * 两个实现要点：
+     *   ① 必须**显式杀 node**：子进程不会随父进程退出而消失，杀掉 App 进程只会留下孤儿引擎；
+     *   ② 必须置 shuttingDown：EngineService/OverlayService 都是 START_STICKY，
+     *      进程死掉后系统会重建它们（悬浮窗又冒出来），所以两处 onCreate 都要看这个标志。
+     *
+     * 防误触由调用方负责（OverlayService 里做了两步确认）。
+     */
+    public static void shutdownEverything(final Context ctx) {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        // 落盘：进程死后服务被 START_STICKY 重建时，靠它在新进程里挡住（见 shutdownPending）
+        try {
+            ctx.getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putBoolean(KEY_SHUTDOWN_PENDING, true).apply();
+        } catch (Throwable ignored) {}
+        Log.i(TAG, "shutdown: 完全退出（停引擎 + 停服务 + 清通知 + 结束进程）");
+        final int port = OverlayService.enginePort(ctx);
+        new Thread(new Runnable() { @Override public void run() {
+            // 1) 停引擎：SIGTERM → 轮询 6 秒 → SIGKILL 兜底
+            try {
+                int pid = findEnginePid(port);
+                Log.i(TAG, "shutdown: engine pid=" + pid);
+                if (pid > 0) android.os.Process.sendSignal(pid, 15);
+                long deadline = System.currentTimeMillis() + 6000;
+                while (System.currentTimeMillis() < deadline && findEnginePid(port) > 0) {
+                    try { Thread.sleep(200); } catch (Throwable ignored) { break; }
+                }
+                int still = findEnginePid(port);
+                if (still > 0) android.os.Process.killProcess(still);
+            } catch (Throwable t) {
+                Log.w(TAG, "shutdown: kill engine failed", t);
+            }
+            // 2) 停前台服务 + 清通知（否则通知栏还留着"运行中"）
+            try {
+                ctx.stopService(new Intent(ctx, OverlayService.class));
+                ctx.stopService(new Intent(ctx, EngineService.class));
+                ctx.stopService(new Intent(ctx, VsreenBridgeService.class));   // 也是 STICKY，必须显式停
+                NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+                if (nm != null) nm.cancelAll();
+            } catch (Throwable ignored) {}
+            // 3) 结束进程（shuttingDown 已挡住 START_STICKY 重建）
+            try { Thread.sleep(500); } catch (Throwable ignored) {}
+            Log.i(TAG, "shutdown: 结束进程");
+            android.os.Process.killProcess(android.os.Process.myPid());
+        }}, "dsh-shutdown").start();
+    }
+
+    /** 退出确认对话框（浮动按钮与系统返回键共用） */    private void confirmExit() {
         // v1.13.12 文案纠偏：退出只是关掉本界面，引擎 node 进程是独立子进程，会在后台继续运行
         // （这正是"手机当服务器"的设计意图，不需要停）。旧文案"服务器将停止运行"与实际行为不符。
         conDialog("退出 DeepSeek Harness", "确定要退出吗？界面会关闭，服务器将在后台继续运行。", "退出", new Runnable() {
@@ -7586,6 +7689,11 @@ public class MainActivity extends Activity {
      * 认人条件：cmdline 同时含 bin.js、web、--port &lt;enginePort&gt;，避免误杀别的 node。
      */
     private int findEnginePid() {
+        return findEnginePid(enginePort);
+    }
+
+    /** v1.21：静态版引擎 PID 查找（供「完全退出」在无 Activity 实例时使用）。 */
+    private static int findEnginePid(int port) {
         File[] kids;
         try { kids = new File("/proc").listFiles(); } catch (Throwable t) { return -1; }
         if (kids == null) return -1;
@@ -7600,14 +7708,14 @@ public class MainActivity extends Activity {
             if (cmd == null || cmd.length() == 0) continue;
             if (cmd.indexOf("bin.js") < 0) continue;
             if (cmd.indexOf(" web") < 0) continue;
-            if (cmd.indexOf("--port " + enginePort) < 0) continue;
+            if (cmd.indexOf("--port " + port) < 0) continue;
             return pid;
         }
         return -1;
     }
 
     /** 读 /proc/&lt;pid&gt;/cmdline（NUL 分隔 → 空格）。读不到返回 null。 */
-    private String readProcCmdline(int pid) {
+    private static String readProcCmdline(int pid) {
         FileInputStream in = null;
         try {
             in = new FileInputStream("/proc/" + pid + "/cmdline");

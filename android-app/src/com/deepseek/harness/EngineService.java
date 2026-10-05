@@ -27,12 +27,17 @@ public class EngineService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        // v1.21：正在「完全退出」→ 立刻自停。否则 START_STICKY 会在进程被杀后重建本服务，
+        // 常驻通知又冒出来，用户会觉得"没关干净"。
+        if (MainActivity.shutdownPending(this)) { stopSelf(); return; }
         createChannel();
         startForeground(NOTIF_ID, buildNotification("DeepSeek Harness 正在运行", "AI 引擎保活中，后台任务持续执行"));
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // v1.21：完全退出期间被系统重建 → 不自启动（返回 NOT_STICKY，避免反复重建）
+        if (MainActivity.shutdownPending(this)) { stopSelf(); return START_NOT_STICKY; }
         // 每次收到启动/重启意图都刷新通知（系统杀进程后 START_STICKY 重建也会走到这里）
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm != null) nm.notify(NOTIF_ID, buildNotification("DeepSeek Harness 正在运行", "AI 引擎保活中，后台任务持续执行"));
