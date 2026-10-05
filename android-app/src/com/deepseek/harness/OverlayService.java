@@ -98,6 +98,8 @@ public class OverlayService extends Service {
     private ImageView iconView;
     private LinearLayout panelView;
     private TextView statusText;
+    /** v1.21：会话数行（`N 个会话运行中…` / 暂无会话运行 / 会话已完成 ✓）。 */
+    private TextView sessionText;
     /** v1.21：面板里的"任务状态"行 —— 与头像上方气泡同源（气泡被点掉后仍能在这里看）。 */
     private TextView agentText;
     private Button destroyBtn;
@@ -363,17 +365,28 @@ public class OverlayService extends Service {
         pbg.setCornerRadius(dp(12));
         panelView.setBackground(pbg);
 
-        // 第一行：引擎 + AI 会话状态合并成一行（省一行高度，信息更集中）
-        //   ● 引擎运行中 · AI：空闲 / AI：1 个会话工作中… / AI：会话已完成 ✓
+        // 第一行：引擎状态
+        //   ● 引擎运行中… / ○ 引擎未运行
+        // v1.21 调整（用户反馈"AI：…"读着别扭）：不再把两件事挤在一行并加"AI："前缀，
+        // 改成两行直白的话 —— 引擎一行、会话数一行（见下面 sessionText）。
         statusText = new TextView(this);
-        statusText.setText("○ 状态：检测中…");
+        statusText.setText("○ 引擎状态检测中…");
         statusText.setTextColor(getColor(R.color.panel_text_bright));
         statusText.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.text_caption));
         statusText.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         panelView.addView(statusText);
 
-        // 第二行：agent 任务状态（与头像上方气泡同源；气泡被点掉后这里仍看得到）
+        // 第二行：会话数（N 个会话运行中… / 暂无会话运行 / 会话已完成 ✓）
+        sessionText = new TextView(this);
+        sessionText.setText("—");
+        sessionText.setTextColor(getColor(R.color.panel_text_bright));
+        sessionText.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.text_caption));
+        sessionText.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        panelView.addView(sessionText);
+
+        // 第三行：agent 任务状态（与头像上方气泡同源；气泡被点掉后这里仍看得到）
         agentText = new TextView(this);
         agentText.setText("任务：—");
         agentText.setTextColor(getColor(R.color.panel_text_dim));
@@ -403,7 +416,7 @@ public class OverlayService extends Service {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         brp.topMargin = dp(7);
         btnRow.setLayoutParams(brp);
-        btnRow.addView(pillButton("打开应用", new Runnable() { @Override public void run() {
+        btnRow.addView(pillButton("打开", new Runnable() { @Override public void run() {
             Intent i = new Intent(OverlayService.this, MainActivity.class);
             i.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
             try { startActivity(i); } catch (Throwable ignored) {}
@@ -1004,8 +1017,11 @@ public class OverlayService extends Service {
     /** 更新悬浮窗状态文字 + 常驻通知（在主线程调用）。 */
     private void updateEngineStatusUi() {
         if (statusText != null) {
-            // v1.21：引擎状态 + AI 会话状态合并成一行（原来两行，省一行高度）
-            statusText.setText((engineUp ? "● 引擎运行中" : "○ 引擎未运行") + " · " + aiStatusText());
+            // v1.21：引擎一行、会话数一行（原先把两件事挤在一行并加 "AI：" 前缀，用户觉得别扭）
+            statusText.setText(engineUp ? "● 引擎运行中…" : "○ 引擎未运行");
+        }
+        if (sessionText != null) {
+            sessionText.setText(sessionStatusText());
         }
         // 面板开着的话顺带刷新销毁屏按钮的可见性
         if (panelVisible) refreshPanelDynamicRows();
@@ -1022,25 +1038,25 @@ public class OverlayService extends Service {
      *  - 上次还工作中、现在没了 → 记一个"刚完成"时间点，60 秒内显示"已完成"；
      *  - 其余 → "空闲"。引擎不在跑时显示"—"。
      */
-    private String aiStatusText() {
-        if (!engineUp) return "AI：—";
+    private String sessionStatusText() {
+        if (!engineUp) return "—";
         HashSet<String> cur = activeSessions;
-        if (cur == null) return "AI：—";       // 还没扫过 / /proc 扫不了
+        if (cur == null) return "—";       // 还没扫过 / /proc 扫不了
         int n = cur.size();
         long now = System.currentTimeMillis();
         if (n > 0) {
             lastSessionsHadWork = true;   // 边沿触发源：从"有会话工作"变"没有"时报已完成
             finishedAt = 0L;
-            return n == 1 ? "AI：1 个会话工作中…" : "AI：" + n + " 个会话工作中…";
+            return n + " 个会话运行中…";
         }
         if (finishedAt == 0L && lastSessionsHadWork) {
             finishedAt = now;
         }
         if (finishedAt > 0L && now - finishedAt < FINISHED_TTL_MS) {
-            return "AI：会话已完成 ✓";
+            return "会话已完成 ✓";
         }
         lastSessionsHadWork = false;
-        return "AI：空闲";
+        return "暂无会话运行";
     }
     /** 上次扫描是否看到过工作中的会话（用于"已完成"的边沿触发）。 */
     private volatile boolean lastSessionsHadWork = false;

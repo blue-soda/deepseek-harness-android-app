@@ -1021,6 +1021,120 @@ public class MainActivity extends Activity {
         }}, "dsh-shutdown").start();
     }
 
+    // ============ v1.21：默认插件（ds-harness-remote） ============
+
+    /** 默认插件规格：与维护者在 Desktop 上装的 `dsh plugin add github:blue-soda/ds-harness-remote` 一致。 */
+    private static final String DEFAULT_PLUGIN_SPEC = "github:blue-soda/ds-harness-remote";
+    /** 包名（用于判断是否已装进 profile）。 */
+    private static final String DEFAULT_PLUGIN_NAME = "ds-harness-remote";
+    private static final String KEY_PLUGIN_TRIES = "default_plugin_tries";
+    /** 最多自动尝试几次（跨启动累计）；之后不再自动重试，避免每次开机白等。 */
+    private static final int DEFAULT_PLUGIN_MAX_TRIES = 3;
+    private volatile boolean defaultPluginBusy = false;
+
+    /**
+     * v1.21：把默认插件装进 profile（等价于维护者手敲的
+     * `dsh plugin --profile web add github:blue-soda/ds-harness-remote`）。
+     *
+     * 设计取舍：
+     *  · **另起线程**：安装要联网 + pnpm 解析依赖，可能几十秒 —— 绝不能挂在启动链上
+     *    （启动链上每一秒都是用户等待）。装好后**下次启动引擎生效**（本轮已经在跑的不加载）。
+     *  · **幂等**：`profiles/web/package.json` 里已出现包名就跳过，不需要额外标记。
+     *  · **失败可重试但有限**：跨启动累计最多 3 次；再失败就不自动试了（日志留话，
+     *    用户仍可用控制台/命令行手装）。离线设备不会每次开机都白等。
+     *  · 与引擎同一套环境（payload node + LD_LIBRARY_PATH + git/CA 适配），
+     *    否则 https clone 会因找不到 remote helper 或证书失败（实测过同类问题）。
+     */
+    private void ensureDefaultPluginsAsync(final File payload) {
+        if (defaultPluginBusy) return;
+        final File profileDir = new File(payload, "dshhome/profiles/web");
+        try {
+            String txt = readFileText(new File(profileDir, "package.json"));
+            if (txt != null && txt.contains(DEFAULT_PLUGIN_NAME)) return;   // 已装
+        } catch (Throwable ignored) {}
+        final int tries;
+        try { tries = prefs().getInt(KEY_PLUGIN_TRIES, 0); } catch (Throwable t) { return; }
+        if (tries >= DEFAULT_PLUGIN_MAX_TRIES) {
+            Log.i(TAG, "default plugin: 已尝试 " + tries + " 次仍失败，不再自动重试");
+            return;
+        }
+        defaultPluginBusy = true;
+        new Thread(new Runnable() { @Override public void run() {
+            try {
+                prefs().edit().putInt(KEY_PLUGIN_TRIES, tries + 1).apply();
+                Log.i(TAG, "default plugin: 开始安装 " + DEFAULT_PLUGIN_SPEC
+                        + "（第 " + (tries + 1) + "/" + DEFAULT_PLUGIN_MAX_TRIES + " 次，后台进行）");
+                File node = new File(payload, "runtime/bin/node");
+                File binjs = new File(dshrootDir, REL_BINJS);
+                if (!node.exists() || !binjs.exists()) {
+                    Log.w(TAG, "default plugin: node/bin.js 缺失，本次跳过");
+                    return;
+                }
+                File bin = new File(payload, "bin");
+                File lib = new File(payload, "runtime/lib");
+                File home = new File(payload, "dshhome");
+                File gitDir = new File(payload, "git");
+                File tmp = new File(getCacheDir(), "tmp");
+                if (!tmp.exists()) tmp.mkdirs();
+
+                ProcessBuilder pb = new ProcessBuilder(node.getAbsolutePath(), binjs.getAbsolutePath(),
+                        "plugin", "--profile", "web", "add", DEFAULT_PLUGIN_SPEC);
+                pb.directory(profileDir);   // dsh plugin 转发 pnpm，工作目录即 profile
+                java.util.Map<String, String> env = pb.environment();
+                env.put("LD_LIBRARY_PATH", lib.getAbsolutePath());
+                File osslConf = new File(payload, "runtime/etc/openssl.cnf");
+                if (osslConf.exists()) env.put("OPENSSL_CONF", osslConf.getAbsolutePath());
+                env.put("GIT_EXEC_PATH", new File(gitDir, "libexec/git-core").getAbsolutePath());
+                env.put("GIT_TEMPLATE_DIR", new File(gitDir, "templates").getAbsolutePath());
+                env.put("GIT_PAGER", "cat");
+                env.put("GIT_TERMINAL_PROMPT", "0");     // 需要凭据时立刻失败，别挂住
+                File caBundle = ensureSystemCaBundle(payload);
+                if (caBundle != null) {
+                    env.put("SSL_CERT_FILE", caBundle.getAbsolutePath());
+                    env.put("CURL_CA_BUNDLE", caBundle.getAbsolutePath());
+                    env.put("GIT_SSL_CAINFO", caBundle.getAbsolutePath());
+                    File gitCfg = ensureGitConfig(payload, caBundle);
+                    if (gitCfg != null) env.put("GIT_CONFIG_GLOBAL", gitCfg.getAbsolutePath());
+                }
+                env.put("PATH", bin.getAbsolutePath() + ":" + new File(payload, "runtime/bin").getAbsolutePath()
+                        + ":" + String.valueOf(env.get("PATH")));
+                env.put("HOME", getFilesDir().getAbsolutePath());
+                env.put("DSH_HOME", home.getAbsolutePath());
+                env.put("TMPDIR", tmp.getAbsolutePath());
+                env.put("TERM", "xterm");
+                env.put("SHELL", new File(bin, "bash").getAbsolutePath());
+                env.put("DSH_BASH_PATH", new File(bin, "bash").getAbsolutePath());
+                pb.redirectErrorStream(true);
+
+                final Process proc = pb.start();
+                // 输出落到文件（控制台/分享用）+ 取尾部进 logcat（排查用）
+                File logFile = new File(getFilesDir(), "plugin-install.log");
+                final StringBuilder tail = new StringBuilder();
+                java.io.BufferedReader r = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(proc.getInputStream(), "UTF-8"));
+                java.io.FileWriter fw = null;
+                try { fw = new java.io.FileWriter(logFile, false); } catch (Throwable ignored) {}
+                String line;
+                while ((line = r.readLine()) != null) {
+                    if (fw != null) { try { fw.write(line + "\n"); } catch (Throwable ignored) {} }
+                    if (tail.length() < 4000) tail.append(line).append('\n');
+                }
+                if (fw != null) { try { fw.close(); } catch (Throwable ignored) {} }
+                int code = proc.waitFor();
+                if (code == 0) {
+                    Log.i(TAG, "default plugin: 安装成功（重启引擎后生效），日志 " + logFile.getAbsolutePath());
+                } else {
+                    Log.w(TAG, "default plugin: 安装失败 exit=" + code + "，输出尾部："
+                            + tail.substring(Math.max(0, tail.length() - 600)));
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "default plugin: 安装异常", t);
+            } finally {
+                defaultPluginBusy = false;
+            }
+        }}, "dsh-plugin-install").start();
+    }
+
     /** 退出确认对话框（浮动按钮与系统返回键共用） */    private void confirmExit() {
         // v1.13.12 文案纠偏：退出只是关掉本界面，引擎 node 进程是独立子进程，会在后台继续运行
         // （这正是"手机当服务器"的设计意图，不需要停）。旧文案"服务器将停止运行"与实际行为不符。
@@ -2708,6 +2822,9 @@ public class MainActivity extends Activity {
                         ui.post(new Runnable() { @Override public void run() { conExtractDone(); } });
                         return;
                     }
+                    // v1.21：默认插件（ds-harness-remote）—— 文件就绪后**另起线程**安装，
+                    // 不占用这条启动链（安装要联网、可能几十秒；绝不能拖慢起引擎）。
+                    ensureDefaultPluginsAsync(payload);
                     launchEngine(payload);
                 } catch (Throwable t) {
                     Log.e(TAG, "engine error", t);

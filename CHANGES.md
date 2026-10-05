@@ -491,6 +491,28 @@ L1（DSH 设置页诊断面板）与 L2（本机资产救援页）暂不做，�
   虚拟屏那两枚按钮改为**单独一行**、整行只在真的开虚拟屏时出现（不然一行塞五枚看不清）。
 - 实测：点「控制台」→ 日志 `onNewIntent: EXTRA_OPEN_CONSOLE → 进控制台（来源：常驻通知 / 悬浮窗面板）`
   → `showConsole: 控制台已显示`，截图确认进入原生控制台 ✅。
+
+**v1.21 面板文案调整（用户反馈）**
+- `● 引擎运行中 · AI：1 个会话工作中…` 读着别扭 → 拆成两行、去掉 `AI：` 前缀：
+  `● 引擎运行中…` / `1 个会话运行中…`（无会话时 `暂无会话运行`，刚跑完 `会话已完成 ✓`）；
+  第三行仍是 `任务：…`（与气泡同源）。
+- 「打开应用」→「打开」（四字挤，用户要求）。
+
+**v1.21 默认插件 ds-harness-remote（已实现，本环境未能验证完）**
+- 目标：等价于维护者手敲的
+  `dsh plugin --profile web add github:blue-soda/ds-harness-remote`。
+- 实现：文件名就绪后**另起线程**执行该命令（与引擎同一套环境：payload node + LD_LIBRARY_PATH
+  + git/CA 适配），输出写 `files/plugin-install.log`、尾部进 logcat；
+  幂等（`profiles/web/package.json` 已含包名即跳过）、失败最多自动重试 3 次（跨启动累计）。
+- **本环境验不完的两个原因**（都不是 App 代码问题）：
+  1. GitHub 不可达 —— 宿主机 `git clone` 直接 connect timeout；设备侧同理（本环境的网络策略）；
+  2. 设备侧 `git ls-remote` 在 payload 里报 `Error running …/bin/git: Unable to get realpath of git`
+     —— 该字符串**不在 git 二进制里**（grep 0 命中），而 `git --version`、`git-remote-https`
+     单独跑都正常，说明是 Android/Termux 执行层的坑；另外 pnpm 默认用 ssh 形态
+     （`git+ssh://git@github.com/…`），且该插件是 git-hosted、装的时候要跑 prepare 构建，
+     pnpm 会拦下来要求先在 `profiles/web/pnpm-workspace.yaml` 里加 `allowBuilds`。
+- 可选后续（待定）：① 把 spec 换成 https 形态 + 预置 allowBuilds + 定位 realpath 报错；
+  ② 改成**构建期内置**（在有 GitHub 的机器上装好并把产物/vendor 进 payload），APK 会变大。
 - 实测（模拟器 community）：引擎端口 0 ✅ / 活跃通知 0 ✅ / 无任何服务在跑 ✅ / **进程彻底消失** ✅；
   之后点图标 → `用户主动启动，清除退出标记` → 秒进起引擎 ✅。
 
