@@ -4859,9 +4859,19 @@ public class MainActivity extends Activity {
         if (engineStartAborted) return;   // v1.13：停止后不再走超时兜底（否则会重新 spawn + 重新加载页面）
         // 超时：带端口提示便于排查（node 日志已写入 files/dsh-web.log）
         Log.e(TAG, "engine start timeout on port " + enginePort + ", check dsh-web.log");
+        // v1.21：**进程还活着就别急着全量补齐**。
+        // 实测踩过（用户报障）：点了「DS 账号登录」后引擎卡在 /auth-api 的网络请求上，
+        // 进程健在、端口没起；此时全量重推 1.2 万文件既没用，又让用户看到"进度条一直跳"，
+        // 误以为在解压（且修完再起仍卡同一处，形成循环）。
+        // 只有在**进程真的死了**时才做文件层修复（那才是"缺文件"的场景）。
+        boolean engineAlive = findEnginePid() > 0;
+        if (engineAlive) {
+            Log.w(TAG, "engine process alive but port " + enginePort
+                    + " not ready —— 判定为插件/网络请求卡住，跳过全量修复");
+        }
         // v1.5.2 慢启动修复兜底：本次走了「快速同步」（同内核升级），若引擎仍起不来，
         // 可能外部 dshroot 有缺失文件（快速路径不 stat 已有文件）→ 全量补齐后重启引擎再等一轮。
-        if (fastSyncedThisBoot) {
+        if (fastSyncedThisBoot && !engineAlive) {
             fastSyncedThisBoot = false;
             Log.w(TAG, "fast sync may have missed files, forcing full dshroot repair");
             setStatus("引擎启动超时，正在补齐引擎文件后重试…");
@@ -4884,17 +4894,22 @@ public class MainActivity extends Activity {
         // 用户看到的就是"权限引导走完进不了应用"，只能杀掉重开）。改为：
         // ① 回控制台（那里有真实状态与「启动引擎/日志」入口）；② 后台继续等引擎"迟到"——
         // 首启在真机上（首次建 profiles/冷启动）可能超过 90 秒，引擎一旦就绪自动进入主界面。
-        setStatus("引擎启动超时（端口 " + enginePort + "），已回到控制台，引擎就绪后会自动进入");
+        // v1.21：区分"进程死了"与"进程活着但被卡住"，后者直接点破原因并给出出路（安全模式）。
+        setStatus(engineAlive
+                ? "引擎进程在跑但迟迟未就绪（多为账号登录/网络请求卡住）—— 可试「安全模式启动」"
+                : "引擎启动超时（端口 " + enginePort + "），已回到控制台，引擎就绪后会自动进入");
         // 累计连续失败：让控制台能把「引擎起不来 → 可用安全模式」这条出路推到用户面前。
         bumpBootFailure();
-        conEngineTimedOut();
+        conEngineTimedOut(engineAlive);
     }
 
     /** 引擎启动超时后的兜底：回控制台 + 后台守望，引擎迟到就绪时自动进入主界面。 */
-    private void conEngineTimedOut() {
+    private void conEngineTimedOut(final boolean engineAlive) {
         ui.post(new Runnable() { @Override public void run() {
             try {
-                conToast("引擎启动超时，已回到控制台；就绪后会自动进入");
+                conToast(engineAlive
+                        ? "引擎进程在跑但一直没就绪（常见于账号登录/网络卡住）；可试「安全模式启动」"
+                        : "引擎启动超时，已回到控制台；就绪后会自动进入");
                 showConsole();
                 refreshConsole();
             } catch (Throwable ignored) {}
