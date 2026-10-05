@@ -541,7 +541,7 @@ public class MainActivity extends Activity {
         intent.removeExtra(EXTRA_OPEN_CONSOLE);
         setIntent(intent);
         if (!wantConsole) return;
-        Log.i(TAG, "onNewIntent: 从常驻通知进控制台");
+        Log.i(TAG, "onNewIntent: EXTRA_OPEN_CONSOLE → 进控制台（来源：常驻通知 / 悬浮窗面板）");
         try {
             showEngineScreenIfNeeded();
             showConsole();

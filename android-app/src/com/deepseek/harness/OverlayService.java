@@ -103,6 +103,8 @@ public class OverlayService extends Service {
     private Button destroyBtn;
     /** v1.21（B）：虚拟屏回程按钮，仅在虚拟屏真的在跑时可见。 */
     private Button vscreenBtn;
+    /** v1.21：虚拟屏那两枚按钮所在的行，整行只在真的有虚拟屏时出现。 */
+    private LinearLayout btnRowVs;
     /** v1.21：「完全退出」按钮（两步确认防误触）。 */
     private Button exitBtn;
     /** 退出按钮是否处于"待确认"状态。 */
@@ -355,7 +357,7 @@ public class OverlayService extends Service {
         panelView.setOrientation(LinearLayout.VERTICAL);
         panelView.setPadding(dp(10), dp(8), dp(10), dp(8));
         panelView.setLayoutParams(new LinearLayout.LayoutParams(
-                dp(178), LinearLayout.LayoutParams.WRAP_CONTENT));
+                dp(200), LinearLayout.LayoutParams.WRAP_CONTENT));   // 200dp：常态三枚按钮（打开应用/控制台/退出）放得下
         GradientDrawable pbg = new GradientDrawable();
         pbg.setColor(getColor(R.color.panel_bg));              // 深蓝半透明（统一配色资源）
         pbg.setCornerRadius(dp(12));
@@ -407,29 +409,49 @@ public class OverlayService extends Service {
             try { startActivity(i); } catch (Throwable ignored) {}
             setPanelVisible(false, true);
         }}));
+        // v1.21：控制台入口。v1.21 起冷启动默认进主界面、控制台只留了"常驻通知"和"故障回退"
+        // 两条路（见 autoEnterOnBoot / EXTRA_OPEN_CONSOLE），面板上补一条随时可用的路
+        // —— 复用通知那套 extra，走的是同一个 showConsole() 分支，不新增第二套逻辑。
+        // 引擎没起来也能进控制台（控制台是原生层，本来就用来处理引擎异常）。
+        btnRow.addView(pillButton("控制台", new Runnable() { @Override public void run() {
+            Intent i = new Intent(OverlayService.this, MainActivity.class);
+            i.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
+            i.putExtra(MainActivity.EXTRA_OPEN_CONSOLE, true);
+            try { startActivity(i); } catch (Throwable ignored) {}
+            setPanelVisible(false, true);
+        }}));
         vscreenBtn = pillButton("虚拟屏", new Runnable() { @Override public void run() {
             // 预览窗被「收起到小鲸鱼」后的回程入口；没有虚拟屏时按钮本身就不可见
             try { VsreenBridgeService.showPreviewFromWhale(); } catch (Throwable ignored) {}
             setPanelVisible(false, true);
         }});
-        vscreenBtn.setVisibility(View.GONE);
-        btnRow.addView(vscreenBtn);
         // 销毁屏：替代旧预览窗上的 ✕（用户要求销毁功能收进小鲸鱼面板）
         destroyBtn = pillButton("销毁屏", new Runnable() { @Override public void run() {
             try { VsreenBridgeService.destroyVscreenFromWhale(); } catch (Throwable ignored) {}
             setPanelVisible(false, true);
         }});
-        destroyBtn.setVisibility(View.GONE);
-        btnRow.addView(destroyBtn);
 
         // v1.21：**完全退出**按钮。
-        // 与「打开应用」并排放（常态下 vscreen 两枚按钮隐藏，所以一行放得下）。
         // 防误触：两步确认 —— 第一次点只进入"待确认"（按钮变红、文案改「确认退出」、
         //   飘一句提示），4 秒内不点第二次自动取消；确认后才真正执行。
         exitBtn = pillButton("退出", new Runnable() { @Override public void run() { onExitButtonTap(); } });
         btnRow.addView(exitBtn);
 
+        // v1.21：虚拟屏那两枚按钮单独一行，整行只在真的有虚拟屏时出现。
+        // 原因：常态行已经有「打开应用 / 控制台 / 退出」三枚，再塞两枚会挤到看不清；
+        // 而虚拟屏场景本来就少见，多一行可接受（也是"A 并成一行"的例外，用户已知）。
+        btnRowVs = new LinearLayout(this);
+        btnRowVs.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams vrp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        vrp.topMargin = dp(5);
+        btnRowVs.setLayoutParams(vrp);
+        btnRowVs.addView(vscreenBtn);
+        btnRowVs.addView(destroyBtn);
+        btnRowVs.setVisibility(View.GONE);
+
         panelView.addView(btnRow);
+        panelView.addView(btnRowVs);
         rootView.addView(panelView);
         setPanelVisible(false, false);
 
@@ -694,6 +716,8 @@ public class OverlayService extends Service {
             boolean vs = VsreenBridgeService.sVscreenRunning;
             if (destroyBtn != null) destroyBtn.setVisibility(vs ? View.VISIBLE : View.GONE);
             if (vscreenBtn != null) vscreenBtn.setVisibility(vs ? View.VISIBLE : View.GONE);
+            // v1.21：虚拟屏那两枚按钮所在的行整体显隐（常态下不占位置）
+            if (btnRowVs != null) btnRowVs.setVisibility(vs ? View.VISIBLE : View.GONE);
         } catch (Throwable ignored) {}
     }
 
