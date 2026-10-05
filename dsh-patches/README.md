@@ -2,6 +2,35 @@
 
 > DeepSeek Harness（DSH）在 Android 上的适配补丁归档。更新 DSH 内核后，用 `apply.sh` 重新应用。
 
+## overlay 必须与内核版本对齐（v1.20 起有工具兜底）
+
+`overlay/` 是**按内核版本采集的快照**：存的不是 diff，而是"改好的整份文件"。内核升级后会出现两种**静默失效**：
+
+- **路径漂移**：bundle 文件名变了（如 `runner-launch-COYGu0Dl.js` → `runner-launch-B2zsQ1Dz.js`），
+  `apply.sh` 照旧解压，但解出来的是**没人加载**的旧文件 → 补丁看着打了、其实没生效。
+- **内容过期**：路径还在但内容是上一代内核的 → 覆盖回去等于**把内核降级**。
+
+所以升级内核后请重采一次：
+
+```bash
+# 1) 体检：overlay 里的文件在当前内核树里是否存在、是否一致
+bash tools/overlay-drift.sh                    # 期望：一致=N，不同=0，树里不存在=0
+# 2) 重采：以「当前树 = 我们实际在跑的、已打补丁的内核」为准刷新 overlay
+python tools/overlay-recapture.py --check      # 只报告
+python tools/overlay-recapture.py --write      # 执行（旧 overlay 自动备份到 .cache/overlay-backup-<时间>）
+# 3) 新补丁：把路径加进 tools/overlay-recapture.py 的 ADD_PATHS，再 --write
+```
+
+`apply.sh` 会在解压后**自检**每个 overlay 文件是否存在于目标树，缺了就报警并提示重采。
+
+> 为什么不直接抄上游的分层（`overlay` / `overlay-017` / `overlay-020`）？
+> ① 上游的 `apply.sh` 也只应用默认层 `overlay/`，分层目录是历史归档（两层同名文件实测 4/6 不同）；
+> ② 那是**上游**的补丁，本 fork 独有的改动（如 `dsh-subprocess-local` 的 Android 平台门禁、
+>    payload 里的 `node-pty`）上游没有 —— 它的 overlay-020 里根本没有 subprocess-local；
+> ③ 内核包不在公共 npm 上（实测 `@deepseek-ai/dsh-*@0.2.0-rc.2` 全 404），拿不到"未改动内核"
+>    做三方 diff，只能以我们自己这棵树为事实标准重采。
+
+
 ## 目录结构
 
 ```

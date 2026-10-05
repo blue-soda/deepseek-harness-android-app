@@ -23,6 +23,23 @@ fi
 echo "== 应用补丁 overlay -> dshroot =="
 ( cd "$SRC" && tar cf - . ) | ( cd "$DST" && tar xf - )
 
+# v1.20：漂移自检。overlay 是「按内核版本采集的快照」——如果它的文件路径在当前内核树里
+# 根本不存在，说明 overlay 是上一代内核的残骸：tar 解出来的都是没人加载的文件，
+# 补丁"看着打了、其实没生效"（本项目踩过：subprocess-local 的 bundle 换了文件名）。
+missing=0
+for rel in $( cd "$SRC" && find . -type f ); do
+  if [ ! -f "$DST/${rel#./}" ]; then
+    missing=$((missing+1))
+    [ "$missing" -le 5 ] && echo "  !! 树里没有：${rel#./}"
+  fi
+done
+if [ "$missing" -gt 0 ]; then
+  echo "  !! 共 $missing 个 overlay 文件在当前内核树里不存在 —— overlay 与内核版本不匹配。" >&2
+  echo "     处理：在开发机上跑 python tools/overlay-recapture.py --write 重新采一次。" >&2
+else
+  echo "  OK：overlay 的每个文件都能在目标树里找到（版本对得上）"
+fi
+
 export LD_LIBRARY_PATH="$RUNTIME/lib"
 export DSHROOT_PKG="$DST/node_modules/@deepseek-ai/dsh/package.json"
 
