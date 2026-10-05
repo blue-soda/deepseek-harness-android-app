@@ -854,6 +854,8 @@ public class OverlayService extends Service {
             try {
                 HttpURLConnection c = (HttpURLConnection) new URL("http://127.0.0.1:8999/vscreen/preview").openConnection();
                 c.setConnectTimeout(2000); c.setReadTimeout(2000);
+                // v1.18.0：8999 桥已加调用方鉴权，App 自己拉预览也要带令牌（否则预览窗永远空着）
+                c.setRequestProperty(LocalAuth.HEADER, LocalAuth.token(OverlayService.this));
                 String resp = readAll(c.getInputStream());
                 c.disconnect();
                 JSONObject o = new JSONObject(resp);

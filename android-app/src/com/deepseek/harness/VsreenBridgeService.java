@@ -77,7 +77,7 @@ public class VsreenBridgeService extends Service {
      * 表现为“服务在跑但新路由/新参数静默失效”（如 create 的 width/height 被完全忽略）。
      * v1.13.12：core 加了心跳看门狗（App 死了 → 20 秒后自动销毁虚拟屏并退出）。
      */
-    private static final String EXPECTED_CORE_BUILD = "vs113-20260916";
+    private static final String EXPECTED_CORE_BUILD = "vs114-20261004";
 
     /** 持有 Shizuku 拉起的进程引用：被 GC 回收会连带清理子进程。 */
     private static volatile IRemoteProcess sCoreProc;
@@ -657,6 +657,20 @@ public class VsreenBridgeService extends Service {
                 Log.w(TAG, "vscreen jar 不存在: " + jar.getAbsolutePath() + "（需要存储权限后由 MainActivity 提取）");
                 return;
             }
+            // v1.18.0：组件完整性校验。jar 落在共享存储上、由 shell 身份加载，
+            // 被替换 = 以 shell 身份执行任意代码 —— 哈希不符就重新提取，仍不符则拒绝启动。
+            String want = expectedJarSha256();
+            if (want.isEmpty()) {
+                Log.w(TAG, "缺少 assets/vscreen_jar_sha256.txt，拒绝启动虚拟屏核心（构建未生成该文件？）");
+                return;
+            }
+            if (!want.equalsIgnoreCase(sha256Of(jar))) {
+                Log.w(TAG, "vscreen jar 哈希不符，尝试从 assets 重新提取：" + jar.getAbsolutePath());
+                if (!reExtractVscreenJar(jar) || !want.equalsIgnoreCase(sha256Of(jar))) {
+                    Log.w(TAG, "vscreen jar 重新提取后仍不符，拒绝启动虚拟屏核心");
+                    return;
+                }
+            }
             // jar 先由 shell 拷到 /data/local/tmp 再加载：/storage 对 Shizuku shell 进程不一定可见，
             // 且 /data/local/tmp 下 app_process 加载 dex 最稳（Operit/旧插件同做法）。
             String remoteJar = "/data/local/tmp/vscreen_shizuku.jar";
@@ -673,6 +687,7 @@ public class VsreenBridgeService extends Service {
                     + "CLASSPATH=" + remoteJar
                     + " /system/bin/app_process /system/bin " + CORE_MAIN
                     + " --port " + CORE_PORT + " --dir \"" + rootDir + "\""
+                    + " --token " + LocalAuth.token(VsreenBridgeService.this)
                     + " >> /data/local/tmp/vscreen.log 2>&1";
             Log.i(TAG, "starting core server: " + cmd);
             IShizukuService svc = IShizukuService.Stub.asInterface(Shizuku.getBinder());
@@ -766,14 +781,55 @@ public class VsreenBridgeService extends Service {
         OutputStream out = null;
         try {
             s.setSoTimeout(20000);
-            BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), "UTF-8"));
-            String requestLine = in.readLine();
-            if (requestLine == null || requestLine.length() == 0) return;
+            // v1.18.0：读全请求（原来只读请求行 → ① 无法校验令牌 ② body 与方法被丢弃）
+            InputStream raw = s.getInputStream();
+            java.io.ByteArrayOutputStream hb = new java.io.ByteArrayOutputStream();
+            int b1;
+            while ((b1 = raw.read()) != -1) {
+                hb.write(b1);
+                int n0 = hb.size();
+                if (n0 >= 4) {
+                    byte[] a = hb.toByteArray();
+                    if (a[n0 - 4] == '\r' && a[n0 - 3] == '\n' && a[n0 - 2] == '\r' && a[n0 - 1] == '\n') break;
+                }
+                if (n0 > 65536) break;
+            }
+            String headAll = new String(hb.toByteArray(), "UTF-8");
+            String requestLine = headAll;
+            int rlEnd = headAll.indexOf("\r\n");
+            if (rlEnd >= 0) requestLine = headAll.substring(0, rlEnd);
+            if (requestLine.length() == 0) return;
+            String method = "GET";
             String path = "/vscreen/status";
-            int sp = requestLine.indexOf(' ');
-            if (sp > 0) {
-                int sp2 = requestLine.indexOf(' ', sp + 1);
-                path = sp2 > sp ? requestLine.substring(sp + 1, sp2) : requestLine.substring(sp + 1);
+            String[] rl = requestLine.split(" ");
+            if (rl.length >= 2) {
+                method = rl[0];
+                path = rl[1];
+            }
+            int bodyLen = 0;
+            String lowerHead = headAll.toLowerCase();
+            int cli = lowerHead.indexOf("content-length:");
+            if (cli >= 0) {
+                int eol = headAll.indexOf('\r', cli);
+                if (eol < 0) eol = headAll.indexOf('\n', cli);
+                if (eol < 0) eol = headAll.length();
+                try { bodyLen = Integer.parseInt(headAll.substring(cli + 15, eol).trim()); } catch (Throwable ignored) {}
+            }
+            byte[] reqBody = new byte[0];
+            if (bodyLen > 0 && bodyLen <= 1048576) {
+                reqBody = new byte[bodyLen];
+                int off = 0;
+                while (off < bodyLen) {
+                    int r = raw.read(reqBody, off, bodyLen - off);
+                    if (r < 0) break;
+                    off += r;
+                }
+            }
+            // 调用方鉴权：本机任意应用都能连 8999，必须有令牌（插件从 APP_LOCAL_TOKEN 带头）
+            if (!LocalAuth.ok(LocalAuth.token(this), headAll, path)) {
+                Log.w(TAG, "vscreen 代理请求被拒（令牌缺失或错误）：" + path);
+                writeJson(s, LocalAuth.denied());
+                return;
             }
             out = s.getOutputStream();
             Socket up = null;
@@ -781,7 +837,18 @@ public class VsreenBridgeService extends Service {
                 up = new Socket("127.0.0.1", CORE_PORT);
                 up.setSoTimeout(20000);
                 OutputStream uo = up.getOutputStream();
-                uo.write(("GET " + path + " HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").getBytes("UTF-8"));
+                // 保留原方法/原 body，并注入令牌（核心也会自己校验令牌）
+                StringBuilder up1 = new StringBuilder();
+                up1.append(method).append(" ").append(path).append(" HTTP/1.0\r\n");
+                up1.append("Host: 127.0.0.1\r\n");
+                up1.append(LocalAuth.HEADER).append(": ").append(LocalAuth.token(VsreenBridgeService.this)).append("\r\n");
+                if (reqBody.length > 0) {
+                    up1.append("Content-Type: application/json\r\n");
+                    up1.append("Content-Length: ").append(reqBody.length).append("\r\n");
+                }
+                up1.append("\r\n");
+                uo.write(up1.toString().getBytes("UTF-8"));
+                if (reqBody.length > 0) uo.write(reqBody);
                 uo.flush();
                 InputStream is = up.getInputStream();
                 byte[] buf = new byte[32768];
@@ -813,6 +880,73 @@ public class VsreenBridgeService extends Service {
         }
     }
 
+    // ==================== v1.18.0：鉴权 / 完整性小工具 ====================
+
+    /** 回一个 JSON（拒绝响应等）。 */
+    private void writeJson(Socket s, String json) {
+        try {
+            byte[] body = json.getBytes("UTF-8");
+            OutputStream o = s.getOutputStream();
+            o.write(("HTTP/1.1 403 Forbidden\r\nContent-Type: application/json; charset=utf-8\r\n"
+                    + "Content-Length: " + body.length + "\r\nConnection: close\r\n\r\n").getBytes("UTF-8"));
+            o.write(body);
+            o.flush();
+        } catch (Throwable ignored) {
+        } finally {
+            try { s.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /** assets/vscreen_jar_sha256.txt 的内容（小写 hex，去掉空白）；读不到返回空串。 */
+    private String expectedJarSha256() {
+        try {
+            InputStream in = getAssets().open("vscreen_jar_sha256.txt");
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] b = new byte[256];
+            int n;
+            while ((n = in.read(b)) > 0) bos.write(b, 0, n);
+            in.close();
+            return new String(bos.toByteArray(), "UTF-8").trim().toLowerCase();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** 文件 SHA-256（小写 hex）。 */
+    private String sha256Of(File f) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            InputStream in = new java.io.FileInputStream(f);
+            byte[] b = new byte[65536];
+            int n;
+            while ((n = in.read(b)) > 0) md.update(b, 0, n);
+            in.close();
+            byte[] d = md.digest();
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < d.length; i++) sb.append(String.format("%02x", d[i]));
+            return sb.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** 从 assets 重新提取 vscreen jar 到目标路径（校验失败后的自愈动作）。 */
+    private boolean reExtractVscreenJar(File dest) {
+        try {
+            InputStream in = getAssets().open("vscreen_shizuku.jar");
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(dest);
+            byte[] b = new byte[8192];
+            int n;
+            while ((n = in.read(b)) > 0) fos.write(b, 0, n);
+            fos.close();
+            in.close();
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "reExtractVscreenJar failed", t);
+            return false;
+        }
+    }
+
     // ==================== 与服务端交互的小工具 ====================
 
     /** 直接请求特权服务端（预览轮询用；插件请求走 proxy）。 */
@@ -823,6 +957,8 @@ public class VsreenBridgeService extends Service {
             URLConnection c = u.openConnection();
             c.setConnectTimeout(timeoutMs);
             c.setReadTimeout(timeoutMs);
+            // v1.18.0：核心（8998）也校验令牌，桥的内部请求同样要带
+            c.setRequestProperty(LocalAuth.HEADER, LocalAuth.token(this));
             is = c.getInputStream();
             ByteArrayOutputStream bos = new ByteArrayOutputStream();
             byte[] buf = new byte[16384];

@@ -441,7 +441,12 @@ function apply(ctx) {
             port,
             path: "/notify",
             method: "POST",
-            headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) }
+            headers: {
+              "Content-Type": "application/json",
+              "Content-Length": Buffer.byteLength(body),
+              // v1.18.0：本地服务全路由鉴权，通知也必须带令牌
+              "X-DSH-Token": process.env.APP_LOCAL_TOKEN || ""
+            }
           }, (res) => {
             let d = "";
             res.on("data", (c) => d += c);
@@ -508,7 +513,12 @@ function apply(ctx) {
         const result = await new Promise((resolve) => {
           const req = http.request({
             host: "127.0.0.1", port, path: "/setting", method: "POST",
-            headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) }
+            headers: {
+              "Content-Type": "application/json",
+              "Content-Length": Buffer.byteLength(body),
+              // v1.18.0：本地服务全路由鉴权
+              "X-DSH-Token": process.env.APP_LOCAL_TOKEN || ""
+            }
           }, (res) => {
             let d = "";
             res.on("data", (c) => d += c);
@@ -569,7 +579,12 @@ function apply(ctx) {
         const result = await new Promise((resolve) => {
           const req = http.request({
             host: "127.0.0.1", port, path: "/clipboard", method: "POST",
-            headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) }
+            headers: {
+              "Content-Type": "application/json",
+              "Content-Length": Buffer.byteLength(body),
+              // v1.18.0：本地服务全路由鉴权
+              "X-DSH-Token": process.env.APP_LOCAL_TOKEN || ""
+            }
           }, (res) => {
             let d = "";
             res.on("data", (c) => d += c);

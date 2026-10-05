@@ -1,4 +1,4 @@
-# dsh-android-patch: v3
+# dsh-android-patch: v4
 # Android 兼容性 patch
 # 已修复：subprocess-local（node-pty → child_process；koffi 惰性加载）、
 #        attachment-local（sharp → 纯 JS 头解析 sharp-shim.js）、
@@ -74,3 +74,6 @@
     # v1.8：虚拟屏幕（独立屏操作 App + 截图理解，需 root/Shizuku 特权 + 无障碍服务）
     - id: tool-vscreen
       name: '@deepseek-ai/dsh-tool-vscreen'
+    # v1.19.0：AI 浏览器（结构化 DOM 快照 + 稳定 ref，不是截图 OCR）
+    - id: tool-browser
+      name: '@deepseek-ai/dsh-tool-browser'

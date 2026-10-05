@@ -2,8 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     package="com.deepseek.harness"
-    android:versionCode="52"
-    android:versionName="1.17.3">
+    android:versionCode="54"
+    android:versionName="1.19.0">
 
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="28" />
 
@@ -20,7 +20,7 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <!-- 定时任务：精确闹钟（Android 12+ 需要；setAlarmClock 不受此权限限制，双保险） -->
+    <!-- 瀹氭椂浠诲姟锛氱簿纭椆閽燂紙Android 12+ 闇€瑕侊紱setAlarmClock 涓嶅彈姝ゆ潈闄愰檺鍒讹紝鍙屼繚闄╋級 -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
     <application
@@ -35,58 +35,54 @@
             android:name="moe.shizuku.client.V3_SUPPORT"
             android:value="true" />
 
-        <!-- 原来写的是 unspecified（=「不表态，系统看着办」），真机表现为沿用当前屏幕旋转：
-             从横屏的游戏/视频切回来仍是横屏（跟随的是上一个应用，而不是系统设置）。
-             fullUser：系统「自动旋转」开着 → 跟随重力感应（含反向横竖屏）；
-             关着（锁定方向）→ 跟随用户锁定。
-
-             configChanges 补齐 smallestScreenSize|screenLayout（issue #37，社区 @zf-666888 报告）：
-             原为 orientation|screenSize|keyboardHidden，缺这两项时，平板分屏 / 自由窗口拖动
-             分隔条调整比例 → 系统下发的正是 CONFIG_SCREEN_LAYOUT + CONFIG_SMALLEST_SCREEN_SIZE
-             → 没声明就不归 App 处理 → 系统直接销毁重建 MainActivity
-             （新建 WebView 重新 loadUrl + 启动页盖上来 = 用户看到的「白闪一下 + 重放启动页」）。
-             引擎是独立 node 进程 + EngineService 保活，所以重建杀不到它，
-             表现为「会话进度没断、只是界面闪」。
-             真机实证（OnePlus OPD2413 / ColorOS 16 / Android 16）：dumpsys 里 configChanges=0x4a3
-             （= ORIENTATION|SCREEN_SIZE|KEYBOARD_HIDDEN，确实不含 SCREEN_LAYOUT 0x100 /
-             SMALLEST_SCREEN_SIZE 0x800）；logcat 里 ActivityRecordExtImpl: hookShouldRelaunchLocked
+        <!-- 鍘熸潵鍐欑殑鏄?unspecified锛?銆屼笉琛ㄦ€侊紝绯荤粺鐪嬬潃鍔炪€嶏級锛岀湡鏈鸿〃鐜颁负娌跨敤褰撳墠灞忓箷鏃嬭浆锛?             浠庢í灞忕殑娓告垙/瑙嗛鍒囧洖鏉ヤ粛鏄í灞忥紙璺熼殢鐨勬槸涓婁竴涓簲鐢紝鑰屼笉鏄郴缁熻缃級銆?             fullUser锛氱郴缁熴€岃嚜鍔ㄦ棆杞€嶅紑鐫€ 鈫?璺熼殢閲嶅姏鎰熷簲锛堝惈鍙嶅悜妯珫灞忥級锛?             鍏崇潃锛堥攣瀹氭柟鍚戯級鈫?璺熼殢鐢ㄦ埛閿佸畾銆?
+             configChanges 琛ラ綈 smallestScreenSize|screenLayout锛坕ssue #37锛岀ぞ鍖?@zf-666888 鎶ュ憡锛夛細
+             鍘熶负 orientation|screenSize|keyboardHidden锛岀己杩欎袱椤规椂锛屽钩鏉垮垎灞?/ 鑷敱绐楀彛鎷栧姩
+             鍒嗛殧鏉¤皟鏁存瘮渚?鈫?绯荤粺涓嬪彂鐨勬鏄?CONFIG_SCREEN_LAYOUT + CONFIG_SMALLEST_SCREEN_SIZE
+             鈫?娌″０鏄庡氨涓嶅綊 App 澶勭悊 鈫?绯荤粺鐩存帴閿€姣侀噸寤?MainActivity
+             锛堟柊寤?WebView 閲嶆柊 loadUrl + 鍚姩椤电洊涓婃潵 = 鐢ㄦ埛鐪嬪埌鐨勩€岀櫧闂竴涓?+ 閲嶆斁鍚姩椤点€嶏級銆?             寮曟搸鏄嫭绔?node 杩涚▼ + EngineService 淇濇椿锛屾墍浠ラ噸寤烘潃涓嶅埌瀹冿紝
+             琛ㄧ幇涓恒€屼細璇濊繘搴︽病鏂€佸彧鏄晫闈㈤棯銆嶃€?             鐪熸満瀹炶瘉锛圤nePlus OPD2413 / ColorOS 16 / Android 16锛夛細dumpsys 閲?configChanges=0x4a3
+             锛? ORIENTATION|SCREEN_SIZE|KEYBOARD_HIDDEN锛岀‘瀹炰笉鍚?SCREEN_LAYOUT 0x100 /
+             SMALLEST_SCREEN_SIZE 0x800锛夛紱logcat 閲?ActivityRecordExtImpl: hookShouldRelaunchLocked
              reason: adjustedChanges={CONFIG_ORIENTATION, CONFIG_SCREEN_LAYOUT,
-             CONFIG_SMALLEST_SCREEN_SIZE}。
-             ⚠️ 故意**不**加 uiMode / density / fontScale —— 跟随系统深浅色、显示大小、字体大小
-             正是靠「重建 → onCreate 的 setTheme() 重新生效」，加进去反而会让主题不再跟随。 -->
+             CONFIG_SMALLEST_SCREEN_SIZE}銆?             鈿狅笍 鏁呮剰**涓?*鍔?uiMode / density / fontScale 鈥斺€?璺熼殢绯荤粺娣辨祬鑹层€佹樉绀哄ぇ灏忋€佸瓧浣撳ぇ灏?             姝ｆ槸闈犮€岄噸寤?鈫?onCreate 鐨?setTheme() 閲嶆柊鐢熸晥銆嶏紝鍔犺繘鍘诲弽鑰屼細璁╀富棰樹笉鍐嶈窡闅忋€?-->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:screenOrientation="fullUser"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
             android:theme="@style/AppTheme">
-            <!-- 原主题 Theme.Black.NoTitleBar.Fullscreen 会隐藏状态栏，
-                 部分 ROM（如 ColorOS）还会把窗口整体下移，顶部露出一块黑条。
-                 改为 res/values/styles.xml 的 AppTheme（父主题 Theme.Black.NoTitleBar，
-                 不隐藏状态栏，状态栏/导航栏底色跟随主题）。 -->
+            <!-- 鍘熶富棰?Theme.Black.NoTitleBar.Fullscreen 浼氶殣钘忕姸鎬佹爮锛?                 閮ㄥ垎 ROM锛堝 ColorOS锛夎繕浼氭妸绐楀彛鏁翠綋涓嬬Щ锛岄《閮ㄩ湶鍑轰竴鍧楅粦鏉°€?                 鏀逛负 res/values/styles.xml 鐨?AppTheme锛堢埗涓婚 Theme.Black.NoTitleBar锛?                 涓嶉殣钘忕姸鎬佹爮锛岀姸鎬佹爮/瀵艰埅鏍忓簳鑹茶窡闅忎富棰橈級銆?-->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- 前台保活服务：引擎运行期间常驻通知栏，挂后台不被杀 -->
+        <!-- 鍓嶅彴淇濇椿鏈嶅姟锛氬紩鎿庤繍琛屾湡闂村父椹婚€氱煡鏍忥紝鎸傚悗鍙颁笉琚潃 -->
         <service
             android:name=".EngineService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- 小鲸鱼悬浮窗（含引擎状态显示） -->
+        <!-- 灏忛哺楸兼偓娴獥锛堝惈寮曟搸鐘舵€佹樉绀猴級 -->
         <service
             android:name=".OverlayService"
             android:exported="false" />
 
-        <!-- 虚拟屏接入桥：启动 Operit server + HTTP->binder 转发（插件 API） -->
+        <!-- 铏氭嫙灞忔帴鍏ユˉ锛氬惎鍔?Operit server + HTTP->binder 杞彂锛堟彃浠?API锛?-->
         <service
             android:name=".VsreenBridgeService"
             android:exported="false" />
 
-        <!-- v1.7 无障碍服务：AI 读屏 + 模拟操作 + 无障碍截图（用户需在系统设置开启） -->
+        <!-- v1.19.6 · A2：AI 浏览器宿主（独立进程 :browser）——
+             页面把 WebView 搞崩时只死这个进程，主界面与引擎不受影响；关掉浏览器即松绑，整进程可被回收 -->
+        <service
+            android:name=".BrowserService"
+            android:exported="false"
+            android:process=":browser" />
+
+        <!-- v1.7 无障碍服务（服务名乱码还原）：AI 读屏 + 模拟操作 + 无障碍截图（用户需在系统设置开启） -->
         <service
             android:name=".AccessibilityService"
             android:exported="false"
@@ -108,8 +104,7 @@
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
-        <!-- v1.13：「分享日志」以**文件**形式发出（targetSdk 28 不允许直传 file:// URI，
-             本项目无 androidx，故自实现最小只读 ContentProvider，只暴露 cache/share 下的文件） -->
+        <!-- v1.13锛氥€屽垎浜棩蹇椼€嶄互**鏂囦欢**褰㈠紡鍙戝嚭锛坱argetSdk 28 涓嶅厑璁哥洿浼?file:// URI锛?             鏈」鐩棤 androidx锛屾晠鑷疄鐜版渶灏忓彧璇?ContentProvider锛屽彧鏆撮湶 cache/share 涓嬬殑鏂囦欢锛?-->
         <provider
             android:name=".LogShareProvider"
             android:authorities="com.deepseek.harness.logshare"

@@ -84,11 +84,21 @@ final class ConsoleTheme {
             "url", "external", "action", "data", "package", "text", "copy", "session", "mode",
             "method", "body", "headers"};
     private static final String[] LAY_KEYS =
-            {"order", "hidden", "defaultPage", "detailOpen", "compact", "pages"};
+            {"order", "hidden", "defaultPage", "detailOpen", "compact", "pages", "style"};
     private static final String[] CARD_IDS =
-            {"extract", "engine", "rescue", "actions", "perm", "plugins", "log", "update", "theme"};
-    /** 不可移除：救援面（写进 hidden 会被忽略并给 warning）。 */
-    private static final String[] KEEP_CARDS = {"rescue", "theme"};
+            {"extract", "engine", "rescue", "actions", "browser", "perm", "plugins", "log", "update", "theme", "selfcheck",
+             // v1.19.7（新版骨架吃主题布局）：新版骨架（缺省那套）的条目 id。
+             // 必须登记：下面 ord/hid 的校验对**未知 id 是整层 revert**，
+             // 不登记的话"在新版下隐藏/排序某一行"根本没法表达。
+             "env", "sessionadmin", "sessionheal",
+             "group.sessions", "group.system", "group.diagnose"};
+    /**
+     * 不可移除（写进 hidden 会被忽略并给 warning）：
+     * rescue = 救援面；theme = 换主题的唯一入口；selfcheck = 自修复（清单证明/自愈账本）的唯一入口。
+     * ⚠ 这三个都是"隐藏了就没法自救"的入口，所以一并保护。
+     */
+    // v1.19.7：env（运行环境 / 重新解压）也是"修坏树"的一键入口，跟 rescue/theme/selfcheck 一样不许藏。
+    private static final String[] KEEP_CARDS = {"rescue", "theme", "selfcheck", "env"};
     private static final Pattern TEXT_KEY_RE =
             Pattern.compile("^(card|btn|title|status|desc)\\.[A-Za-z0-9_.]+$");
     private static final int MAX_TEXT = 40;
@@ -163,6 +173,8 @@ final class ConsoleTheme {
     boolean compact = false;                                 // 间距减半
     /** 声明式页（layout.pages）：null = 没配（用内置卡片布局）。 */
     java.util.List<Page> pages = null;
+    /** 控制台风格（layout.style）："classic" 或 "simple"；null = 没配（App 用缺省）。 */
+    String style = null;
     /** 解析出来的自定义按钮（按配置顺序）。 */
     final java.util.List<Act> actions = new ArrayList<Act>();
     /** 其中"可执行动作"的摘要（主题页第④块显示用）：形如 "shell：重启服务器"。 */
@@ -295,11 +307,19 @@ final class ConsoleTheme {
         }
         name = optStr(o, "name", 64);
 
+        // v1.19.6 修（第六轮真机抓到的真缺陷）：原来这里是
+        //     Object av = o.opt("appearance");
+        //     if (av == null) return;              // ← 直接 return，后面的层全不解析
+        // 而 layout 的解析在 ~475 行、text 在 ~596 行、actions 在 ~624 行，**全在这个 return 之后**。
+        // 后果：一份"只改文案 / 只调布局 / 只加按钮"的 console.json（不写 appearance）
+        // 被当成"只有 name 的空配置"—— 主题页显示「已生效」，界面却一字不变。
+        // schema 里 appearance 并不是必填、离线校验器也判它 0 错 → 契约以"可以没有"为准。
+        // 修法：没有 appearance 就当成"没有外观覆盖"，**继续**解析后面的层。
         Object av = o.opt("appearance");
-        if (av == null) return;
+        if (av == null) av = new JSONObject();       // 没有 appearance 时继续解析后面的层
         if (!(av instanceof JSONObject)) {
             revert("$.appearance", "应为对象");
-            return;
+            av = new JSONObject();                   // 类型错也继续，别把 layout/text 一起带走
         }
         JSONObject ap = (JSONObject) av;
 
@@ -527,6 +547,12 @@ final class ConsoleTheme {
                 if (cmp != null) {
                     if (cmp instanceof Boolean) compact = ((Boolean) cmp).booleanValue();
                     else revert("$.layout.compact", "应为 true / false");
+                }
+                Object sty = lay.opt("style");
+                if (sty != null) {
+                    String styVal = String.valueOf(sty);
+                    if ("classic".equals(styVal) || "simple".equals(styVal)) style = styVal;
+                    else revert("$.layout.style", "只能是 classic 或 simple（当前 " + styVal + "）");
                 }
                 Object pgv = lay.opt("pages");
                 if (pgv != null) {
