@@ -51,6 +51,13 @@ DSH 只有看到它在 bundles 里才会组合进插件树。
 # 1) 拉新版源码（在有 GitHub 访问的机器上）
 git clone --depth 1 https://github.com/blue-soda/ds-harness-remote.git /tmp/dsr
 
+# 1b) 若本机 git 连不上 github.com（实测会 Connection reset / 连接超时），改走 tarball：
+#     先查最新提交：https://api.github.com/repos/blue-soda/ds-harness-remote/commits?per_page=5
+#     再拉整包：
+#     curl -L -o /tmp/dsr.tar.gz https://codeload.github.com/blue-soda/ds-harness-remote/tar.gz/refs/heads/main
+#     mkdir -p /tmp/dsr && tar -xzf /tmp/dsr.tar.gz -C /tmp/dsr --strip-components=1
+#     （2026-10 实测：api.github.com 与 codeload.github.com 可达，而 github.com 的 git 端口被挡）
+
 # 2) 铺包本体（只保留运行时需要的）
 cd /tmp/dsr && cp -r index.js packages dsh-plugin.json cordis.patch.yml locale \
   public.d.ts package.json LICENSE README.md <repo>/vendor/ds-harness-remote/
