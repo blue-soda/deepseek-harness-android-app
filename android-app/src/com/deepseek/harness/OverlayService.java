@@ -98,7 +98,8 @@ public class OverlayService extends Service {
     private ImageView iconView;
     private LinearLayout panelView;
     private TextView statusText;
-    private TextView aiText;
+    /** v1.21：面板里的"任务状态"行 —— 与头像上方气泡同源（气泡被点掉后仍能在这里看）。 */
+    private TextView agentText;
     private Button destroyBtn;
     // v1.9 虚拟屏预览：悬浮窗实时显示虚拟屏画面（用户可看 AI 操作）
     private ImageView vscreenImageView = null;
@@ -333,26 +334,38 @@ public class OverlayService extends Service {
         rootView.addView(iconRow);
 
         // ===== 状态面板（紧凑版，默认隐藏）=====
+        // v1.21 修复"展开面板后文字一字一行（竖排）"：
+        // 根因是窗口为 WRAP_CONTENT，ViewRootImpl 用**当前窗口宽度**当测量约束 ——
+        // 收起态只有小人 + 状态气泡（≈60~130dp），展开时面板在这一轮测量里被压到约一个字宽，
+        // 文字就竖排了。给面板一个**显式宽度**后，测量结果不再取决于"当时窗口有多宽"。
         panelView = new LinearLayout(this);
         panelView.setOrientation(LinearLayout.VERTICAL);
         panelView.setPadding(dp(10), dp(8), dp(10), dp(8));
+        panelView.setLayoutParams(new LinearLayout.LayoutParams(
+                dp(178), LinearLayout.LayoutParams.WRAP_CONTENT));
         GradientDrawable pbg = new GradientDrawable();
         pbg.setColor(getColor(R.color.panel_bg));              // 深蓝半透明（统一配色资源）
         pbg.setCornerRadius(dp(12));
         panelView.setBackground(pbg);
 
+        // 第一行：引擎 + AI 会话状态合并成一行（省一行高度，信息更集中）
+        //   ● 引擎运行中 · AI：空闲 / AI：1 个会话工作中… / AI：会话已完成 ✓
         statusText = new TextView(this);
-        statusText.setText("状态：检测中…");
+        statusText.setText("○ 状态：检测中…");
         statusText.setTextColor(getColor(R.color.panel_text_bright));
         statusText.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.text_caption));
+        statusText.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         panelView.addView(statusText);
 
-        // AI 会话状态（/proc 会话写入器扫描，每 ~6 秒刷新；v1.13.12 起不再是永远"空闲"）
-        aiText = new TextView(this);
-        aiText.setText("AI：—");
-        aiText.setTextColor(getColor(R.color.panel_text_dim));
-        aiText.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.text_caption));
-        panelView.addView(aiText);
+        // 第二行：agent 任务状态（与头像上方气泡同源；气泡被点掉后这里仍看得到）
+        agentText = new TextView(this);
+        agentText.setText("任务：—");
+        agentText.setTextColor(getColor(R.color.panel_text_dim));
+        agentText.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.text_caption));
+        agentText.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        panelView.addView(agentText);
 
         // v1.9 虚拟屏预览（默认隐藏）：悬浮窗实时显示虚拟屏画面
         vscreenImageView = new ImageView(this);
@@ -861,6 +874,8 @@ public class OverlayService extends Service {
     private void applyBubble(String text, boolean sticky, long ttlMs) {
         if (statusBubble == null) return;
         if (text == null || text.isEmpty()) { hideBubble(); return; }
+        // 面板里的"任务"行与气泡同源：气泡被点掉/超时收起后，展开面板仍能看到最近状态。
+        if (agentText != null) agentText.setText("任务：" + text);
         // v1.21（ANR 修正）：文案与当前显示完全相同时**不重绘**。
         // 内核侧已按事件节流，这里再兜一道：悬浮窗每次 setText/显隐都会让窗口重排重绘，
         // 模拟器软件渲染下高频重绘会把主线程卡在出帧（实测 ANR：nSyncAndDrawFrame）。
@@ -905,10 +920,8 @@ public class OverlayService extends Service {
     /** 更新悬浮窗状态文字 + 常驻通知（在主线程调用）。 */
     private void updateEngineStatusUi() {
         if (statusText != null) {
-            statusText.setText("状态：" + (engineUp ? "引擎运行中 ✓" : "引擎未运行"));
-        }
-        if (aiText != null) {
-            aiText.setText(aiStatusText());
+            // v1.21：引擎状态 + AI 会话状态合并成一行（原来两行，省一行高度）
+            statusText.setText((engineUp ? "● 引擎运行中" : "○ 引擎未运行") + " · " + aiStatusText());
         }
         // 面板开着的话顺带刷新销毁屏按钮的可见性
         if (panelVisible) refreshPanelDynamicRows();
