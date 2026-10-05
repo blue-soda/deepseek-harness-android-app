@@ -240,16 +240,33 @@
  *   （不用 CSS-module 哈希类名，也不依赖 i18n 文案；面板开关都会触发 DOM 变更 → MutationObserver。）
  */
 (function () {
+  // 判定"第三栏是否真的占着屏幕左侧"。
+  // ⚠ 踩过的两个坑：
+  //   ① 只看宽度（占视口一半）→ 面板关着时那列依然存在，恒为真 → 欢迎页三条杠也被隐去；
+  //   ② 只取**第一个** [data-dockkit-pane-active=true] → 终端标签激活时同时存在多个 pane，
+  //      取到的可能是排在右侧之外的那个 → 判定为"没开" → 三条杠冒出来跟 bash 图标重叠
+  //      （用户实测：点 bash 标签右侧的 + 后稳定出现重叠的导航按钮）。
+  // 现在：先看标签条（打开时它落在视口左侧 x≈0，关闭时排在视口右侧之外 x≈视口宽），
+  //      再兜底扫**所有**可见 pane，任意一个在左侧即算打开。
+  function isRightPanelOpen() {
+    var vw = window.innerWidth;
+    var strips = document.querySelectorAll('[data-dockkit-strip]');
+    for (var i = 0; i < strips.length; i++) {
+      var s = strips[i], scs = getComputedStyle(s), sr = s.getBoundingClientRect();
+      if (scs.visibility === 'hidden' || sr.width === 0) continue;
+      if (sr.x < vw * 0.25 && sr.width > vw * 0.25) return true;
+    }
+    var panes = document.querySelectorAll('[data-dockkit-pane-active="true"]');
+    for (var j = 0; j < panes.length; j++) {
+      var p = panes[j], pcs = getComputedStyle(p), pr = p.getBoundingClientRect();
+      if (pcs.visibility === 'hidden' || pr.width === 0) continue;
+      if (pr.x < vw * 0.25) return true;
+    }
+    return false;
+  }
   function update() {
     var open = false;
-    try {
-      var pane = document.querySelector('[data-dockkit-pane-active="true"]');
-      if (pane) {
-        var cs = getComputedStyle(pane);
-        var r = pane.getBoundingClientRect();
-        open = cs.visibility !== 'hidden' && r.width > 0 && r.x < window.innerWidth * 0.25;
-      }
-    } catch (e) { open = false; }
+    try { open = isRightPanelOpen(); } catch (e) { open = false; }
     try {
       if (open) document.documentElement.setAttribute('data-dsh-right-panel', '');
       else document.documentElement.removeAttribute('data-dsh-right-panel');

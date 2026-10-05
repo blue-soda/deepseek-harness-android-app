@@ -4006,9 +4006,15 @@ public class MainActivity extends Activity {
         // 界面里「新建终端」必报
         //   Terminal error: subprocess-local: command ".../com.termux/.../bash" is not an executable file
         // （DSH 官方 Android 形态是"装在 Termux 里跑"，所以那个默认值对它是对的。）
-        // 这里显式给出 payload 自带的 bash（42 字节 wrapper → /system/bin/sh），
-        // 终端即可用；注意它是 mksh 而非真 bash，bash 专属的 shell 集成会弱一些。
+        // v1.20：payload 自带的 bash 已换成**真 bash**（GNU bash 5.3.20，Termux 构建，
+        //        见 tools/fetch-bash.py）——DSH 终端会用
+        //        `bash --rcfile <生成的 bashrc> -i` 起 shell，那份 rc 是纯 bash 语法，
+        //        mksh 跑不了（旧版就是 /system/bin/sh 的包装，会报 --rcfile 未知选项）。
         env.put("SHELL", new File(bin, "bash").getAbsolutePath());
+        // v1.20：agent 的 bash 工具（dsh-bash-local）执行 `bash -c <cmd>`，argv 里是裸名 "bash"，
+        // 靠 PATH 查找。这里显式给出绝对路径（补丁读 DSH_BASH_PATH），避免 PATH 顺序被人改动后
+        // 又落回 /system/bin/sh(mksh) —— 那样 bash 语法（[[ ]]、数组、BASH_VERSINFO）会失败。
+        env.put("DSH_BASH_PATH", new File(bin, "bash").getAbsolutePath());
         env.put("SHIZUKU_DEX", rishDex != null ? rishDex.getAbsolutePath() : "");
         // v1.9 虚拟屏 server dex：app_process 特权加载 VirtualScreenServer
         env.put("VS_DEX", vscreenDex != null ? vscreenDex.getAbsolutePath() : "");
