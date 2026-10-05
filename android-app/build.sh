@@ -226,23 +226,75 @@ else
   : > "$P/assets/dshroot_kernel_version.txt"
 fi
 
+# ── payload/bin/bash ───────────────────────────────────────────────────────────
+# v1.20：**优先用真 bash**（由 tools/fetch-bash.py 取到 $H/bash/bin/bash）。
+# 为什么必须真 bash：DSH 内置终端是这样起 shell 的 ——
+#     bash --rcfile /data/.../cache/tmp/dsh-shell-XXXX/bashrc -i
+# 那份 bashrc 是**纯 bash 语法**（BASH_VERSINFO / PROMPT_COMMAND / declare -p / 数组 / $'…'），
+# 而 payload 里的 bash 原本只是 /system/bin/sh（mksh）的包装：mksh 既认不出 --rcfile，
+# 也跑不了这份 rcfile → 终端面板报 `/system/bin/sh: --: unknown option` 并退出(1)。
+# 取不到真 bash 时回退到「过滤 bash 专有参数 + -i」的 mksh 包装（终端能用但集成度低）。
+# 注意：这里用 -f 而不是 -x —— Windows/NTFS 不保存可执行位，Git Bash 下 -x 恒为假。
+# 真正 chmod 由 App 侧 setExecutables() 在解压后做（bin/bash 已在 execs 名单里）。
+if [ -f "$H/bash/bin/bash" ]; then
+  cp -L "$H/bash/bin/bash" "$P/staging/bin/bash"
+  chmod +x "$P/staging/bin/bash"
+  # bash 的共享库：runtime/lib 里通常已有（libreadline/libncursesw/libiconv/libandroid-support），
+  # 缺哪个补哪个（引擎的 LD_LIBRARY_PATH 指向 runtime/lib，子进程继承）。
+  mkdir -p "$P/staging/runtime/lib"
+  for _so in "$H/bash/lib/"*.so*; do
+    [ -e "$_so" ] || continue
+    _base=$(basename "$_so")
+    [ -e "$P/staging/runtime/lib/$_base" ] || cp -L "$_so" "$P/staging/runtime/lib/$_base"
+  done
+  echo "  payload/bin/bash <- 真 bash（$(wc -c < "$P/staging/bin/bash" | tr -d ' ') 字节）"
+else
 cat > "$P/staging/bin/bash" <<'EOF'
 #!/system/bin/sh
-# v1.20：本文件**不是真 bash**，而是 /system/bin/sh（mksh）的包装。
-#   DSH 内置终端按 bash 语义传 `--noprofile --norc -i` 之类，mksh 不认这些长选项 →
-#   直接报 `/system/bin/sh: --: unknown option` 然后退出(1)。
-#   这里丢掉开头的 bash 专有选项；若丢完没有参数（终端只传了 --noprofile --norc），
-#   补 `-i` 当交互式 shell 起，真 PTY 里才有提示符。其余调用（如 `bash -c 'cmd'`）原样转发。
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --noprofile|--norc|--|--login|--posix|--verbose|--debugger|--restricted) shift ;;
-    *) break ;;
+# v1.20（回退版）：**不是真 bash**，而是 /system/bin/sh（mksh）的包装。
+#   正常构建应带真 bash（$H/bash/bin/bash）；这里是没取到真 bash 时的兜底。
+#   DSH 按 bash 语义传 `--rcfile <path>` / `--noprofile` / `--norc` / `--`，mksh 全不认 →
+#   报 `/system/bin/sh: --: unknown option` 退出(1)。所以：
+#     · 丢弃这些 bash 专有选项（**任意位置**，实测 `--` 会出现在中间；
+#       `--rcfile` 后面还跟着一个路径，要连它一起丢）
+#     · 丢完没参数时补 `-i`，真 PTY 里才有提示符
+#     · 其余调用（如 `bash -c 'cmd'`）原样转发
+# 诊断：argv 追加到 payload/dshhome/logs/bash-args.log（超 200 行清空）。
+_self_dir=$(dirname "$0")
+_log="$_self_dir/../dshhome/logs/bash-args.log"
+mkdir -p "$_self_dir/../dshhome/logs" 2>/dev/null
+if [ -d "$_self_dir/../dshhome/logs" ]; then
+  if [ "$(wc -l < "$_log" 2>/dev/null || echo 0)" -gt 200 ]; then : > "$_log"; fi
+  printf '%s ARGS: %s\n' "$(date '+%m-%d %H:%M:%S')" "$*" >> "$_log" 2>/dev/null
+fi
+
+_skip=0
+_keep=""
+for _a in "$@"; do
+  if [ "$_skip" = "1" ]; then _skip=0; continue; fi
+  case "$_a" in
+    --rcfile|--init-file) _skip=1; continue ;;
+    --rcfile=*|--init-file=*) continue ;;
+    --noprofile|--norc|--|--login|--posix|--verbose|--debugger|--restricted) continue ;;
   esac
+  _keep="$_keep$_a
+"
 done
+_old_ifs=$IFS
+IFS='
+'
+set -f                      # 关掉 glob，避免参数里的 * 被展开
+set -- $_keep
+set +f
+IFS=$_old_ifs
+
 [ "$#" -eq 0 ] && set -- -i
 exec /system/bin/sh "$@"
 EOF
-chmod +x "$P/staging/bin/bash"
+  chmod +x "$P/staging/bin/bash"
+  echo "  !! 未找到 \$H/bash/bin/bash，payload/bin/bash 用 mksh 回退包装"
+  echo "     （跑 python tools/fetch-bash.py 可取到真 bash；见 CHANGES「终端」一节）"
+fi
 # 内置 pnpm（v1.15.3）：插件管理的「添加插件」全程 pnpm add，而 payload 原本不带 pnpm → 退出码 127，
 # 三种输入（本地目录 / 包名 / GitHub 地址）全装不上。这里把 pnpm 的纯 JS bundle 一起打进 payload：
 #   payload/bin/pnpm  ← wrapper（payload/bin 在引擎 PATH 上，所以插件管理器能直接找到 pnpm）

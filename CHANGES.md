@@ -296,13 +296,29 @@ HTTP 经 `adb forward` 打到模拟器上真实运行的 App 服务（33xx/9xxx�
      ④ 提示符 emu64xa:/data/…/dshhome #
      ⑥ tty → /dev/pts/1 ；echo MARK-$((1+1)) → MARK-2
      ```
-   - 配套两处修复：
-     · `payload/bin/bash` 其实是 mksh 包装，DSH 按 bash 语义传 `--noprofile --norc --` →
-       mksh 报 `--: unknown option` 退出(1)。wrapper 改为**丢掉这些 bash 专有选项**、
-       参数为空时补 `-i`，真 PTY 里才有提示符。
-     · `bin/` 与 `dshroot/lib/node_modules/node-pty/` 加入强制覆盖白名单
-       （否则 internal-patch/dshroot-add 只写缺失文件，老设备会留着旧 wrapper / 旧替身）。
-   - 复用方式：`tools/install-node-pty.sh <目录|tgz>` 校验并安装（N-API，无 ABI 顾虑）。
+   - 配套修复：
+     · **`payload/bin/bash` 换成真 bash**（关键）：DSH 起终端用的是
+       `bash --rcfile <生成的 bashrc> -i`，那份 bashrc 是**纯 bash 语法**
+       （`BASH_VERSINFO` / `PROMPT_COMMAND` 数组 / `declare -p` / `$'…'`），
+       而 payload 里的 bash 原本只是 `/system/bin/sh`(mksh) 的包装 →
+       mksh 认不出 `--rcfile`，也跑不了那份 rc，终端报 `--: unknown option` 退出(1)。
+       新增 `tools/fetch-bash.py`：从 Termux(aarch64) 取 **bash 5.3.20 + 依赖闭包**
+       （libandroid-support / libiconv / readline / ncurses，按 DT_SONAME 自动补别名），
+       `build.sh` 检测到 `<devhome>/bash/bin/bash` 就用它（否则回退 mksh 包装并在构建日志里提示）。
+       实测设备上：`GNU bash, version 5.3.20(1)-release (aarch64-unknown-linux-android)`。
+       · **x86_64 模拟器额外一步**：ndk_translation 的 guest 加载器不认 `LD_LIBRARY_PATH`，
+         bash 的运行期库也要补进 `/system/lib64/arm64/` —— `tools/emu-guestlibs.sh` 已扩展。
+       · `bin/` 与 `dshroot/lib/node_modules/node-pty/` 加入强制覆盖白名单
+         （否则 internal-patch/dshroot-add 只写缺失文件，老设备会留着旧 wrapper / 旧替身）。
+   - 端到端实测（payload 的 node 直接跑，不经 UI，参数与 DSH 完全一致）：
+     ```
+     ② node-pty 已起 shell pid=23762
+     ③ 首屏输出 "\u001b]133;A\u0007DSH> "     ← rcfile 的 OSC 133;A 标记 + PS1 都生效
+     ④ echo BASH=$BASH_VERSION; tty; pwd
+        → BASH=5.3.20(1)-release / /dev/pts/1 / …/dshhome
+     ```
+   - 复用方式：`tools/install-node-pty.sh <目录|tgz>`（node-pty，N-API 无 ABI 顾虑）、
+     `python tools/fetch-bash.py`（真 bash）。
 
 **顺带修掉一个真问题：新增文件在 fast 同步下永远不落地**
 - 现象：node-pty 替身打进 APK 了，设备上却没有（`dshroot-fast` 只刷 REVISION + 白名单，

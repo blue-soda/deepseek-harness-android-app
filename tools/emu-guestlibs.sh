@@ -39,6 +39,21 @@ while read -r alias target rest; do
 done < "$L/LINKS.txt"
 echo "已补 $n 个，原本已有 $skip 个，失败 $fail 个"
 
+# v1.20：payload/bin/bash 是**真 bash**（Termux 构建），它的运行期依赖不在 LINKS.txt 里
+# （那份列表是给 node 算的），所以要单独补：bash 靠它们才能在 guest 目录下加载成功，
+# 否则 terminal 一开就报 "library libreadline.so.8 not found: needed by main executable"。
+for extra in libreadline.so.8 libreadline.so.8.3 libncursesw.so.6 libncursesw.so.6.5 libiconv.so libandroid-support.so; do
+  [ -e "$G/$extra" ] && continue
+  if [ -f "$L/$extra" ]; then
+    if cp -Lf "$L/$extra" "$G/$extra"; then
+      chmod 644 "$G/$extra"
+      echo "  push $extra（bash 依赖）"
+    else
+      echo "  !! FAIL $extra"
+    fi
+  fi
+done
+
 # 自检：node 能跑起来才算成功
 N=/data/user/0/$PKG/files/payload/runtime/bin/node
 if [ -x "$N" ] || [ -f "$N" ]; then
