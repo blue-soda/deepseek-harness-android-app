@@ -474,12 +474,18 @@ public class MainActivity extends Activity {
         }
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        // v1.21（需求 1）：给一个"文件管理器里找得到"的默认工作区，用户不必手动选。
+        ensureDefaultWorkspace();
+        // v1.21：先消费"从通知进控制台"的 extra（无论走哪个分支）——
+        // 否则首启（还没走完向导）时点通知，extra 会留在 Intent 里，
+        // 之后任何一次 Activity 重建都会莫名其妙弹回控制台。
+        final boolean wantConsole = consumeOpenConsoleExtra();
         if (prefs.getBoolean("setup_done", false)) {
             showEngineScreen();
             // v1.12：切屏回来/任务恢复（savedInstanceState != null）直接进主界面。
             // v1.21（Q1-P1「秒进」）：冷启动**不再先停在控制台** —— 正常路径应当直接进主界面，
             //   控制台只从「常驻通知」或「故障回退」进入（用户定的口径）。
-            if (consumeOpenConsoleExtra()) {
+            if (wantConsole) {
                 // 从常驻通知点进来的：明确要看控制台
                 showConsole();
             } else if (savedInstanceState != null) {
@@ -602,8 +608,13 @@ public class MainActivity extends Activity {
     }
 
     // ================= v1.21（Q1 第 3 批）：界面故障 → 自动落控制台 =================
-    /** 主框架加载失败的重试预算（每次 2.5s）→ 约 30 秒。超过就认为"不是等引擎"而是真出不来。 */
-    private static final int WEBVIEW_RETRY_BUDGET = 12;
+    /**
+     * 主框架加载失败的重试预算（每次 2.5s）。
+     * ⚠ 必须 ≥ {@code waitForServer} 的 90 秒等待窗口（40 × 2.5s = 100s）：
+     * 否则慢设备上引擎还在正常启动，WebView 就先被判"加载不出来"而落控制台 ——
+     * 与"正常路径直接进主界面"相悖。真正"加载完成但前端没起来"由白页/启动壳探针负责。
+     */
+    private static final int WEBVIEW_RETRY_BUDGET = 40;
     /** 界面故障计数（连续）：与 engine_boot_failures 分开记，便于分别提示与复位。 */
     private static final String KEY_UI_FAILS = "ui_fail_streak";
     /** 渲染进程崩溃后该 WebView 实例不可用（恢复要走 Activity 重建）。 */
@@ -1701,6 +1712,73 @@ public class MainActivity extends Activity {
     // ============ AI 工作区（可选） ============
     private static final String KEY_WORKSPACE = "workspace_path";
 
+    /**
+     * v1.21（需求 1）：默认工作区 = 安卓用户能在文件管理器里一眼找到的路径。
+     *
+     * 为什么要有默认值：工作区原本要用户在应用内手动选目录（SAF 选择器），对不熟悉文件系统的
+     * 用户是门槛 —— 不选就没有工作区，AI 的文件操作落在内部目录，用户拿文件管理器也找不到产出。
+     * 这里给一个固定、可发现的默认值：
+     *   /sdcard/DeepSeekHarness/Workspace（文件管理器里就是「全部文件/DeepSeekHarness/Workspace」）
+     *
+     * 与"变体隔离"的取舍：本 App 有 4 个变体可共存，外部树用的是 /sdcard/&lt;变体目录&gt;；
+     * 但工作区按维护者要求用**共用**的 DeepSeekHarness/Workspace（用户视角更简单、更好找）。
+     * 若以后要按变体隔离，只改这一处即可。
+     */
+    private File defaultWorkspaceDir() {
+        return new File(android.os.Environment.getExternalStorageDirectory(), "DeepSeekHarness/Workspace");
+    }
+
+    /** 确保默认工作区存在并写进偏好（幂等；没有存储权限时静默失败，起引擎时再试一次）。 */
+    private void ensureDefaultWorkspace() {
+        try {
+            String cur = workspacePath();
+            if (cur != null && !cur.isEmpty()) return;
+            File dir = workspaceDirOrFallback();
+            if (dir == null) return;   // 还没拿到存储权限 → 留给下次/起引擎时再试
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putString(KEY_WORKSPACE, dir.getAbsolutePath()).apply();
+            Log.i(TAG, "default workspace -> " + dir.getAbsolutePath());
+        } catch (Throwable t) {
+            Log.w(TAG, "ensureDefaultWorkspace failed", t);
+        }
+    }
+
+    /**
+     * 选一个**真的能写**的工作区目录：优先共用的 /sdcard/DeepSeekHarness/Workspace；
+     * 万一那个目录是别的变体（或别的 App）建的、我们的 uid 写不进去，就回退到本变体目录
+     * /sdcard/&lt;pkgRoot&gt;/Workspace（同样在文件管理器里可见、可找）。
+     * 实测踩过：共用目录属主是另一个 uid（drwxrws--- 且我们不在 media_rw 组）→ 引擎 cwd 设不进去。
+     */
+    private File workspaceDirOrFallback() {
+        File preferred = defaultWorkspaceDir();
+        if (isWritableDir(preferred)) return preferred;
+        File alt = new File(new File(android.os.Environment.getExternalStorageDirectory(), pkgRoot()), "Workspace");
+        if (isWritableDir(alt)) {
+            Log.i(TAG, "共用工作区不可写，回退到 " + alt.getAbsolutePath());
+            return alt;
+        }
+        return null;
+    }
+
+    /** 目录能创建且能写入（写一个探针文件再删掉）。 */
+    private boolean isWritableDir(File dir) {
+        java.io.FileOutputStream fos = null;
+        try {
+            if (!dir.exists() && !dir.mkdirs()) return false;
+            File probe = new File(dir, ".dsh-write-probe");
+            fos = new java.io.FileOutputStream(probe);
+            fos.write('1');
+            fos.close();
+            fos = null;
+            probe.delete();
+            return true;
+        } catch (Throwable t) {
+            return false;
+        } finally {
+            try { if (fos != null) fos.close(); } catch (Throwable ignored) {}
+        }
+    }
+
     /** 当前配置的工作区路径（外部共享存储目录），未设置返回 null。 */
     private String workspacePath() {
         return getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_WORKSPACE, null);
@@ -1719,7 +1797,12 @@ public class MainActivity extends Activity {
                     })
                     .setNegativeButton("恢复默认", new DialogInterface.OnClickListener() {
                         @Override public void onClick(DialogInterface d, int w) {
-                            getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove(KEY_WORKSPACE).apply();
+                            // v1.21：默认值不再是"空"，而是那个容易在文件管理器里找到的目录
+                            // （/sdcard/DeepSeekHarness/Workspace）——所以"恢复默认"写它、不是清空。
+                            File def = defaultWorkspaceDir();
+                            try { if (!def.exists()) def.mkdirs(); } catch (Throwable ignored) {}
+                            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                                    .putString(KEY_WORKSPACE, def.getAbsolutePath()).apply();
                             refreshAllStatuses();
                             refreshConsolePermIfShown();
                         }
@@ -2341,9 +2424,11 @@ public class MainActivity extends Activity {
      */
     private void startEngine(final boolean prepareOnly) {
         engineStartAborted = false;    // v1.13：重新启动 → 清掉「停止」留下的中止/抑制标记
-        engineStoppedByUser = false;
-        markEngineStoppedByUser(false); // v1.21：任何"启动引擎"的路径都清掉持久化的停止意图
         if (!prepareOnly) {
+            // v1.21：只有"真的要启动引擎"才清掉「用户主动停止」的意图。
+            // 预热（prepareOnly）不该改写用户意图 —— 那是"准备文件"，不是"开始运行"。
+            engineStoppedByUser = false;
+            markEngineStoppedByUser(false);
             startKeepAliveService();   // 前台保活：挂后台不被杀（引擎持续运行）
             // 引擎端口持久化（供 OverlayService/其他组件读取）；已授权悬浮窗时自动拉起小鲸鱼
             try {
@@ -4328,9 +4413,30 @@ public class MainActivity extends Activity {
         final int a11yPort = notifyPort() + 100;
         env.put("APP_A11Y_PORT", String.valueOf(a11yPort));
         getSharedPreferences("dsh_prefs", MODE_PRIVATE).edit().putInt("a11y_port", a11yPort).apply();
-        // AI 工作区（可选）：用户选择的外部共享存储目录，作为 bash/文件工具的工作根目录
+        // AI 工作区：默认 /sdcard/DeepSeekHarness/Workspace（v1.21 需求 1）。
+        //  · 注入 DSH_WORKSPACE 供插件/脚本使用；
+        //  · 更关键的是把**引擎进程的 cwd** 设到这里 —— 内核 dsh-workspace 的会话 cwd
+        //    由 Host cwd 解析而来，新会话的工作区因此默认就是这个"文件管理器里找得到"的目录，
+        //    用户不必在界面里手动选。
+        ensureDefaultWorkspace();
         String ws = workspacePath();
-        if (ws != null && !ws.isEmpty()) env.put("DSH_WORKSPACE", ws);
+        File wsDir = (ws == null || ws.isEmpty()) ? null : new File(ws);
+        if (wsDir != null && !isWritableDir(wsDir)) {
+            // 存的路径写不进去（别的变体/别的 App 建的同名目录、或用户手删了父目录）
+            // → 重新挑一个能写的并更新偏好，避免引擎 cwd 又静默落回 "/"（实测踩过）。
+            Log.w(TAG, "工作区不可写，重新选择: " + ws);
+            File alt = workspaceDirOrFallback();
+            if (alt != null) {
+                wsDir = alt;
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                        .putString(KEY_WORKSPACE, alt.getAbsolutePath()).apply();
+            }
+        }
+        if (wsDir != null) {
+            env.put("DSH_WORKSPACE", wsDir.getAbsolutePath());
+            try { pb.directory(wsDir); } catch (Throwable t) { Log.w(TAG, "set engine cwd failed", t); }
+        }
+        Log.i(TAG, "engine cwd -> " + (wsDir == null ? "(未设置)" : wsDir.getAbsolutePath()));
         // v1.18（B12）：把变体事实注入引擎，供插件使用（插件不再硬编码包名/端口/截图目录）。
         //   DSH_APP_ID          —— 本变体包名（rish 兜底 appId、vscreen 核心类名前缀）
         //   DSH_ENGINE_PORT     —— 引擎端口
