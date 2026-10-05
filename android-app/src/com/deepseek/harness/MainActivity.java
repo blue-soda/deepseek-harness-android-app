@@ -13,6 +13,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -462,33 +463,180 @@ public class MainActivity extends Activity {
                         + " userGesture=" + isUserGesture);
                 try {
                     final android.app.Dialog dlg = new android.app.Dialog(MainActivity.this);
-                    final WebView pop = new WebView(MainActivity.this);
-                    pop.getSettings().setJavaScriptEnabled(true);
-                    pop.getSettings().setDomStorageEnabled(true);
-                    pop.getSettings().setSupportMultipleWindows(true);
-                    // 弹窗内的导航自己处理（http(s) 都放行，避免第三方登录页跳转被拦）
-                    pop.setWebViewClient(new WebViewClient());
-                    pop.setWebChromeClient(new WebChromeClient() {
-                        @Override public void onCloseWindow(WebView w) {
-                            // 授权页自己调 window.close() → 关掉对话框
-                            try { dlg.dismiss(); } catch (Throwable ignored) {}
-                        }
-                    });
-                    Button close = new Button(MainActivity.this);
-                    close.setText("关闭");
-                    close.setAllCaps(false);
-                    close.setOnClickListener(new View.OnClickListener() {
+                    dlg.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+
+                    // ===== 卡片外观（深色圆角，跟控制台同一套配色）=====
+                    LinearLayout card = new LinearLayout(MainActivity.this);
+                    card.setOrientation(LinearLayout.VERTICAL);
+                    GradientDrawable cardBg = new GradientDrawable();
+                    cardBg.setColor(0xFF1B1F27);
+                    cardBg.setCornerRadius(dp(16));
+                    card.setBackground(cardBg);
+                    card.setClipToOutline(true);
+
+                    // 顶栏：标题（页面标题/域名）+ 右侧圆形 ✕
+                    LinearLayout head = new LinearLayout(MainActivity.this);
+                    head.setOrientation(LinearLayout.HORIZONTAL);
+                    head.setGravity(Gravity.CENTER_VERTICAL);
+                    head.setPadding(dp(16), dp(12), dp(10), dp(10));
+                    final TextView title = new TextView(MainActivity.this);
+                    title.setText("正在打开授权页…");
+                    title.setTextColor(0xFFEAF0FF);
+                    title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
+                    title.setSingleLine(true);
+                    title.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+                    head.addView(title, new LinearLayout.LayoutParams(
+                            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                    TextView closeX = new TextView(MainActivity.this);
+                    closeX.setText("✕");
+                    closeX.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f);
+                    closeX.setTextColor(0xFFB8C0CC);
+                    closeX.setGravity(Gravity.CENTER);
+                    GradientDrawable xBg = new GradientDrawable();
+                    xBg.setColor(0x1FFFFFFF);
+                    xBg.setCornerRadius(dp(15));
+                    closeX.setBackground(xBg);
+                    closeX.setOnClickListener(new View.OnClickListener() {
                         @Override public void onClick(View v) {
                             try { dlg.dismiss(); } catch (Throwable ignored) {}
                         }
                     });
-                    LinearLayout box = new LinearLayout(MainActivity.this);
-                    box.setOrientation(LinearLayout.VERTICAL);
-                    box.addView(close, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams xLp = new LinearLayout.LayoutParams(dp(30), dp(30));
+                    xLp.leftMargin = dp(8);
+                    head.addView(closeX, xLp);
+                    card.addView(head, new LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-                    box.addView(pop, new LinearLayout.LayoutParams(
+
+                    // 细进度条（加载中显示；加载完隐藏）
+                    final ProgressBar bar = new ProgressBar(MainActivity.this, null,
+                            android.R.attr.progressBarStyleHorizontal);
+                    bar.setIndeterminate(true);
+                    bar.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(0xFF4D6BFE));
+                    card.addView(bar, new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, dp(2)));
+
+                    // 内容区：FrameLayout 里叠「承载用 WebView」与「已交给浏览器」提示面板。
+                    // 为什么要留这个 WebView：插件的 JS 是 window.open("") 先拿到窗口对象、
+                    // 再 tab.location = 授权地址；若我们直接把它丢掉，插件的轮询逻辑拿不到 tab，
+                    // 行为会变。所以照常创建、只把首个 http(s) 导航转交系统浏览器。
+                    final android.widget.FrameLayout content = new android.widget.FrameLayout(MainActivity.this);
+                    final LinearLayout handoff = new LinearLayout(MainActivity.this);
+                    handoff.setOrientation(LinearLayout.VERTICAL);
+                    handoff.setGravity(Gravity.CENTER);
+                    handoff.setPadding(dp(24), dp(24), dp(24), dp(24));
+                    handoff.setVisibility(View.GONE);
+                    final TextView hTitle = new TextView(MainActivity.this);
+                    hTitle.setText("已在浏览器中打开授权页");
+                    hTitle.setTextColor(0xFFEAF0FF);
+                    hTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f);
+                    hTitle.setGravity(Gravity.CENTER);
+                    handoff.addView(hTitle);
+                    TextView hBody = new TextView(MainActivity.this);
+                    hBody.setText("请在弹出的浏览器里完成 DeepSeek 登录；\n完成后回到本应用即可，它会自动刷新。");
+                    hBody.setTextColor(0xFF9AA4B2);
+                    hBody.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f);
+                    hBody.setGravity(Gravity.CENTER);
+                    hBody.setPadding(0, dp(10), 0, dp(16));
+                    handoff.addView(hBody);
+                    final String[] lastUrl = {null};
+                    TextView reopen = new TextView(MainActivity.this);
+                    reopen.setText("再次打开浏览器");
+                    reopen.setTextColor(0xFF4D6BFE);
+                    reopen.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+                    reopen.setGravity(Gravity.CENTER);
+                    reopen.setPadding(dp(18), dp(9), dp(18), dp(9));
+                    GradientDrawable rBg = new GradientDrawable();
+                    rBg.setColor(0x1F4D6BFE);
+                    rBg.setCornerRadius(dp(10));
+                    reopen.setBackground(rBg);
+                    reopen.setOnClickListener(new View.OnClickListener() {
+                        @Override public void onClick(View v) { openInSystemBrowser(lastUrl[0]); }
+                    });
+                    handoff.addView(reopen);
+
+                    // 弹窗自己的 WebView
+                    final WebView pop = new WebView(MainActivity.this);
+                    pop.getSettings().setJavaScriptEnabled(true);
+                    pop.getSettings().setDomStorageEnabled(true);
+                    pop.getSettings().setSupportMultipleWindows(true);
+                    pop.setBackgroundColor(0xFFFFFFFF);   // 授权页多为浅色，避免深色卡片里闪黑
+                    pop.setWebViewClient(new WebViewClient() {
+                        // 注：这里不用 onReceivedTitle —— 本项目编译用的 android.jar 桩里没有它
+                        // （@Override 会报"方法不会覆盖或实现超类型的方法"），标题改在 onPageFinished 里按域名设置。
+                        @Override public void onPageFinished(WebView v, String url) {
+                            bar.setVisibility(View.GONE);
+                            try {
+                                String host = android.net.Uri.parse(url).getHost();
+                                if (host != null && !host.isEmpty()) title.setText(host);
+                            } catch (Throwable ignored) {}
+                        }
+                        /**
+                         * 把弹窗的导航**转交系统浏览器**。
+                         * 返回 true 表示"我们自己处理了"——导航被取消，插件随后照旧轮询服务端，
+                         * 因此不需要任何 callback 回来，登录结果照样能收到。
+                         * 没有可用浏览器时返回 false，退回内置卡片里加载（下面还有错误页兜底）。
+                         */
+                        @Override public boolean shouldOverrideUrlLoading(WebView v,
+                                                                         android.webkit.WebResourceRequest req) {
+                            if (req == null || req.getUrl() == null) return false;
+                            String url = req.getUrl().toString();
+                            if (!url.startsWith("http")) return false;
+                            lastUrl[0] = url;
+                            if (openInSystemBrowser(url)) {
+                                bar.setVisibility(View.GONE);
+                                pop.setVisibility(View.GONE);      // 保持 attached（JS 仍可用），只是不显示
+                                handoff.setVisibility(View.VISIBLE);
+                                title.setText("授权页已交给浏览器");
+                                // 交给浏览器后内容只剩几行字 → 把卡片收成紧凑高度，别留一大片空白
+                                try {
+                                    android.view.Window dw = dlg.getWindow();
+                                    if (dw != null) {
+                                        dw.setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.94),
+                                                android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+                                    }
+                                } catch (Throwable ignored) {}
+                                return true;                          // 不在内置 WebView 里再加载一遍
+                            }
+                            return false;
+                        }
+                        /**
+                         * 加载失败时别留一块白板：给一句人话 + 当前地址，
+                         * 让用户能分辨"网络到不了授权服务器"和"页面本身出错"。
+                         */
+                        @Override public void onReceivedError(WebView v, android.webkit.WebResourceRequest req,
+                                                              android.webkit.WebResourceError err) {
+                            if (req == null || !req.isForMainFrame()) return;
+                            bar.setVisibility(View.GONE);
+                            final String url = req.getUrl() == null ? "" : req.getUrl().toString();
+                            title.setText("授权页加载失败");
+                            String html = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                                    + "<style>body{font-family:sans-serif;background:#fff;color:#333;margin:0;"
+                                    + "padding:28px 22px;line-height:1.7}h1{font-size:16px;margin:0 0 10px}"
+                                    + "p{font-size:13px;color:#666;margin:6px 0;word-break:break-all}"
+                                    + "code{background:#f3f4f6;padding:2px 6px;border-radius:6px;font-size:12px}</style></head>"
+                                    + "<body><h1>无法加载授权页</h1>"
+                                    + "<p>通常是这台设备当前网络到不了授权服务器（DNS 或端口不通），"
+                                    + "不是 App 的问题。换网络/挂上能连通的代理后重试即可。</p>"
+                                    + "<p>页面地址：<code>" + url + "</code></p></body></html>";
+                            v.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null);
+                        }
+                    });
+                    pop.setWebChromeClient(new WebChromeClient() {
+                        @Override public void onCloseWindow(WebView w) {
+                            try { dlg.dismiss(); } catch (Throwable ignored) {}
+                        }
+                    });
+                    content.addView(pop, new android.widget.FrameLayout.LayoutParams(
+                            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                            android.widget.FrameLayout.LayoutParams.MATCH_PARENT));
+                    content.addView(handoff, new android.widget.FrameLayout.LayoutParams(
+                            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                            android.widget.FrameLayout.LayoutParams.MATCH_PARENT));
+                    card.addView(content, new LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-                    dlg.setContentView(box);
+
+                    dlg.setContentView(card);
+                    dlg.setCanceledOnTouchOutside(true);
                     dlg.setOnDismissListener(new android.content.DialogInterface.OnDismissListener() {
                         @Override public void onDismiss(android.content.DialogInterface d) {
                             try { pop.destroy(); } catch (Throwable ignored) {}
@@ -496,8 +644,10 @@ public class MainActivity extends Activity {
                     });
                     android.view.Window w = dlg.getWindow();
                     if (w != null) {
-                        w.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                                android.view.ViewGroup.LayoutParams.MATCH_PARENT);
+                        w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(0x99000000));
+                        // 留出边距，像一张卡片而不是全屏贴边
+                        w.setLayout((int) (getResources().getDisplayMetrics().widthPixels * 0.94),
+                                (int) (getResources().getDisplayMetrics().heightPixels * 0.86));
                     }
                     dlg.show();
                     ((WebView.WebViewTransport) resultMsg.obj).setWebView(pop);
@@ -921,6 +1071,28 @@ public class MainActivity extends Activity {
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(i);
         } catch (Throwable ignored) {}
+    }
+
+    /**
+     * v1.21：把授权页交给**系统浏览器**打开（返回是否成功交出去）。
+     *
+     * 为什么可以这样：插件（ds-harness-remote）的登录结果是它**在主页面轮询服务端**回收的
+     * （`requestDeepSeekSignIn()` 每 3 秒一次），并不依赖弹窗 postMessage 回来 ——
+     * 所以用系统浏览器完成授权最省事也最稳（真实浏览器、密码管理器、passkey 都在）。
+     * 没有可用浏览器时返回 false，调用方退回内置卡片里加载。
+     */
+    private boolean openInSystemBrowser(String url) {
+        if (url == null || url.isEmpty()) return false;
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+            Log.i(TAG, "popup → 系统浏览器: " + url);
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "没有可用的系统浏览器，退回内置卡片", t);
+            return false;
+        }
     }
 
     private int dp(int v) {
