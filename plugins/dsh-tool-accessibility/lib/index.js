@@ -1155,6 +1155,7 @@ function apply(ctx) {
           privileged: { type: "boolean" },
           privilegedChannel: { type: "string" },
           canSystemOps: { type: "boolean" },
+          canListApps: { type: "boolean" },
           canLaunchApps: { type: "boolean" },
           vscreenBridge: { type: "boolean" },
           appId: { type: "string" },
@@ -1171,7 +1172,8 @@ function apply(ctx) {
           "  无障碍截图(android_see): " + yn(v.canScreenshot) + (v.canScreenshot ? "" : "（需无障碍开启且 Android 11+）"),
           "  特权通道(Shizuku/root): " + yn(v.privileged) + (v.privileged ? "（" + (v.privilegedChannel || "?") + "）" : "（不授权也能用：文件/读屏/中文输入走无障碍与剪贴板）"),
           "  系统操作(装机/改设置/模拟输入 android_input·android_package…): " + yn(v.canSystemOps),
-          "  启动/停止应用(android_app): " + yn(v.canLaunchApps),
+          "  列应用/启动应用(android_apps·android_launch): " + yn(v.canListApps) + (v.canListApps ? "（免特权；后台启动受 Android 10+ 限制）" : ""),
+          "  特权方式启动/停止应用(android_app): " + yn(v.canLaunchApps),
           "  虚拟屏服务(android_vscreen_*): " + yn(v.vscreenBridge) + (v.vscreenBridge ? "" : "（打开一次 App 会自动拉起；整个虚拟屏功能还必须有 Shizuku/root）")
         ];
         if (v.hint) lines.push("", "建议: " + v.hint);
@@ -1205,6 +1207,8 @@ function apply(ctx) {
       const hints = [];
       if (!a11yRunning) hints.push("开启无障碍（系统设置 → 无障碍 → DeepSeek Harness 屏幕助手）后，android_screen/android_tap/android_type/android_see 才可用。");
       if (!privileged) hints.push("未授予 Shizuku/root：特权工具（android_input/android_package/android_app/android_setting/android_screenshot）不会出现在工具列表；中文输入请用 android_paste_text，截图请用 android_see。");
+      hints.push("列应用/启动应用**不需要特权**：用 android_apps 列（走 PackageManager），用 android_launch(package=…) 启动；"
+        + "注意 Android 10+ 后台启动 Activity 有限制，App 在前台时最稳；要指定 activity 或在虚拟屏启动仍需 Shizuku/root。");
       if (privileged && !vscreenBridge) hints.push("虚拟屏桥未就绪：打开一次 App 即可拉起（桥在 App 进程内，随 App 启动）。");
       return {
         ok: true,
@@ -1213,7 +1217,10 @@ function apply(ctx) {
         privileged,
         privilegedChannel: channel,
         canSystemOps: privileged,
-        canLaunchApps: privileged,
+        // v1.19：列应用/启动应用走 App 进程的 PackageManager（targetSdk=28 不受包可见性过滤），
+        // 因此**无特权也为真**；受限之处是 Android 10+ 的后台启动 Activity（BAL）。
+        canListApps: true,
+        canLaunchApps: true,
         vscreenBridge,
         appId: hostAppId(),
         ...(hints.length ? { hint: hints.join(" ") } : {})

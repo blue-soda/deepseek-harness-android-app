@@ -2469,6 +2469,12 @@ public class MainActivity extends Activity {
                         respBody = handleClipboardRequest(body.toString());
                     } else if (path.startsWith("/usage")) {
                         respBody = handleUsageRequest(path, body.toString());
+                    } else if (path.startsWith("/packages")) {
+                        // v1.19：免特权列应用（PackageManager；不走 Su/Shizuku）
+                        respBody = handlePackagesRequest(body.toString());
+                    } else if (path.startsWith("/app")) {
+                        // v1.19：免特权启动应用（launcher Intent；不走 Su/Shizuku）
+                        respBody = handleAppRequest(body.toString());
                     } else if (path.startsWith("/overlay")) {
                         respBody = handleOverlayRequest(path, body.toString());
                     } else if (path.startsWith("/status")) {
@@ -2499,6 +2505,119 @@ public class MainActivity extends Activity {
             return UsageStatsHelper.queryUsageJson(this, d);
         } catch (Throwable t) {
             return "{\"ok\":false,\"error\":\"" + String.valueOf(t.getMessage()).replace("\"", "'") + "\"}";
+        }
+    }
+
+    /** 本地路由鉴权：与 /shell 同款 token（只经 env APP_LOCAL_TOKEN 交给本应用自己的引擎）。 */
+    private boolean localTokenOk(String raw) {
+        String mine = localToken();
+        String token = jsonField(raw, "token");
+        return !mine.isEmpty() && mine.equals(token);
+    }
+
+    private String jsonErr(String msg) {
+        return "{\"ok\":false,\"error\":\"" + jesc(msg) + "\"}";
+    }
+
+    /**
+     * /packages：列出已安装应用（**免特权**，走 PackageManager）。
+     *
+     * 为什么免特权可行：本应用 targetSdk=28，而 Android 11+ 的**包可见性过滤只对 targetSdk≥30 生效**，
+     * 所以 getInstalledApplications / getLaunchIntentForPackage 能看到全部应用，**无需** QUERY_ALL_PACKAGES。
+     * ⚠ 若将来把 targetSdk 提到 30+（本项目因 noexec 限制保持 28），必须补
+     *   &lt;queries&gt;（MAIN+LAUNCHER）或 QUERY_ALL_PACKAGES，否则这里会静默变空。
+     * body: {token, filter?, third_party_only?, launchable_only?, limit?}
+     */
+    private String handlePackagesRequest(String raw) {
+        try {
+            if (!localTokenOk(raw)) return jsonErr("token 校验失败（该接口仅限本应用引擎调用）");
+            android.content.pm.PackageManager pm = getPackageManager();
+            String filter = jsonField(raw, "filter").trim().toLowerCase();
+            boolean thirdOnly = "true".equalsIgnoreCase(jsonField(raw, "third_party_only").trim());
+            boolean launchableOnly = "true".equalsIgnoreCase(jsonField(raw, "launchable_only").trim());
+            int limit = 200;
+            try {
+                String ls = jsonField(raw, "limit").trim();
+                if (!ls.isEmpty()) limit = Math.max(1, Math.min(Integer.parseInt(ls), 1000));
+            } catch (Exception ignored) {}
+            java.util.List<android.content.pm.ApplicationInfo> apps = pm.getInstalledApplications(0);
+            java.util.ArrayList<Object[]> rows = new java.util.ArrayList<Object[]>();
+            for (int i = 0; i < apps.size(); i++) {
+                android.content.pm.ApplicationInfo ai = apps.get(i);
+                boolean system = (ai.flags & android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0;
+                if (thirdOnly && system) continue;
+                Intent launch = null;
+                try { launch = pm.getLaunchIntentForPackage(ai.packageName); } catch (Throwable ignored) {}
+                boolean launchable = launch != null;
+                if (launchableOnly && !launchable) continue;
+                String label = "";
+                try { label = String.valueOf(pm.getApplicationLabel(ai)); } catch (Throwable ignored) {}
+                if (!filter.isEmpty()
+                        && !ai.packageName.toLowerCase().contains(filter)
+                        && !label.toLowerCase().contains(filter)) continue;
+                String ver = "";
+                try {
+                    android.content.pm.PackageInfo pi = pm.getPackageInfo(ai.packageName, 0);
+                    if (pi != null && pi.versionName != null) ver = pi.versionName;
+                } catch (Throwable ignored) {}
+                rows.add(new Object[]{ai.packageName, label, Boolean.valueOf(system), Boolean.valueOf(launchable), ver});
+            }
+            // 可启动的排前面，其次按 label 排序（便于模型/人阅读）
+            java.util.Collections.sort(rows, new java.util.Comparator<Object[]>() {
+                @Override public int compare(Object[] a, Object[] b) {
+                    boolean la = ((Boolean) a[3]).booleanValue(), lb = ((Boolean) b[3]).booleanValue();
+                    if (la != lb) return la ? -1 : 1;
+                    return String.valueOf(a[1]).compareToIgnoreCase(String.valueOf(b[1]));
+                }
+            });
+            org.json.JSONArray arr = new org.json.JSONArray();
+            int n = Math.min(rows.size(), limit);
+            for (int i = 0; i < n; i++) {
+                Object[] r = rows.get(i);
+                org.json.JSONObject o = new org.json.JSONObject();
+                o.put("package", r[0]);
+                o.put("label", r[1]);
+                o.put("system", ((Boolean) r[2]).booleanValue());
+                o.put("launchable", ((Boolean) r[3]).booleanValue());
+                if (!String.valueOf(r[4]).isEmpty()) o.put("versionName", r[4]);
+                arr.put(o);
+            }
+            org.json.JSONObject out = new org.json.JSONObject();
+            out.put("ok", true);
+            out.put("total", rows.size());
+            out.put("count", n);
+            out.put("apps", arr);
+            return out.toString();
+        } catch (Throwable t) {
+            return jsonErr("packages error: " + t.getMessage());
+        }
+    }
+
+    /**
+     * /app：启动已安装应用（**免特权**，走 launcher Intent）。
+     * ⚠ Android 10+ 有后台启动 Activity 限制（BAL）：本应用通常已授予悬浮窗权限（系统豁免之一），
+     *   且"用户刚操作过 App / App 在前台"时最稳。仍失败时如实提示改用特权通道 am start。
+     * body: {token, package}
+     */
+    private String handleAppRequest(String raw) {
+        try {
+            if (!localTokenOk(raw)) return jsonErr("token 校验失败（该接口仅限本应用引擎调用）");
+            String pkg = jsonField(raw, "package").trim();
+            if (pkg.isEmpty()) return jsonErr("缺少 package 参数");
+            Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
+            if (i == null) {
+                return jsonErr("该应用没有 launcher 入口（可能未安装，或它是没有界面的系统包）：" + pkg);
+            }
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+            org.json.JSONObject o = new org.json.JSONObject();
+            o.put("ok", true);
+            o.put("package", pkg);
+            if (i.getComponent() != null) o.put("component", i.getComponent().flattenToShortString());
+            return o.toString();
+        } catch (Throwable t) {
+            return jsonErr("启动失败：" + t.getMessage()
+                    + "（Android 10+ 后台启动 Activity 可能被系统拦截：可先把 App 切到前台再试，或授权 Shizuku/root 走 am start）");
         }
     }
 
@@ -2856,6 +2975,19 @@ public class MainActivity extends Activity {
             if (i < 0) return "";
             int c = json.indexOf(':', i + k.length());
             if (c < 0) return "";
+            // v1.19：支持裸字面量（true/false/数字）。旧实现只认带引号的字符串，
+            // 于是 {"limit":8} 会顺延到**下一个键**的引号上——把 "filter" 这样的键名当成值返回。
+            int v0 = c + 1;
+            while (v0 < json.length() && Character.isWhitespace(json.charAt(v0))) v0++;
+            if (v0 < json.length() && json.charAt(v0) != '"') {
+                int e = v0;
+                while (e < json.length()) {
+                    char ec = json.charAt(e);
+                    if (ec == ',' || ec == '}' || ec == ']') break;
+                    e++;
+                }
+                return json.substring(v0, e).trim();
+            }
             int q1 = json.indexOf('"', c + 1);
             if (q1 < 0) return "";
             StringBuilder sb = new StringBuilder();

@@ -74,6 +74,8 @@
 | 工具 | 能力 |
 |---|---|
 | `android_a11y_status` | 查询无障碍服务状态（未开启时返回引导文案） |
+| `android_apps` | **免特权**列出已安装应用（包名 / 名称 / 是否系统 / 能否启动 / 版本），可按关键字过滤、只列第三方或只列可启动的 |
+| `android_launch` | **免特权**启动一个已安装应用（`package` 用 `android_apps` 查到的包名；Android 10+ 后台启动 Activity 受限） |
 | `android_screen` | 读当前屏幕控件树（文字 / 坐标 / 可点击性 / 可输入性） |
 | `android_tap` | 按文字 / 描述 / 坐标点击 |
 | `android_type` | 输入文本到输入框（WebView / 网页输入框用 `paste:true` 走剪贴板粘贴） |

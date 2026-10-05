@@ -191,7 +191,43 @@ HTTP 经 `adb forward` 打到模拟器上真实运行的 App 服务（33xx/9xxx�
 | `android_gesture` 只传 `wait` 被服务端拒（模型想"等几秒"却报"手势没有可执行的笔"） | 纯 wait 手势**在本地睡眠**并正常返回 |
 | `android_paste_text` 在动作失败时仍显示"操作成功"（服务端 ok=true + error） | 动作返回 false 一律按**失败**上报，不再误导 |
 
-### 十二、未完成 / 已知限制
+### 十二、免特权列应用 / 启动应用（`android_apps` · `android_launch`）
+
+背景：此前**列应用与启动应用只有特权路径**（`android_package(action=list)` 走 `pm list packages`、
+`android_app(action=launch)` 走 `am start`），两者都在"未授予 Shizuku/root"时整体不注册——
+于是没有特权的设备上，AI 既列不出应用也打不开 App。
+
+做法：改用 **App 进程的 `PackageManager`**（新增壳内路由 `POST /packages`、`POST /app`，与 `/shell` 同款 token 鉴权），
+插件侧新增两个**始终注册**的工具：
+
+| 工具 | 能力 | 实现要点 |
+|---|---|---|
+| `android_apps` | 列出应用：包名/显示名/是否系统/能否启动/版本；可按关键字过滤、只列第三方、只列可启动 | `getInstalledApplications` + `getApplicationLabel` + `getLaunchIntentForPackage`，可启动优先排序 |
+| `android_launch` | 启动已安装应用（包名） | `getLaunchIntentForPackage` + `startActivity(NEW_TASK)` |
+
+**为什么不需要任何权限**：本 App `targetSdk=28`，而 Android 11+ 的**包可见性过滤只对 targetSdk≥30 生效**，
+所以这两个 API 本就能看到/启动全部应用，**无需 `QUERY_ALL_PACKAGES`、也无需 `<queries>`**
+（参考的旧 MVP 仓库是 targetSdk 36，那里必须声明 `QUERY_ALL_PACKAGES` + `<queries>` 才行）。
+⚠ 本仓库因 noexec 限制必须保持 targetSdk 28；**若将来提升到 30+，必须补 `<queries>`(MAIN+LAUNCHER) 或 `QUERY_ALL_PACKAGES`**，
+否则这两个工具会静默返回空。
+
+顺带修掉一个**潜伏 bug**：`MainActivity.jsonField()` 只认带引号的字符串值，
+于是 `{"limit":8}` 这类裸字面量会顺延到**下一个键**的引号上（把键名当值返回）。
+这波及已有的 `/shell` 的 `timeout_ms` 与 `/usage` 的 `days`。现改为同时支持裸字面量（true/false/数字）。
+
+实测（社区版 / 模拟器 / **未授予 Shizuku 与 root**）：
+
+- `POST /packages {third_party_only,launchable_only,limit:6}` → `total=3`，只列出 3 个 DSH 变体（过滤生效）；
+  `{filter:"setting"}` → 6 个匹配（含 Settings 与若干 settings 相关包）。
+- `POST /app {package:"com.android.settings"}` → `{"ok":true,"component":"com.android.settings/.Settings"}`，
+  4 秒后 `mCurrentFocus` 变为 `com.android.settings/com.android.settings.Settings`（**真的到前台了**）。
+- **App 在后台时**（先按 Home 回桌面）启动 Chrome 同样成功；系统确实查了 `SYSTEM_ALERT_WINDOW`（当时为 `default`，即未授予）。
+  即：本模拟器（Android 16）上前后台都通，但 Android 10+ 的后台启动 Activity 限制在别的 ROM/真机仍可能拦截 —— 失败时错误信息会给出原因。
+- **agent 端到端**（真模型 / headless）：任务"列出可启动的第三方应用 → 启动设置 → 读屏确认"，
+  自动走 `android_apps → android_launch → android_screen`，**3 次调用完成**，最后读到"当前前台应用: com.android.settings"。
+- 首轮提示词增量：**+435 token**（9,926 → 10,361），换来"无特权也能列应用/开应用"。
+
+### 十三、未完成 / 已知限制
 
 - **compat 变体尚未并入本机制**：`android-app/compat/` 仍是一套独立差异文件（GeckoView），
   其 `build.sh` / `MainActivity.java` 未同步 BuildVariant 与变体 staging，其虚拟屏端口仍为 8999/8998

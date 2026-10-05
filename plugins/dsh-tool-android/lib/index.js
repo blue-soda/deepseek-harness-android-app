@@ -435,6 +435,117 @@ function apply(ctx) {
     }
   }));
 
+  // ==========================================================================
+  // 免特权路径（v1.19）：列出应用 / 启动应用 —— 走 **App 进程的 PackageManager**。
+  // 放在特权门控**之前**：无 root/Shizuku 时这两个工具依然可用（其余系统操作仍按下面的门控）。
+  // 为什么免特权可行：本 App targetSdk=28，而 Android 11+ 的**包可见性过滤只对 targetSdk≥30 生效**，
+  //   getInstalledApplications / getLaunchIntentForPackage 可直接看到/启动全部应用，无需 QUERY_ALL_PACKAGES。
+  //   ⚠ 若将来把 targetSdk 提到 30+，必须补 <queries>(MAIN+LAUNCHER) 或 QUERY_ALL_PACKAGES。
+  // 对应壳内路由：POST /packages、POST /app（token 鉴权，见 MainActivity.handlePackagesRequest/handleAppRequest）。
+  // ==========================================================================
+  ctx.tools.register(defineTool({
+    name: "android_apps",
+    description:
+      "列出手机已安装的应用（包名 / 显示名 / 是否系统应用 / 是否能启动 / 版本号），不需要 root 或 Shizuku。" +
+      "默认按「可启动优先、名称」排序；返回里 total 是匹配总数、count 是本次返回条数，被截断时用 filter 或 limit 收窄。" +
+      "要打开某个应用用 android_launch。",
+    parameters: {
+      filter: { type: "string", description: "按包名或显示名做不区分大小写的关键字过滤" },
+      third_party_only: { type: "boolean", description: "true 只列第三方应用（排除系统应用）" },
+      launchable_only: { type: "boolean", description: "true 只列有桌面入口、能被启动的应用" },
+      limit: { type: "number", description: "最多返回条目数（默认 200，上限 1000）" }
+    },
+    output: {
+      schema: resultSchema({
+        total: { type: "number" },
+        count: { type: "number" },
+        apps: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              package: { type: "string", required: true },
+              label: { type: "string" },
+              system: { type: "boolean" },
+              launchable: { type: "boolean" },
+              versionName: { type: "string" }
+            }
+          }
+        }
+      }),
+      render: (_args, value) => {
+        if (!value.ok) return renderResult(value);
+        const apps = Array.isArray(value.apps) ? value.apps : [];
+        const lines = ["已安装应用：" + (value.total ?? apps.length) + " 个" +
+          (value.count < value.total ? "（显示前 " + value.count + " 个）" : "")];
+        for (const a of apps) {
+          const flags = [];
+          if (a.system) flags.push("系统");
+          if (a.launchable === false) flags.push("无桌面入口");
+          lines.push("- " + (a.label || "(无名)") + " (" + a.package + ")" +
+            (a.versionName ? " v" + a.versionName : "") + (flags.length ? " [" + flags.join("/") + "]" : ""));
+        }
+        lines.push("");
+        lines.push("启动：android_launch(package=\"…\")");
+        return [{ type: "text", text: lines.join("\n") }];
+      }
+    },
+    async execute(args) {
+      const r = await appPost("/packages", {
+        token: process.env.APP_LOCAL_TOKEN || "",
+        ...(args.filter ? { filter: String(args.filter) } : {}),
+        third_party_only: args.third_party_only === true,
+        launchable_only: args.launchable_only === true,
+        ...(args.limit !== undefined ? { limit: Number(args.limit) } : {})
+      }, 20000);
+      if (!r.ok) return { ok: false, error: r.error || "列出应用失败" };
+      return {
+        ok: true,
+        total: typeof r.total === "number" ? r.total : (Array.isArray(r.apps) ? r.apps.length : 0),
+        count: typeof r.count === "number" ? r.count : (Array.isArray(r.apps) ? r.apps.length : 0),
+        apps: Array.isArray(r.apps) ? r.apps : []
+      };
+    }
+  }));
+
+  ctx.tools.register(defineTool({
+    name: "android_launch",
+    description:
+      "启动一个已安装的应用，不需要 root 或 Shizuku。package 用 android_apps 查到的包名。" +
+      "只走应用自身的桌面入口；要指定 activity 或在虚拟屏里启动用 android_app(action=launch)。",
+    parameters: {
+      package: { type: "string", required: true, description: "要启动的应用包名，如 com.android.settings" }
+    },
+    output: {
+      schema: resultSchema({
+        package: { type: "string" },
+        component: { type: "string" },
+        hint: { type: "string" }
+      }),
+      render: (_args, value) => {
+        if (!value.ok) return renderResult(value);
+        return [{ type: "text", text: "已启动：" + (value.package || "") + (value.component ? "（" + value.component + "）" : "") }];
+      }
+    },
+    async execute(args) {
+      if (!args.package) return { ok: false, error: "android_launch 需要 package 参数" };
+      const r = await appPost("/app", { token: process.env.APP_LOCAL_TOKEN || "", package: String(args.package) }, 20000);
+      if (!r.ok) {
+        return {
+          ok: false,
+          error: r.error || "启动失败",
+          hint: "可先把 DeepSeek Harness 切到前台再试（Android 10+ 后台启动 Activity 受限）；或授权 Shizuku/root 后用 android_app(action=launch)"
+        };
+      }
+      return {
+        ok: true,
+        package: r.package || String(args.package),
+        ...(r.component ? { component: String(r.component) } : {})
+      };
+    }
+  }));
+
   // 未授予 root 且未授予 Shizuku 时：不注册下面这些系统操作工具（android_package 等），
   // AI 工具列表里没有特权工具，就不会反复尝试系统操作；
   // 此时文件读写用 DSH 自带的 fs/bash 工具（只需所有文件访问权限）。
@@ -445,7 +556,8 @@ function apply(ctx) {
     name: "android_package",
     description:
       "Android 包管理：列出已安装应用、安装 APK、卸载应用、清除应用数据、授予/撤销运行时权限。" +
-      "底层走 pm 命令（root su 或 Shizuku 特权通道）。" +
+      "底层走 pm 命令（root su 或 Shizuku 特权通道）——**无特权时本工具不会注册**，" +
+      "此时「列出应用」请改用 android_apps（免特权，且带应用名/版本/是否可启动）。" +
       "install 会自动把 APK 拷到 /data/local/tmp 并用 install-create/install-write/install-commit 会话式安装" +
       "（单发 pm install 在 ColorOS 上会卡死，且 system_server 读不了 /storage/emulated/0），" +
       "并校验 pm 输出确实含 Success，失败会如实报错而不是静默假成功。",
@@ -491,7 +603,8 @@ function apply(ctx) {
   // 2) 应用管理
   ctx.tools.register(defineTool({
     name: "android_app",
-    description: "Android 应用管理：启动应用、强制停止应用、查看当前前台应用。底层走 am/dumpsys（root su 或 Shizuku 特权通道）。",
+    description: "Android 应用管理：启动应用、强制停止应用、查看当前前台应用。底层走 am/dumpsys（root su 或 Shizuku 特权通道）。" +
+      "**启动应用不需要特权也行**：免特权请用 android_launch(package=…)；本工具仅在你需要指定 activity 或走特权通道时使用（无特权时不注册）。",
     parameters: {
       action: {
         type: "string", required: true,
