@@ -231,6 +231,8 @@ public class MainActivity extends Activity {
     private ProgressBar progressBar;
     private ImageView splashLogo;
     private TextView splashBrand;
+    /** v1.21：启动页副提示（"首次启动需要多等一会儿…"），进主界面时与其它启动页元素一起隐藏。 */
+    private TextView splashHint;
     private final Handler ui = new Handler(Looper.getMainLooper());
     // 运行时确定的 dshroot 目录（外部公共目录优先，失败回退内部 files/payload/dshroot）
     private File dshrootDir = null;
@@ -424,9 +426,10 @@ public class MainActivity extends Activity {
         statusView.setGravity(Gravity.CENTER);
         statusView.setPadding(dp(24), dp(12), dp(24), dp(12));
 
-        progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progressBar.setMax(100);
-        progressBar.setProgress(0);
+        // v1.21：启动页指示器改成小圆环 —— 原来是横向进度条（progressBarStyleHorizontal），
+        // 用户反馈"下方有个很丑的类似进度条的东西在动"。圆环是系统标准形态，配主题蓝更耐看。
+        progressBar = new ProgressBar(this, null, android.R.attr.progressBarStyle);
+        progressBar.setIndeterminate(true);
         progressBar.setVisibility(View.GONE);
 
         // 提取 rish dex（DSH 的 shizuku_shell 插件执行命令用，与 payload 解压解耦）
@@ -885,14 +888,26 @@ public class MainActivity extends Activity {
         box.addView(statusView, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        // 进度条（深色主题：亮蓝进度 + 暗灰轨道）
+        // v1.21：小圆环（主题蓝、直径 30dp）+ 一行副提示。
+        // 原来这里是 260×6dp 的横向进度条（用户："下方还有个很丑的类似进度条的东西在动"）。
         android.content.res.ColorStateList tint = android.content.res.ColorStateList.valueOf(Color.parseColor("#4d6bfe"));
-        progressBar.setProgressTintList(tint);
-        progressBar.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.parseColor("#1f2733")));
-        LinearLayout.LayoutParams pbp = new LinearLayout.LayoutParams(dp(260), dp(6));
-        pbp.topMargin = dp(18);
+        progressBar.setIndeterminateTintList(tint);
+        LinearLayout.LayoutParams pbp = new LinearLayout.LayoutParams(dp(30), dp(30));
+        pbp.topMargin = dp(20);
         pbp.gravity = Gravity.CENTER_HORIZONTAL;
         box.addView(progressBar, pbp);
+
+        // 副提示：让"要等一会儿"这件事变得可预期（首次/模拟器更慢）
+        splashHint = new TextView(this);
+        splashHint.setText("首次启动需要多等一会儿，之后就快了");
+        splashHint.setTextColor(cSub());
+        splashHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        splashHint.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        hlp.topMargin = dp(10);
+        hlp.gravity = Gravity.CENTER_HORIZONTAL;
+        box.addView(splashHint, hlp);
 
         FrameLayout.LayoutParams bp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
@@ -1760,8 +1775,16 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    /** 目录能创建且能写入（写一个探针文件再删掉）。 */
-    private boolean isWritableDir(File dir) {
+    /**
+     * POSIX 单引号转义：给 {@code sh -c '…'} 用（工作区路径里可能有空格/撇号）。
+     * 规则：' → '\''（结束引号 → 转义撇号 → 重开引号）。
+     */
+    private static String shq(String s) {
+        if (s == null) return "''";
+        return "'" + s.replace("'", "'\\''") + "'";
+    }
+
+    /** 目录能创建且能写入（写一个探针文件再删掉）。 */    private boolean isWritableDir(File dir) {
         java.io.FileOutputStream fos = null;
         try {
             if (!dir.exists() && !dir.mkdirs()) return false;
@@ -4327,9 +4350,38 @@ public class MainActivity extends Activity {
         // 注意：Android 兼容补丁（禁用 llm-pi-ai/sandbox/bash-sandbox 的 cordis.patch.yml）
         // 位于 $DSH_HOME/cordis.patch.yml，由 dsh profile-boot 的 homePatches 自动加载，
         // 无需 --patch 参数（重复传入会导致 duplicate loader entry 崩溃）。
-        ProcessBuilder pb = new ProcessBuilder(
-                node.getAbsolutePath(), "--expose-internals", binjs.getAbsolutePath(),
-                "web", "--host", "127.0.0.1", "--port", String.valueOf(enginePort));
+
+        // v1.21（需求 1 修复）：**先用 shell cd 再 exec node**，保证引擎进程的 cwd 真的是工作区。
+        // 为什么不能只靠 ProcessBuilder.directory()：模拟器上 arm64 node 由
+        // ndk_translation_program_runner_binfmt_misc_arm64（binfmt 解释器）拉起，
+        // 解释器会把 cwd 重置成 "/" —— 实测 pb.directory(工作区) 之后 /proc/<pid>/cwd 仍是 /。
+        // 后果：内核 dsh-workspace 的默认工作区 = host cwd = "/" → DSH 在根目录建工作区失败，
+        // 界面弹"默认工作区创建失败"。经 `sh -c 'cd <ws> && exec node …'` 后 cwd 一定正确；
+        // exec 让 node 顶替 shell（PID 不变），看门狗/「停止」按 PID 杀依然有效。
+        ensureDefaultWorkspace();
+        String wsRaw = workspacePath();
+        File wsDir = (wsRaw == null || wsRaw.isEmpty()) ? null : new File(wsRaw);
+        if (wsDir != null && !isWritableDir(wsDir)) {
+            Log.w(TAG, "工作区不可写，重新选择: " + wsRaw);
+            File alt = workspaceDirOrFallback();
+            if (alt != null) {
+                wsDir = alt;
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                        .putString(KEY_WORKSPACE, alt.getAbsolutePath()).apply();
+            }
+        }
+        final String nodeArgs = " --expose-internals " + shq(binjs.getAbsolutePath())
+                + " web --host 127.0.0.1 --port " + enginePort;
+        ProcessBuilder pb;
+        if (wsDir != null) {
+            Log.i(TAG, "engine cwd -> " + wsDir.getAbsolutePath() + "（经 shell cd 保证）");
+            pb = new ProcessBuilder("/system/bin/sh", "-c",
+                    "cd " + shq(wsDir.getAbsolutePath()) + " && exec " + shq(node.getAbsolutePath()) + nodeArgs);
+        } else {
+            Log.i(TAG, "engine cwd -> (未设置工作区，保持默认)");
+            pb = new ProcessBuilder(node.getAbsolutePath(), "--expose-internals",
+                    binjs.getAbsolutePath(), "web", "--host", "127.0.0.1", "--port", String.valueOf(enginePort));
+        }
         java.util.Map<String, String> env = pb.environment();
         env.put("LD_LIBRARY_PATH", lib.getAbsolutePath());
         // Termux 共存修复（v1.7.4）：内置 node 在 Termux 环境编译，OPENSSLDIR 被编译死为
@@ -4424,30 +4476,11 @@ public class MainActivity extends Activity {
         final int a11yPort = notifyPort() + 100;
         env.put("APP_A11Y_PORT", String.valueOf(a11yPort));
         getSharedPreferences("dsh_prefs", MODE_PRIVATE).edit().putInt("a11y_port", a11yPort).apply();
-        // AI 工作区：默认 /sdcard/DeepSeekHarness/Workspace（v1.21 需求 1）。
-        //  · 注入 DSH_WORKSPACE 供插件/脚本使用；
-        //  · 更关键的是把**引擎进程的 cwd** 设到这里 —— 内核 dsh-workspace 的会话 cwd
-        //    由 Host cwd 解析而来，新会话的工作区因此默认就是这个"文件管理器里找得到"的目录，
-        //    用户不必在界面里手动选。
-        ensureDefaultWorkspace();
-        String ws = workspacePath();
-        File wsDir = (ws == null || ws.isEmpty()) ? null : new File(ws);
-        if (wsDir != null && !isWritableDir(wsDir)) {
-            // 存的路径写不进去（别的变体/别的 App 建的同名目录、或用户手删了父目录）
-            // → 重新挑一个能写的并更新偏好，避免引擎 cwd 又静默落回 "/"（实测踩过）。
-            Log.w(TAG, "工作区不可写，重新选择: " + ws);
-            File alt = workspaceDirOrFallback();
-            if (alt != null) {
-                wsDir = alt;
-                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                        .putString(KEY_WORKSPACE, alt.getAbsolutePath()).apply();
-            }
-        }
-        if (wsDir != null) {
-            env.put("DSH_WORKSPACE", wsDir.getAbsolutePath());
-            try { pb.directory(wsDir); } catch (Throwable t) { Log.w(TAG, "set engine cwd failed", t); }
-        }
-        Log.i(TAG, "engine cwd -> " + (wsDir == null ? "(未设置)" : wsDir.getAbsolutePath()));
+        // AI 工作区（v1.21 需求 1）：默认 /sdcard/DeepSeekHarness/Workspace。
+        // 这里的 wsDir 已在上面的 spawn 段算好（含"不可写就回退"逻辑），进程 cwd 也由
+        // `sh -c 'cd … && exec node …'` 保证；此处只把路径注入环境变量供插件/脚本使用
+        // （我们的 dsh-bash-local 补丁 config.cwd = DSH_WORKSPACE || process.cwd()，据此生效）。
+        if (wsDir != null) env.put("DSH_WORKSPACE", wsDir.getAbsolutePath());
         // v1.18（B12）：把变体事实注入引擎，供插件使用（插件不再硬编码包名/端口/截图目录）。
         //   DSH_APP_ID          —— 本变体包名（rish 兜底 appId、vscreen 核心类名前缀）
         //   DSH_ENGINE_PORT     —— 引擎端口
@@ -4660,6 +4693,7 @@ public class MainActivity extends Activity {
                 statusView.setVisibility(View.GONE);
                 if (splashLogo != null) splashLogo.setVisibility(View.GONE);
                 if (splashBrand != null) splashBrand.setVisibility(View.GONE);
+                if (splashHint != null) splashHint.setVisibility(View.GONE);
                 if (progressBar != null) {
                     progressBar.setIndeterminate(false);
                     progressBar.setVisibility(View.GONE);

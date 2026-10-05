@@ -226,6 +226,60 @@
 })();
 
 /**
+ * v1.21：客户端时区兜底。
+ *
+ * 背景：DSH 创建会话时要求 `clientTimeZone` 是 "UTC" 或合法的 IANA "Area/Location"
+ * （内核报错：session/invalid-time-zone）。而部分 ROM / 模拟器把时区报成 "GMT"、
+ * "GMT+08:00" 这类**别名**（实测设备 persist.sys.timezone=GMT → WebView 里
+ * Intl.DateTimeFormat().resolvedOptions().timeZone 也是 "GMT"）→ 会话建不起来，
+ * 表现就是"消息发出去没反应/报时区错误"。
+ *
+ * 做法：只包裹 resolvedOptions，且**仅在拿到明显非 IANA 的值时**改写：
+ *   GMT / Etc/GMT → UTC；GMT±H[:MM] → 按偏移取等价 IANA 名（+8 → Asia/Shanghai）。
+ * 已是 Area/Location 的一律原样返回 —— 正常设备行为完全不变。
+ */
+(function () {
+  try {
+    if (typeof Intl === 'undefined' || !Intl.DateTimeFormat) return;
+    var orig = Intl.DateTimeFormat.prototype.resolvedOptions;
+    if (!orig || orig.__dshTzFixed) return;
+
+    var BY_OFFSET = {
+      '-10': 'Pacific/Honolulu', '-9': 'America/Anchorage', '-8': 'America/Los_Angeles',
+      '-7': 'America/Denver', '-6': 'America/Chicago', '-5': 'America/New_York',
+      '-4': 'America/Halifax', '-3': 'America/Sao_Paulo', '-2': 'Atlantic/South_Georgia',
+      '-1': 'Atlantic/Azores', '0': 'UTC', '1': 'Europe/Berlin', '2': 'Europe/Athens',
+      '3': 'Europe/Moscow', '4': 'Asia/Dubai', '5': 'Asia/Karachi', '5.5': 'Asia/Kolkata',
+      '6': 'Asia/Dhaka', '7': 'Asia/Bangkok', '8': 'Asia/Shanghai', '9': 'Asia/Tokyo',
+      '9.5': 'Australia/Adelaide', '10': 'Australia/Sydney', '11': 'Pacific/Guadalcanal',
+      '12': 'Pacific/Auckland', '13': 'Pacific/Tongatapu'
+    };
+
+    function fixTz(tz) {
+      if (!tz || typeof tz !== 'string') return tz;
+      if (/^(GMT|UTC|Etc\/GMT|Etc\/UTC|Z)$/.test(tz)) return 'UTC';
+      if (/^[A-Za-z]+\/[A-Za-z0-9_+\-]+$/.test(tz)) return tz;   // 已是 IANA 形态
+      // 实测：设备时区为 GMT 时，WebView 报的是纯偏移 "+00:00"（不是 "GMT"）——
+      // 这种也必须映射，否则 DSH 仍判非法（session/invalid-time-zone）。
+      var m = /^(?:GMT|UTC)?\s*([+-])(\d{1,2})(?::?(\d{2}))?$/.exec(tz);
+      if (!m) return tz;
+      var hours = parseInt(m[2], 10);
+      if (m[3] && parseInt(m[3], 10) === 30) hours += 0.5;
+      if (m[1] === '-') hours = -hours;
+      return BY_OFFSET[String(hours)] || 'UTC';
+    }
+
+    var wrapped = function () {
+      var r = orig.apply(this, arguments);
+      try { if (r && typeof r.timeZone === 'string') r.timeZone = fixTz(r.timeZone); } catch (e) {}
+      return r;
+    };
+    wrapped.__dshTzFixed = true;
+    Intl.DateTimeFormat.prototype.resolvedOptions = wrapped;
+  } catch (e) { /* 老 WebView 不支持就跳过 */ }
+})();
+
+/**
  * v1.20：第三栏（右侧 dockkit 面板）打开状态 → `html[data-dsh-right-panel]`。
  *
  * 用途：小屏下第三栏是**全屏**的，它的标签条（含 "Start"）正好落在左上角三条杠的位置；
