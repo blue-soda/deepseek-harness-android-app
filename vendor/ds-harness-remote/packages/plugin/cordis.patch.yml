@@ -11,7 +11,7 @@
       config:
         enabled: true
         role: host
-        serverUrl: https://dsh.r2049.cn
+        serverUrl: https://sakakibara.ink:8443
         codex:
           enabled: true
           binary: codex
@@ -26,7 +26,7 @@
       config:
         enabled: true
         role: host
-        serverUrl: https://dsh.r2049.cn
+        serverUrl: https://sakakibara.ink:8443
         codex:
           enabled: true
           binary: codex

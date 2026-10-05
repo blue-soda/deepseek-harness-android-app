@@ -100,6 +100,11 @@ public class MainActivity extends Activity {
     // 官方维护、需随 APK 更新的路径前缀：即使外部 dshroot 已有同名文件也强制覆盖
     // （避免"保留 AI 修改"策略挡住官方修复，例如 shizuku 插件的三层补丁）。
     private static final String[] FORCE_OVERWRITE_PREFIXES = {
+        // v1.21：内置插件 ds-harness-remote（vendor 进 payload 的包）。
+        // 必须随 APK 覆盖 —— 实测：改掉默认服务器地址、重新打包、装机后设备上仍是旧文件
+        // （payload 同步的"已存在文件永不覆盖"是保护 AI 运行时数据的策略，
+        //  但这是我们自己的包；它落后时用户看到的就是"服务器地址没更新"）。
+        "dshhome/profiles/web/node_modules/ds-harness-remote/",
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tool-shizuku/",
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tool-android/",
         // v1.9 虚拟屏插件：必须随 APK 覆盖（否则外部/旧 dshroot 里的旧版插件挡住更新 → "未知错误"）

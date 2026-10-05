@@ -530,6 +530,18 @@ L1（DSH 设置页诊断面板）与 L2（本机资产救援页）暂不做，�
   · 引擎加载成功：`[dsh-remote] host identity ready {…,"server":"https://dsh.r2049.cn"}`、
     `[dsh-remote] client remote-mode identity ready {…}` ✅（此前放错位置时的 `failed to import` 消失）；
   · 未验完：本环境解析不了 `dsh.r2049.cn` → 中继连接一直 `CONNECTION_FAILED`；客户端面板未在界面确认。
+
+**v1.21 内置插件同步上游新默认服务器 + 修"装了新 APK 但插件没更新"**
+- 上游新提交（`8ffda9b` / `b1efedf`）只改了 `cordis.patch.yml`：
+  `serverUrl: https://dsh.r2049.cn` → `https://sakakibara.ink:8443`（bundle patch 里显式写死了 serverUrl，
+  所以这就是"默认服务器地址"的来源；`dist` 无需重建）。已同步进 `vendor/ds-harness-remote/`
+  （根与 `packages/plugin/` 两份都更新，`r2049` 残留 0 处）。
+- **顺带修掉一个真问题**：重新打包装机后，设备上的插件文件**仍是旧的** ——
+  payload 同步策略是"已存在文件永不覆盖"（为保护 AI 运行时数据），而这是我们自己的包。
+  已把 `dshhome/profiles/web/node_modules/ds-harness-remote/` 加进
+  `FORCE_OVERWRITE_PREFIXES`（走 `internalPatch` 分支，载荷变化即覆盖）。
+- 实测：设备上 patch 变为 `serverUrl: https://sakakibara.ink:8443` ✅；
+  运行时 `[dsh-remote] host identity ready {…,"server":"https://sakakibara.ink:8443"}` ✅（引擎正常就绪）。
 - 实测（模拟器 community）：引擎端口 0 ✅ / 活跃通知 0 ✅ / 无任何服务在跑 ✅ / **进程彻底消失** ✅；
   之后点图标 → `用户主动启动，清除退出标记` → 秒进起引擎 ✅。
 
