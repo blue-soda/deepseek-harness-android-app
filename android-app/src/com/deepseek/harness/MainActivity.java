@@ -307,7 +307,15 @@ public class MainActivity extends Activity {
         applyStatusBar(); // 状态栏/导航栏底色跟随 App 主题（浅色模式不再是一条黑条）
         installCrashHandler();
         checkAbiCompat(); // ② ABI 检测：非 arm64 设备引擎可能无法运行，弹提示
-        checkBatteryOptimization(); // ④ 电池优化引导：被限制时提示（挂后台可能被杀）
+        // ④ 电池优化引导：被限制时提示（挂后台可能被杀）
+        // v1.21（真机报障）：**首启还没走完向导时不弹** —— 否则会和权限引导页叠在一起
+        //（用户看到"第一页就对不上"，而且这里的「去设置」直接进系统电池优化页，
+        //  使后面引导页的「忽略电池优化」显示成"已配置"）。向导里的 p7 会专门引导这一项。
+        try {
+            if (getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("setup_done", false)) {
+                checkBatteryOptimization();
+            }
+        } catch (Throwable ignored) {}
         // v1.12：不再在启动时自动检查更新（用户要求）；改为控制台底部的「检查更新」手动触发。
 
         webView = new WebView(this);
@@ -2163,13 +2171,27 @@ public class MainActivity extends Activity {
         return new File(android.os.Environment.getExternalStorageDirectory(), "DeepSeekHarness/Workspace");
     }
 
-    /** 确保默认工作区存在并写进偏好（幂等；没有存储权限时静默失败，起引擎时再试一次）。 */
+    /** 确保默认工作区存在并写进偏好（幂等）。 */
     private void ensureDefaultWorkspace() {
         try {
             String cur = workspacePath();
-            if (cur != null && !cur.isEmpty()) return;
+            File preferred = defaultWorkspaceDir();
+            if (cur != null && !cur.isEmpty()) {
+                // v1.21（真机报障："默认工作区建立失败"）：之前只在"未设置"时写偏好 ——
+                // 首次启动还没拿到存储权限时，只能落到兜底目录；等用户授权后，
+                // 偏好已经写着兜底值，再也不会切回"文件管理器里找得到"的那个目录。
+                // 这里补上"升级"：当前值如果是**我们自己塞的兜底**（不是用户手选），
+                // 且偏好目录现在可写了 → 切过去。
+                if (!cur.equals(preferred.getAbsolutePath()) && isOurFallbackWorkspace(cur)
+                        && isWritableDir(preferred)) {
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putString(KEY_WORKSPACE, preferred.getAbsolutePath()).apply();
+                    Log.i(TAG, "default workspace 升级 -> " + preferred.getAbsolutePath() + "（原：" + cur + "）");
+                }
+                return;
+            }
             File dir = workspaceDirOrFallback();
-            if (dir == null) return;   // 还没拿到存储权限 → 留给下次/起引擎时再试
+            if (dir == null) return;   // 极端情况（连应用私有目录都写不了）
             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                     .putString(KEY_WORKSPACE, dir.getAbsolutePath()).apply();
             Log.i(TAG, "default workspace -> " + dir.getAbsolutePath());
@@ -2178,19 +2200,58 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** 本变体在 /sdcard 下的自带目录（可能与共享工作区目录并存）。 */
+    private File variantWorkspaceDir() {
+        return new File(new File(android.os.Environment.getExternalStorageDirectory(), pkgRoot()), "Workspace");
+    }
+
+    /** 应用专属外部目录（Android 11+ 无需任何存储权限即可写；文件管理器里通常也能看到 Android/data/<pkg>/files）。 */
+    private File appExternalWorkspaceDir() {
+        File ext = getExternalFilesDir(null);
+        return ext == null ? null : new File(ext, "Workspace");
+    }
+
+    /** 应用内部目录（永远可写，作为最后兜底；用户看不到，但保证引擎 cwd 有效）。 */
+    private File appInternalWorkspaceDir() {
+        return new File(getFilesDir(), "Workspace");
+    }
+
+    /** 判断某个路径是不是"我们自己算出来的兜底目录"（用于决定能否升级到偏好目录）。 */
+    private boolean isOurFallbackWorkspace(String path) {
+        if (path == null) return false;
+        if (path.equals(variantWorkspaceDir().getAbsolutePath())) return true;
+        File ext = appExternalWorkspaceDir();
+        if (ext != null && path.equals(ext.getAbsolutePath())) return true;
+        return path.equals(appInternalWorkspaceDir().getAbsolutePath());
+    }
+
     /**
-     * 选一个**真的能写**的工作区目录：优先共用的 /sdcard/DeepSeekHarness/Workspace；
-     * 万一那个目录是别的变体（或别的 App）建的、我们的 uid 写不进去，就回退到本变体目录
-     * /sdcard/&lt;pkgRoot&gt;/Workspace（同样在文件管理器里可见、可找）。
-     * 实测踩过：共用目录属主是另一个 uid（drwxrws--- 且我们不在 media_rw 组）→ 引擎 cwd 设不进去。
+     * 选一个**真的能写**的工作区目录，按"用户越容易在文件管理器里找到"排序：
+     *   ① /sdcard/DeepSeekHarness/Workspace（共用，最显眼）
+     *   ② /sdcard/&lt;pkgRoot&gt;/Workspace（本变体目录；别的变体占用了 ① 的属主时用）
+     *   ③ Android/data/&lt;pkg&gt;/files/Workspace（**无需存储权限**即可写 —— 真机首启还没授权时靠它）
+     *   ④ &lt;filesDir&gt;/Workspace（最后兜底，保证引擎 cwd 永远有效、不会落回 "/"）
+     *
+     * ⚠ 为什么必须有 ③④：真机实测（用户报障）没有存储权限时 ①② 都不可写，
+     *   于是引擎 cwd 落回 "/" → DSH 在根目录建默认工作区 → 前端报"默认工作区建立失败"。
      */
     private File workspaceDirOrFallback() {
         File preferred = defaultWorkspaceDir();
         if (isWritableDir(preferred)) return preferred;
-        File alt = new File(new File(android.os.Environment.getExternalStorageDirectory(), pkgRoot()), "Workspace");
+        File alt = variantWorkspaceDir();
         if (isWritableDir(alt)) {
             Log.i(TAG, "共用工作区不可写，回退到 " + alt.getAbsolutePath());
             return alt;
+        }
+        File ext = appExternalWorkspaceDir();
+        if (ext != null && isWritableDir(ext)) {
+            Log.i(TAG, "外部共享目录不可写（可能还没给存储权限），回退到应用外部目录 " + ext.getAbsolutePath());
+            return ext;
+        }
+        File internal = appInternalWorkspaceDir();
+        if (isWritableDir(internal)) {
+            Log.w(TAG, "外部目录都不可写，回退到应用内部目录 " + internal.getAbsolutePath());
+            return internal;
         }
         return null;
     }
@@ -2204,7 +2265,8 @@ public class MainActivity extends Activity {
         return "'" + s.replace("'", "'\\''") + "'";
     }
 
-    /** 目录能创建且能写入（写一个探针文件再删掉）。 */    private boolean isWritableDir(File dir) {
+    /** 目录能创建且能写入（写一个探针文件再删掉）。 */
+    private boolean isWritableDir(File dir) {
         java.io.FileOutputStream fos = null;
         try {
             if (!dir.exists() && !dir.mkdirs()) return false;
