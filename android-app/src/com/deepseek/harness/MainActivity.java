@@ -2046,12 +2046,9 @@ public class MainActivity extends Activity {
 
         GuidePage p10 = new GuidePage();
         p10.title = "读取应用列表"; p10.actionLabel = "去授权";
-        p10.desc = "让 AI 知道你装了哪些应用、并帮你启动它们（「帮我打开微信」「列出我装的游戏」这类请求）。\n\n"
-                + "本应用 targetSdk=28，Android 11+ 的应用可见性限制只对 targetSdk≥30 的应用生效，"
-                + "所以多数手机**无需授权**就能读取。\n\n"
-                + "但部分国产系统（MIUI / HyperOS / ColorOS / 鸿蒙等）会在**第一次真正读取时**"
-                + "弹一个系统框「允许读取已安装应用列表吗？」—— 点下面的按钮就会触发那次询问，"
-                + "在这里一次性允许掉，免得用 AI 的时候突然弹框。";
+        p10.desc = "让 AI 知道你装了哪些应用，并帮你启动它们（例如「帮我打开微信」「列出我装的游戏」）。\n\n"
+                + "点下面的按钮会触发系统的授权询问，在这里一次性允许掉，"
+                + "免得用 AI 的时候突然弹框打断你。";
         p10.provider = new StatusProvider() { @Override public boolean granted() {
             return conAppListOk();
         }};
