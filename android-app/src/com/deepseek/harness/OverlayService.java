@@ -163,6 +163,8 @@ public class OverlayService extends Service {
     private volatile boolean userHidden = false;
     /** v1.13.11：悬浮图标当前吸附在右边？由拖动松手时的 snapToEdge() 决定。 */
     private boolean snappedRight = false;
+    /** v1.21：气泡槽位（停靠方向变化时要改它的对齐方式，见 applyDockAlignment）。 */
+    private android.widget.FrameLayout bubbleSlotView = null;
     /** v1.13.11：App 在前台 → 悬浮窗应隐藏（由 MainActivity.onStart/onStop 维护）。 */
     private volatile boolean foregroundWantsHidden = true;
     /** v1.13.11：被虚拟屏预览「收起到小鲸鱼」钉住 —— 只负责持续拉预览帧，不再影响可见性。 */
@@ -359,8 +361,9 @@ public class OverlayService extends Service {
         // 固定槽位后窗口尺寸恒定：小人既不会被裁，也不会上下移动。
         android.widget.FrameLayout bubbleSlot = new android.widget.FrameLayout(this);
         bubbleSlot.setLayoutParams(new LinearLayout.LayoutParams(dp(136), dp(22)));
-        // 槽位内**左对齐 + 垂直居中**：小人恒在最左，所以气泡永远停在小人头顶，
-        // 不会被面板展开（根布局变宽）带得偏右。
+        bubbleSlotView = bubbleSlot;
+        // 槽位内**左对齐 + 垂直居中**（停靠左侧时的默认；停靠右侧会镜像成右对齐，
+        // 见 applyDockAlignment() —— 否则气泡向左长不起来会被屏幕右缘截短）。
         android.widget.FrameLayout.LayoutParams bubLp = new android.widget.FrameLayout.LayoutParams(
                 android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
                 android.widget.FrameLayout.LayoutParams.WRAP_CONTENT);
@@ -647,10 +650,49 @@ public class OverlayService extends Service {
             int w = rootView.getWidth() > 0 ? rootView.getWidth() : dp(60);
             int h = rootView.getHeight() > 0 ? rootView.getHeight() : dp(56);
             snappedRight = (lp.x + w / 2) > getResources().getDisplayMetrics().widthPixels / 2;
+            applyDockAlignment();
             lp.x = edgeXFor(w);
             if (lp.y < 0) lp.y = 0;
             if (lp.y > screenH - h) lp.y = Math.max(0, screenH - h);
             wm.updateViewLayout(rootView, lp);
+        } catch (Throwable ignored) {}
+    }
+
+    /**
+     * v1.21（用户报障修复）：按停靠方向**镜像**内容对齐。
+     *
+     * 问题：气泡槽位固定 136dp，而小人只有 40dp —— 停靠**右侧**时窗口有约 100dp 落在屏幕外，
+     * 气泡若仍按左对齐、从左往右伸展，右侧部分直接被屏幕边缘截掉
+     *（用户报障："小人靠屏幕右侧时消息气泡显示的长度太短"）。
+     *
+     * 做法：停靠右侧时把 rootView 及其内容整体改成右对齐 —— 气泡槽位贴窗口右侧、
+     * 气泡在槽位内右对齐，于是它从小人右侧**向左**伸展，长度恢复正常；左侧停靠保持原样。
+     */
+    private void applyDockAlignment() {
+        try {
+            int g = snappedRight ? Gravity.END : Gravity.START;
+            if (rootView != null) rootView.setGravity(g);
+            if (bubbleSlotView != null) {
+                android.view.ViewGroup.LayoutParams raw = bubbleSlotView.getLayoutParams();
+                if (raw instanceof LinearLayout.LayoutParams) {
+                    LinearLayout.LayoutParams slp = (LinearLayout.LayoutParams) raw;
+                    slp.gravity = g;
+                    slp.leftMargin = snappedRight ? 0 : dp(4);
+                    slp.rightMargin = snappedRight ? dp(4) : 0;
+                    bubbleSlotView.setLayoutParams(slp);
+                }
+            }
+            if (statusBubble != null) {
+                android.view.ViewGroup.LayoutParams bp = statusBubble.getLayoutParams();
+                if (bp instanceof android.widget.FrameLayout.LayoutParams) {
+                    android.widget.FrameLayout.LayoutParams blp =
+                            (android.widget.FrameLayout.LayoutParams) bp;
+                    blp.gravity = g | Gravity.CENTER_VERTICAL;
+                    blp.leftMargin = snappedRight ? 0 : dp(4);
+                    blp.rightMargin = snappedRight ? dp(4) : 0;
+                    statusBubble.setLayoutParams(blp);
+                }
+            }
         } catch (Throwable ignored) {}
     }
 
