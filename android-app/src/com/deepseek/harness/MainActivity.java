@@ -489,13 +489,14 @@ public class MainActivity extends Activity {
                         File f = new File(getFilesDir(), "web-notes.log");
                         // 控制单文件大小（超过 256KB 就重开，避免无限增长）
                         if (f.exists() && f.length() > 256 * 1024) f.delete();
+                        String stamped = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                                .format(new java.util.Date()) + " " + line + "\n";
                         java.io.FileOutputStream fos = new java.io.FileOutputStream(f, true);
-                        try {
-                            fos.write((new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
-                                    .format(new java.util.Date()) + " " + line + "\n").getBytes("UTF-8"));
-                        } finally {
-                            try { fos.close(); } catch (Throwable ignored) {}
-                        }
+                        try { fos.write(stamped.getBytes("UTF-8")); } finally { try { fos.close(); } catch (Throwable ignored) {} }
+                        // 同时追加到 dsh-web.log —— 用户分享的就是这个文件，这样不必额外找文件
+                        //（workspace-diag 也是这样做的，实测能看到）
+                        java.io.FileOutputStream lf = new java.io.FileOutputStream(new File(getFilesDir(), "dsh-web.log"), true);
+                        try { lf.write(("[app] " + stamped).getBytes("UTF-8")); } finally { try { lf.close(); } catch (Throwable ignored) {} }
                     } catch (Throwable ignored) {}
                 }
             }, "dshshell");

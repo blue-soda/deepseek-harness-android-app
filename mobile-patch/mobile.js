@@ -311,7 +311,13 @@
         var url = '';
         try { url = (typeof input === 'string') ? input : ((input && input.url) || ''); } catch (x) {}
         return of.apply(this, arguments).then(function (res) {
-          try { if (res && !res.ok) note('[fetch] ' + res.status + ' ' + String(url).slice(0, 200)); } catch (x) {}
+          try {
+            var u = String(url);
+            // workspace 相关请求**无论成功失败都记**（真机排查"默认工作区建立失败"：
+            // 需要看到它到底调了哪个接口、返回什么码，光记失败可能什么都看不到）
+            if (/workspace/i.test(u)) note('[fetch] ' + (res && res.status) + ' ' + u.slice(0, 220));
+            else if (res && !res.ok) note('[fetch] ' + res.status + ' ' + u.slice(0, 200));
+          } catch (x) {}
           return res;
         }, function (err) {
           try { note('[fetch-fail] ' + String(url).slice(0, 200) + ' ' + ((err && err.message) || err)); } catch (x) {}
