@@ -78,6 +78,12 @@ public class OverlayService extends Service {
      * （留 20% 越界，视觉上"贴边站着"）。想完全露出改 1.0，想恢复半藏改 0.45。
      */
     private static final float TUCK_VISIBLE_FRACTION = 0.8f;
+    /**
+     * v1.21：静置（半藏）时，整体再朝**屏幕内侧**平移的比例（按屏幕宽度算）。
+     * 用户要求"静止小人整体右移 5% 左右" —— 贴左边时就是往右挪，贴右边时对称地往左挪。
+     * 想挪更多/更少改这个值即可；设为 0 则回到纯半藏。
+     */
+    private static final float TUCK_INSET_SHIFT_FRACTION = 0.05f;
     /** 拖到距底部多少 dp 内松手 = 隐藏。 */
     private static final int DISMISS_ZONE_DP = 84;
     /** AI "已完成"提示在状态切换后保留的时长（毫秒）。 */
@@ -191,8 +197,11 @@ public class OverlayService extends Service {
                             engineUp = up;
                             updateEngineStatusUi();
                             // v1.21（需求 2）：空闲超过 IDLE_FISH_MS → 摸鱼中…（只在没有活跃状态时补）
+                            // ⚠ 例外：正在等用户回答（"正在向用户提问..."）时不能改成摸鱼 —— 那不是摸鱼，是在等你。
                             if (up && System.currentTimeMillis() - lastAgentStatusAt > IDLE_FISH_MS) {
-                                applyBubble("摸鱼中…", true, 0L);
+                                String cur = (statusBubble != null && statusBubble.getText() != null)
+                                        ? statusBubble.getText().toString() : "";
+                                if (!cur.startsWith("正在向用户提问")) applyBubble("摸鱼中…", true, 0L);
                             }
                         }
                     });
@@ -660,6 +669,11 @@ public class OverlayService extends Service {
             int avatarW = (iconView != null && iconView.getWidth() > 0) ? iconView.getWidth() : dp(40);
             int inset = avatarInsetInWindow();
             int off = Math.round(avatarW * (1f - TUCK_VISIBLE_FRACTION));
+            // v1.21：半藏之后再朝屏幕内侧收一点（用户要求"静止小人整体右移 5% 左右"，
+            // 并确认最终这个位置"刚刚好" —— 所以这里保持"从半藏偏移里扣掉 shift、不小于 0"的算法，
+            // 别改成叠加平移，否则会再往内挪一段）。
+            int shift = Math.round(screenW * TUCK_INSET_SHIFT_FRACTION);
+            off = Math.max(0, off - shift);
             return snappedRight ? screenW + off - (inset + avatarW) : -(inset + off);
         }
         return snappedRight ? Math.max(dp(4), screenW - viewWidth - dp(4)) : dp(4);
