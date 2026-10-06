@@ -101,6 +101,13 @@ public class MainActivity extends Activity {
     // 官方维护、需随 APK 更新的路径前缀：即使外部 dshroot 已有同名文件也强制覆盖
     // （避免"保留 AI 修改"策略挡住官方修复，例如 shizuku 插件的三层补丁）。
     private static final String[] FORCE_OVERWRITE_PREFIXES = {
+        // v1.21（真机血泪教训）：**运行时的二进制与库必须随 APK 覆盖**。
+        // 曾经把 x86_64 的 libz/libssl/libcrypto 打进 payload，真机 arm64 上 node 一启动就崩：
+        //   libz.so is for EM_X86_64 (62) instead of EM_AARCH64 (183)
+        // 而"已存在文件不覆盖"策略让**换 APK 也修不回来**（只能卸载重装，用户实测又踩了一次）。
+        // runtime/ 是我们的运行时（node/库/配置），不是用户数据，列入强制覆盖：
+        // 覆盖安装时坏库会被 APK 里的正确版本替换掉。
+        "runtime/",
         // v1.21：内置插件 ds-harness-remote（vendor 进 payload 的包）。
         // 必须随 APK 覆盖 —— 实测：改掉默认服务器地址、重新打包、装机后设备上仍是旧文件
         // （payload 同步的"已存在文件永不覆盖"是保护 AI 运行时数据的策略，
@@ -4908,6 +4915,8 @@ public class MainActivity extends Activity {
             pb = new ProcessBuilder(node.getAbsolutePath(), "--expose-internals",
                     binjs.getAbsolutePath(), "web", "--host", "127.0.0.1", "--port", String.valueOf(enginePort));
         }
+        // v1.21：把这次的判定事实落盘（控制台「日志→分享」会带上），真机出问题时一眼可见
+        writeWorkspaceDiag(wsDir);
         java.util.Map<String, String> env = pb.environment();
         env.put("LD_LIBRARY_PATH", lib.getAbsolutePath());
         // Termux 共存修复（v1.7.4）：内置 node 在 Termux 环境编译，OPENSSLDIR 被编译死为
@@ -9073,9 +9082,61 @@ public class MainActivity extends Activity {
         return new File[]{
                 new File(getFilesDir(), "dsh-web.log"),
                 new File(getFilesDir(), "startup-diag.txt"),
+                // v1.21：工作区判定事实（偏好值 / 四级候选目录的可写性 / 权限状态 / 引擎 cwd）。
+                // 真机报"默认工作区无法设置"时，这份文件一眼就能看出卡在哪一级。
+                new File(getFilesDir(), "workspace-diag.txt"),
                 new File(extRoot, "dsh-web.log"),
                 new File(extRoot, "startup-diag.txt"),
+                new File(extRoot, "workspace-diag.txt"),
         };
+    }
+
+    /**
+     * v1.21：把"工作区是怎么定的"写进 files/workspace-diag.txt（控制台「日志→分享」会带上）。
+     * 内容：偏好值、四级候选目录各自是否存在/可写、存储权限与"所有文件访问"状态、最终选中的引擎 cwd。
+     * 这样真机出问题时不用猜。
+     */
+    private void writeWorkspaceDiag(File engineCwd) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append("workspace-diag @ ").append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+                    .format(new java.util.Date())).append('\n');
+            sb.append("pref(workspace_path) = ").append(String.valueOf(workspacePath())).append('\n');
+            sb.append("externalStorageState = ").append(Environment.getExternalStorageState()).append('\n');
+            try {
+                sb.append("WRITE_EXTERNAL_STORAGE granted = ")
+                        .append(checkSelfPermission("android.permission.WRITE_EXTERNAL_STORAGE")
+                                == PackageManager.PERMISSION_GRANTED).append('\n');
+            } catch (Throwable ignored) {}
+            if (Build.VERSION.SDK_INT >= 30) {
+                try { sb.append("MANAGE_EXTERNAL_STORAGE granted = ").append(Environment.isExternalStorageManager()).append('\n'); }
+                catch (Throwable ignored) {}
+            }
+            sb.append("--- 候选目录 ---\n");
+            appendProbe(sb, "1 共享 /sdcard/DeepSeekHarness/Workspace", defaultWorkspaceDir());
+            appendProbe(sb, "2 变体 /sdcard/" + pkgRoot() + "/Workspace", variantWorkspaceDir());
+            appendProbe(sb, "3 应用外部 files/Workspace", appExternalWorkspaceDir());
+            appendProbe(sb, "4 应用内部 filesDir/Workspace", appInternalWorkspaceDir());
+            sb.append("engine cwd = ").append(engineCwd == null ? "(未设置)" : engineCwd.getAbsolutePath()).append('\n');
+            File out = new File(getFilesDir(), "workspace-diag.txt");
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(out, false);
+            try { fos.write(sb.toString().getBytes("UTF-8")); } finally { try { fos.close(); } catch (Throwable ignored) {} }
+            Log.i(TAG, "workspace-diag 已写入 " + out.getAbsolutePath());
+        } catch (Throwable t) {
+            Log.w(TAG, "writeWorkspaceDiag failed", t);
+        }
+    }
+
+    private void appendProbe(StringBuilder sb, String label, File dir) {
+        try {
+            if (dir == null) { sb.append(label).append(": (null)\n"); return; }
+            sb.append(label).append(": ").append(dir.getAbsolutePath())
+                    .append(" exists=").append(dir.exists())
+                    .append(" writableByApp=").append(isWritableDir(dir))
+                    .append('\n');
+        } catch (Throwable t) {
+            sb.append(label).append(": probe failed ").append(t).append('\n');
+        }
     }
 
     /**
