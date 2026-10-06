@@ -197,6 +197,14 @@ export class ClientModeRuntime {
    * back except signing out.
    */
   private fellBackToLocal = false
+  /**
+   * Identifies the live reconnect loop.
+   *
+   * A dropped transport starts one; anything else that settles the connection —
+   * the user returning to local, a logout, a fresh connect — bumps it so the loop
+   * stops instead of fighting the newer decision.
+   */
+  private remoteReconnectRun = 0
   private pendingWorkspaceSelection?: RemoteWorkspaceSelection
   private codexVirtual?: CodexVirtualHarness
   private readonly proxySwitch?: ApiProxySwitch
@@ -433,6 +441,8 @@ export class ClientModeRuntime {
     this.gatewaySwitch.selectLocal()
     await this.closeCodexStreams(previous?.client)
     await previous?.client.close().catch(() => undefined)
+    // A sign-out ends the session for good, so no reconnect loop may keep trying.
+    this.remoteReconnectRun += 1
     // Clear the in-memory authorization as well as the stored credential. The
     // caller clears the credential file, but this API also caches the
     // authorization in memory, and a stale copy keeps reporting the Client as
@@ -464,6 +474,12 @@ export class ClientModeRuntime {
       this.pendingWorkspaceSelection = undefined
       await this.closeCodexStreams(previous?.client)
       await previous?.client.close().catch(() => undefined)
+      // Returning to local is the answer to a dropped session, so the record of
+      // that drop must not outlive it: otherwise the exit affordances stay on
+      // screen after the user has already acted on them. Stop any pending
+      // reconnect too — the user asked for local, not for a retry.
+      this.fellBackToLocal = false
+      this.remoteReconnectRun += 1
       this.logger.info('Harness target switched', { mode: 'local' })
       return this.status()
     }
@@ -491,6 +507,49 @@ export class ClientModeRuntime {
     await previous?.client.close().catch(() => undefined)
     this.logger.info('Harness target switched', { mode: 'remote', targetDeviceId: shortId(next.target.deviceId) })
     return this.status()
+  }
+
+  /**
+   * Re-establish a remote session whose transport closed.
+   *
+   * The UI keeps rendering the remote session after the transport is gone, so
+   * without this the user faces a session that silently ignores everything and has
+   * to exit and pick the Host again — which is what a suspended and resumed client
+   * used to require every time. Retry the same Host with backoff; a loop that is
+   * superseded, or one whose session came back another way, stops quietly.
+   * @param targetDeviceId - the Host the dropped session was bound to.
+   */
+  private async reconnectRemoteSession(targetDeviceId: string): Promise<void> {
+    const run = ++this.remoteReconnectRun
+    // Fast attempts first, then a steady low rate. Timers do not run while a
+    // client is suspended, so a pending wait simply lands when it comes back —
+    // which is what makes a backgrounded phone reconnect on its own. Keeping the
+    // loop alive matters for the other order too: attempts spent while the network
+    // was down must not leave the session dead until the user acts.
+    const fastDelays = [1_000, 2_000, 4_000, 8_000, 15_000]
+    let attempt = 0
+    for (;;) {
+      const wait = fastDelays[attempt] ?? 30_000
+      await new Promise<void>(resolve => { setTimeout(resolve, wait) })
+      if (run !== this.remoteReconnectRun) return
+      if (this.connected !== undefined) return
+      try {
+        await this.setMode('remote', targetDeviceId)
+        this.logger.info('remote Harness session reconnected', { targetDeviceId: shortId(targetDeviceId) })
+        return
+      } catch (error) {
+        // Report the early attempts, then only occasionally: a Host that stays
+        // away would otherwise fill the log every half minute.
+        if (attempt < 3 || attempt % 10 === 0) {
+          this.logger.warn('remote Harness reconnect attempt failed', {
+            targetDeviceId: shortId(targetDeviceId),
+            attempt,
+            code: safeErrorCode(error),
+          })
+        }
+      }
+      attempt += 1
+    }
   }
 
   async listRemoteDirectory(targetDeviceId: string, path?: string, signal?: AbortSignal): Promise<RemoteDirectoryListing> {
@@ -998,9 +1057,10 @@ export class ClientModeRuntime {
         // dropped. The card uses this to keep a way back to the local shell.
         this.fellBackToLocal = true
         void connectedClient.close().catch(() => undefined)
-        this.logger.warn('remote Harness transport closed; falling back to local mode', {
+        this.logger.warn('remote Harness transport closed; reconnecting', {
           targetDeviceId: shortId(target.deviceId),
         })
+        void this.reconnectRemoteSession(target.deviceId)
       })
       const connectionDetails = await connectedTransport.connectionDetails().catch(() => undefined)
       this.logger.info('remote Harness transport ready', {

@@ -207,14 +207,13 @@ public class OverlayService extends Service {
                 boolean show = visible && bubbleShowing;
                 bubbleWindowView.setVisibility(show ? View.VISIBLE : View.GONE);
                 if (show) {
-                    // ⚠ 必须显式给窗口定尺寸：WRAP_CONTENT 的独立窗口实测会被报成"整屏 frame"，
-                    // 那样即使带 FLAG_NOT_TOUCH_MODAL 也会挡住全屏触摸。用已测量到的视图尺寸当窗口尺寸。
-                    int bw = bubbleWindowView.getMeasuredWidth() > 0 ? bubbleWindowView.getMeasuredWidth()
-                            : (bubbleWindowView.getWidth() > 0 ? bubbleWindowView.getWidth() : dp(60));
-                    int bh = bubbleWindowView.getMeasuredHeight() > 0 ? bubbleWindowView.getMeasuredHeight()
-                            : (bubbleWindowView.getHeight() > 0 ? bubbleWindowView.getHeight() : dp(22));
-                    lpBubble.width = bw;
-                    lpBubble.height = bh;
+                    // v1.21 修正：**不要**给气泡窗口强制设宽高 —— 之前用 getMeasuredWidth() 设过，
+                    // 而那一刻文字还没布局，窗口被压窄 ⇒ 气泡只剩一个空框、文字被裁掉（用户报障）。
+                    // 交回 WRAP_CONTENT（窗口自适应内容），位置由 x/y 决定，布局完成后再重排一次。
+                    lpBubble.width = WindowManager.LayoutParams.WRAP_CONTENT;
+                    lpBubble.height = WindowManager.LayoutParams.WRAP_CONTENT;
+                    int bw = bubbleWindowView.getWidth() > 0 ? bubbleWindowView.getWidth() : dp(60);
+                    int bh = bubbleWindowView.getHeight() > 0 ? bubbleWindowView.getHeight() : dp(22);
                     lpBubble.x = snappedRight ? (avR - bw) : avL;
                     lpBubble.y = lp.y - bh - dp(2);
                     wm.updateViewLayout(bubbleWindowView, lpBubble);
@@ -224,12 +223,9 @@ public class OverlayService extends Service {
                 boolean show = visible && panelVisible;
                 panelWindowView.setVisibility(show ? View.VISIBLE : View.GONE);
                 if (show) {
-                    int pw = panelWindowView.getMeasuredWidth() > 0 ? panelWindowView.getMeasuredWidth()
-                            : (panelWindowView.getWidth() > 0 ? panelWindowView.getWidth() : dp(200));
-                    int ph = panelWindowView.getMeasuredHeight() > 0 ? panelWindowView.getMeasuredHeight()
-                            : (panelWindowView.getHeight() > 0 ? panelWindowView.getHeight() : dp(120));
-                    lpPanel.width = pw;
-                    lpPanel.height = ph;
+                    lpPanel.width = WindowManager.LayoutParams.WRAP_CONTENT;
+                    lpPanel.height = WindowManager.LayoutParams.WRAP_CONTENT;
+                    int pw = panelWindowView.getWidth() > 0 ? panelWindowView.getWidth() : dp(200);
                     lpPanel.x = snappedRight ? (avR - pw) : avL;
                     lpPanel.y = lp.y + avH + dp(2);
                     wm.updateViewLayout(panelWindowView, lpPanel);
@@ -466,6 +462,14 @@ public class OverlayService extends Service {
         // 点一下收起（尤其"任务已完成/会话已结束"这种常驻终态）
         statusBubble.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { hideBubble(); }
+        });
+        // v1.21：气泡自己（重新）布局完成后，按它的真实尺寸把小窗口摆到"右端齐着小人"的位置。
+        // 只重排位置、不改尺寸 ⇒ 不会触发循环。
+        statusBubble.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+            @Override public void onLayoutChange(android.view.View v, int l, int t, int r, int b,
+                                                 int ol, int ot, int orr, int ob) {
+                if (r - l != orr - ol || b - t != ob - ot || l != ol || t != ot) layoutCompanions();
+            }
         });
         bubbleWindowView = new android.widget.FrameLayout(this);
         bubbleWindowView.addView(statusBubble);
