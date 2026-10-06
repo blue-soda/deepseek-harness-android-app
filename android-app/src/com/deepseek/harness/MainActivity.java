@@ -9121,6 +9121,22 @@ public class MainActivity extends Activity {
             File out = new File(getFilesDir(), "workspace-diag.txt");
             java.io.FileOutputStream fos = new java.io.FileOutputStream(out, false);
             try { fos.write(sb.toString().getBytes("UTF-8")); } finally { try { fos.close(); } catch (Throwable ignored) {} }
+            // 同时镜像一份到外部目录（用户能直接用文件管理器拿走），以及**追加到 dsh-web.log**
+            // —— 后者最重要：用户已经在分享那个文件，这样不必额外找文件就能看到工作区判定。
+            try {
+                File extRoot = new File(Environment.getExternalStorageDirectory(), pkgRoot());
+                if (!extRoot.exists()) extRoot.mkdirs();
+                java.io.FileOutputStream ef = new java.io.FileOutputStream(new File(extRoot, "workspace-diag.txt"), false);
+                try { ef.write(sb.toString().getBytes("UTF-8")); } finally { try { ef.close(); } catch (Throwable ignored) {} }
+            } catch (Throwable ignored) {}
+            try {
+                java.io.FileOutputStream lf = new java.io.FileOutputStream(new File(getFilesDir(), "dsh-web.log"), true);
+                try {
+                    lf.write(("\n[app] ---- workspace-diag ----\n").getBytes("UTF-8"));
+                    lf.write(sb.toString().getBytes("UTF-8"));
+                    lf.write(("[app] ---- /workspace-diag ----\n").getBytes("UTF-8"));
+                } finally { try { lf.close(); } catch (Throwable ignored) {} }
+            } catch (Throwable ignored) {}
             Log.i(TAG, "workspace-diag 已写入 " + out.getAbsolutePath());
         } catch (Throwable t) {
             Log.w(TAG, "writeWorkspaceDiag failed", t);
