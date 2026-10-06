@@ -138,7 +138,9 @@ public class OverlayService extends Service {
     private static final long BUBBLE_TTL_MS = 12000L;
     /** 气泡自动收起（瞬时状态用；终态/空闲态不排这个）。 */
     private final Runnable bubbleHide = new Runnable() {
-        @Override public void run() { if (statusBubble != null) statusBubble.setVisibility(View.GONE); }
+        // v1.21：用 INVISIBLE 而不是 GONE —— 见 buildOverlay() 里气泡占位的说明：
+        // 气泡槽位必须**恒定保留**，否则气泡出现/消失会把小人上下挤动。
+        @Override public void run() { if (statusBubble != null) statusBubble.setVisibility(View.INVISIBLE); }
     };
 
     /** 最近一次气泡状态：服务被重启后据此恢复（只恢复 10 分钟内的）。 */
@@ -337,10 +339,17 @@ public class OverlayService extends Service {
         bbg.setCornerRadius(dp(8));
         bbg.setStroke(dp(1), 0x55FFFFFF);
         statusBubble.setBackground(bbg);
-        statusBubble.setVisibility(View.GONE);
+        // v1.21（用户报障修复）：默认用 INVISIBLE 而**不是** GONE ——
+        // 气泡槽位必须恒定保留：GONE 时根布局变矮、VISIBLE 时变高，而窗口锚定 TOP|START，
+        // 结果是"一冒消息小人就被往下挤"。INVISIBLE 保留高度 → 小人永远不动。
+        statusBubble.setVisibility(View.INVISIBLE);
         LinearLayout.LayoutParams bubLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        bubLp.gravity = Gravity.CENTER_HORIZONTAL;
+        // v1.21（用户报障修复）：**锚定小人左缘**，不再用 CENTER_HORIZONTAL ——
+        // 居中是相对根布局宽度算的，面板一展开根布局变宽 → 气泡就"偏右"飘走。
+        // 小人恒在最左，所以左对齐 + 与 iconRow 相同的左边距（4dp）就能让它一直待在小人头顶。
+        bubLp.gravity = Gravity.START;
+        bubLp.leftMargin = dp(4);
         bubLp.bottomMargin = dp(2);
         statusBubble.setLayoutParams(bubLp);
         // 点一下收起（尤其"任务已完成/会话已结束"这种常驻终态）
@@ -992,7 +1001,8 @@ public class OverlayService extends Service {
 
     private void hideBubble() {
         handler.removeCallbacks(bubbleHide);
-        if (statusBubble != null) statusBubble.setVisibility(View.GONE);
+        // v1.21：INVISIBLE（不是 GONE）—— 保留气泡槽位，避免小人在气泡显隐时上下移动
+        if (statusBubble != null) statusBubble.setVisibility(View.INVISIBLE);
     }
 
     /**
