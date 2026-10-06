@@ -634,9 +634,50 @@ public class OverlayService extends Service {
             // 表现就是"小鲸鱼横向拖不动、半藏也站不住"。而这里要修的只是"面板
             // 展开/收起瞬间 getWidth() 还是旧值"，一次性摆正就够。
             settleAfterLayout();
+            // v1.21（用户报障修复）：**只对"停靠右侧"**挂一个右缘钉住监听。
+            // 为什么必须挂长期监听：真机实测窗口宽度会随气泡出现/消失而变化（WRAP_CONTENT +
+            // 系统按当前窗口宽度测量的鸡生蛋问题）。只设一次 lp.x 的话，宽度一变右缘就跟着动 ——
+            // 用户看到的就是"有消息时小人被往左挤，消息消失后停在半空"。
+            // 钉住右缘后：气泡出现/消失只改变窗口左边界，小人始终贴着屏幕右缘；面板展开时
+            // 窗口变宽也是向左长，小人跟着面板右边界一起动。
+            // ⚠ 停靠左侧时**直接 return**，因此原来"半藏/可拖动"的行为完全不受影响。
+            installRightEdgePin();
         } catch (Throwable t) {
             stopSelf();
         }
+    }
+
+    /** 停靠右侧时把窗口右缘钉在屏幕上（见 buildOverlay 里的说明）。 */
+    private void installRightEdgePin() {
+        try {
+            if (rootView == null) return;
+            rootView.addOnLayoutChangeListener(new android.view.View.OnLayoutChangeListener() {
+                @Override public void onLayoutChange(android.view.View v, int l, int t, int r, int b,
+                                                     int ol, int ot, int or, int ob) {
+                    try {
+                        if (!snappedRight || dragging || lp == null || rootView == null) return;
+                        int w = rootView.getWidth();
+                        if (w <= 0) return;
+                        int screenW = getResources().getDisplayMetrics().widthPixels;
+                        int want;
+                        if (panelVisible) {
+                            want = Math.max(dp(4), screenW - w - dp(4));
+                        } else {
+                            int avatarW = (iconView != null && iconView.getWidth() > 0)
+                                    ? iconView.getWidth() : dp(40);
+                            int off = Math.max(0,
+                                    Math.round(avatarW * (1f - TUCK_VISIBLE_FRACTION))
+                                    - Math.round(screenW * TUCK_INSET_SHIFT_FRACTION));
+                            want = screenW + off - w;
+                        }
+                        if (lp.x != want) {
+                            lp.x = want;
+                            wm.updateViewLayout(rootView, lp);
+                        }
+                    } catch (Throwable ignored) {}
+                }
+            });
+        } catch (Throwable ignored) {}
     }
 
     /**
@@ -655,6 +696,26 @@ public class OverlayService extends Service {
             if (lp.y < 0) lp.y = 0;
             if (lp.y > screenH - h) lp.y = Math.max(0, screenH - h);
             wm.updateViewLayout(rootView, lp);
+            // v1.21 诊断：把停靠方向、窗口几何、小人实际位置、气泡可见性打出来。
+            // 真机/模拟器上"小人在半空""气泡被截短"这类问题只能靠这几个数定位（不能再靠猜）。
+            try {
+                android.view.View av = iconView;
+                int aLeft = -1, aRight = -1;
+                if (av != null) {
+                    int[] loc = new int[2];
+                    av.getLocationOnScreen(loc);
+                    aLeft = loc[0];
+                    aRight = loc[0] + av.getWidth();
+                }
+                android.util.Log.i("DSHOverlay", "dock=" + (snappedRight ? "R" : "L")
+                        + " panel=" + panelVisible
+                        + " screenW=" + getResources().getDisplayMetrics().widthPixels
+                        + " winX=" + lp.x + " winW=" + w
+                        + " winRight=" + (lp.x + w)
+                        + " avatar=[" + aLeft + "," + aRight + "]"
+                        + " bubbleVis=" + (statusBubble != null ? statusBubble.getVisibility() : -1)
+                        + " slotW=" + (bubbleSlotView != null ? bubbleSlotView.getWidth() : -1));
+            } catch (Throwable ignored) {}
         } catch (Throwable ignored) {}
     }
 
@@ -693,6 +754,9 @@ public class OverlayService extends Service {
                     statusBubble.setLayoutParams(blp);
                 }
             }
+            // 改完 gravity 必须让布局重新跑一次，否则这一帧还是旧对齐（实测会出现
+            // "小人停在半空 / 气泡被截短"的中间态）。
+            if (rootView != null) rootView.requestLayout();
         } catch (Throwable ignored) {}
     }
 
@@ -716,7 +780,14 @@ public class OverlayService extends Service {
             // 别改成叠加平移，否则会再往内挪一段）。
             int shift = Math.round(screenW * TUCK_INSET_SHIFT_FRACTION);
             off = Math.max(0, off - shift);
-            return snappedRight ? screenW + off - (inset + avatarW) : -(inset + off);
+            // v1.21（用户报障修复·二）：停靠右侧不能再用 "screenW + off - (inset + avatarW)"。
+            // 那个公式只保证**小人**的右缘落在屏幕边缘 —— 而窗口比小人大得多（气泡槽位 136dp），
+            // 窗口右缘会跑到屏幕外 ~220px；气泡画在窗口里，于是无论怎么对齐都会被屏幕边缘截短
+            //（用户复现两次："右侧气泡还是短的"）。
+            // 现在内容已右对齐（applyDockAlignment），窗口右缘 = 小人右缘，所以直接把**窗口右缘**
+            // 对准 screenW+off：小人和气泡就都贴在这一侧，气泡整条都在屏幕内。
+            if (snappedRight) return screenW + off - viewWidth;
+            return -(inset + off);
         }
         return snappedRight ? Math.max(dp(4), screenW - viewWidth - dp(4)) : dp(4);
     }
