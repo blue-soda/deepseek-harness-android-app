@@ -1,244 +1,63 @@
-# DeepSeek Harness 手机版（Android）
+# DeepSeek Harness 手机版（Android）· 社区构建
 
-> 把 DeepSeek Harness（DSH）打包成**可直接安装的 Android APK** —— 装上就能用，还能让 AI **免 Root 真正操作手机**。
+> ⚠️ **本 `main` 分支只是上游同步点** —— 本仓库的实际开发、修复与发布都在 **`master`** 分支：
+> **https://github.com/blue-soda/deepseek-harness-android-app/tree/master**
+> 请切换到 `master` 查看最新说明、构建方式与安装包（Releases 也发布自 master）。
 
-![License](https://img.shields.io/github/license/woaiys3/deepseek-harness-android-app)
-![Stars](https://img.shields.io/github/stars/woaiys3/deepseek-harness-android-app)
-![Release](https://img.shields.io/github/v/release/woaiys3/deepseek-harness-android-app)
+> 把 DeepSeek Harness（DSH）打包成**可直接安装的 Android APK**：装上就能用，还能让 AI **免 Root 操作手机**。
+>
+> 本仓库是 [woaiys3/deepseek-harness-android-app](https://github.com/woaiys3/deepseek-harness-android-app) 的社区分支，在其之上做了形象与体验上的改动（改动都在 `master` 分支）。
 
-## ✨ 核心亮点
+## 🐟 与上游的区别
 
-- 📦 **APK 一键安装**：不用 Termux、不用敲命令，下载安装即用（包名 `com.deepseek.harness`）
-- 🔓 **免 Root 系统特权**：通过 Shizuku 打通系统 shell —— AI 能**装应用、点屏幕、改系统设置、截图、模拟输入**，这是"手机上的 AI Agent"，不只是聊天窗口
-- 🟢 **可选特权，不授予也能正常用**（v1.4.0）：不装 Shizuku/无 root 也能用——文件读写、预览、编辑只需「所有文件访问」权限；未授权时 AI 不会反复尝试系统操作，需要时会**引导你授权**
-- 🔀 **Root 优先，Shizuku 备用**（v1.4.0）：有 root 走 su 通道，无 root 走 Shizuku，自动选择
-- 👁️ **无障碍屏幕助手**（v1.7.0）：系统设置开启「DeepSeek Harness 屏幕助手」后，AI 能**读屏、点击、输入、滚动、无障碍截图理解**——**不需要 root / Shizuku**，与特权通道互补
-- 🖥️ **虚拟屏 vscreen**（v1.10+）：AI 可以创建一块**独立于主屏的真·虚拟屏**，把 App 启动进去、在里面点击/滑动/输入，**你的主屏照常用**；右上角悬浮窗**实时显示虚拟屏画面**（H.264 视频流，可拖动、可双指缩放），AI 在干什么全程可见。实现移植自开源项目 [Operit](https://github.com/AAswordman/Operit)（LGPL-3.0，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）
-- 🎛️ **原生控制台**（v1.12+）：冷启动先进 App 自己的控制台（**解压 / 权限 / 插件开关 / 日志** 四页），不必先等引擎起来；引擎状态判定全面重做——探测不再吃掉一次性 token、不再误报“未启动”、不会重复拉起两个引擎
-- 🎨 **控制台「一切皆自定义」**（v1.17.3）：一份 `/sdcard/<包名目录>/console/console.json` 就能改控制台的**外观**（配色 / 字号 / 圆角 / **照片背景**，含压暗·模糊·视差）、**布局**（卡片显隐顺序，甚至**整页自己拼控件树**）、**文案**（52 个键）、**行为**（自定义按钮 + 动作，含 shell）；主题包可**导出/导入 zip**，主题页内置 **5 条「让 AI 做主题包」提示词**与离线自检工具。坏配置自动回退、救援面不可移除、长按品牌字一键回默认 —— **永不因为配置打不开 App**
-- 🩹 **混装树自愈**（v1.17.3）：升级后引擎起不来（`cosmokit does not provide an export named …` 那一类）**不用再清数据** —— 控制台点一次「重新解压」即可修好；清理只发生在内核自己的 `@deepseek-ai` 命名空间、**只删 `dsh*` 陈旧包，绝不碰用户数据与第三方插件**
-- 🌐 **兼容版自带浏览器引擎**（v1.17.3）：compat 内嵌 **GeckoView**，不再依赖系统 WebView（Chromium 91~93 的老设备也能跑）；代价是体积约 250MB、minSdk 提升到 26
-- 🚑 **救援能力**（v1.15+）：控制台提供「**安全模式启动 / 退出**」与「**导出全部数据 / 从备份导入还原**」。插件把配置写成非法 YAML 会导致引擎拒启（历史上只能清数据），安全模式把用户层整体旁置后用出厂配置启动、**不动会话与凭证**；备份导出把会话/插件/配置打成 zip 存到 `Download`，换机或彻底重装可还原
-- 🔐 **Shizuku 通道改走 App 进程**（v1.13.1+）：特权命令执行从“引擎内 `rish` 子进程”改为**经 App 进程内的 Shizuku API**（新增本地 `/shell` 路由 + 随机令牌鉴权），根治手机上偶发的 `Request timeout. The connection between the current app … and Shizuku app …`
-- ⏰ **前台保活**（v1.4.0）：AI 干活时挂后台/锁屏不被杀，任务完成推送通知
-- 🔔 **AI 发通知**（v1.4.0）：只需通知权限，任务完成/需要关注时推送到通知栏
-- 🧠 **完整 DSH 内核**：`@deepseek-ai/dsh` **0.2.0-rc.2**（v1.17.0 升级，上游当前 latest），保留插件生态 + RPC API，前端用 DSH 原生界面
-- 🐍 **内置 Python 3.14.6 + pip**（v1.16.0/1.16.1）：AI 可直接写脚本做数据处理、解析、统计；`pip install` 可用、`venv` 可用，**免安装免配置**
-- 📦 **内置 npm / npx 11.20.0**（v1.16.0/1.16.1）：AI 可自己装 node 包，装出来的 CLI **可直接执行**（已适配 Android 没有 `/usr/bin/env` 这件事）
-- 🔌 **插件三条输入全通**（v1.15.3→v1.15.8）：本地目录 / 包名 / **GitHub 地址** —— 内置 pnpm 与 git 2.55.0，并把 curl / git 的证书链修好（启动时用系统 CA 合成 bundle）
-- 📱 **移动端适配**：触摸优化 + 软键盘适配 + 首次启动权限引导页（9 项权限一站式配置）
-- 💾 **卸载不丢数据**：dshroot 外置到 `/sdcard/DeepSeekHarness`，重装/升级不清空 AI 的运行时改动
-- 🐋 鲸鱼品牌图标，横竖屏自由旋转
-
-## 📸 界面预览
-
-> 截图于 v1.2.0（2026-08-17）与 v1.4.0（2026-08-20），完整文件见 `docs/screenshots/`。
-
-| | | |
-|---|---|---|
-| ![界面截图 1](docs/screenshots/screenshot-1.jpg) | ![界面截图 2](docs/screenshots/screenshot-2.jpg) | ![界面截图 3](docs/screenshots/screenshot-3.jpg) |
-| ![界面截图 4](docs/screenshots/screenshot-4.jpg) | ![界面截图 5](docs/screenshots/screenshot-5.jpg) | ![界面截图 6](docs/screenshots/screenshot-6.jpg) |
-
-**v1.4.0（Lite 共存版）实测截图**：
-
-| | | |
-|---|---|---|
-| ![Lite 截图 1](docs/screenshots/screenshot-lite-1.jpg) | ![Lite 截图 2](docs/screenshots/screenshot-lite-2.jpg) | ![Lite 截图 3](docs/screenshots/screenshot-lite-3.jpg) |
-
-## 🛠️ 手机端插件（本项目的核心特色）
-
-| 插件 | 能力 |
+| 方面 | 我们做了什么 |
 |---|---|
-| `dsh-tool-shizuku` | 特权 shell：任意系统命令（pm/am/settings/dumpsys…），异步执行 + 环境消毒 + dex 只读自愈 |
-| `dsh-tool-android` | 结构化系统操作：包管理 / 应用管理 / 系统设置 / 截图 / 模拟输入 |
-| `dsh-tool-accessibility` | 无障碍读屏 + 模拟操作（v1.7.0）：读控件树 / 点击 / 输入 / 返回主页 / 滚动 / 无障碍截图理解 |
-| `dsh-tool-vscreen` | **虚拟屏（v1.10+）**：建屏 / 把 App 启动到虚拟屏 / 看虚拟屏画面 / 在虚拟屏上点击·滑动·按键 / 关屏（8 个工具） |
-
-> 通过这四个插件，AI 不再只是"聊聊天"，而是能**真正控制你的手机**——特权通道（root/Shizuku）负责系统级操作，无障碍通道（无需授权）负责读屏与交互，虚拟屏通道让 AI 在**不打扰主屏**的前提下跑自动化任务。
-
-## 👁️ 无障碍屏幕助手（v1.7.0）
-
-让 AI **看着屏幕操作手机**：读屏、点击、输入、滚动、截图理解——**不需要 root / Shizuku**。
-
-### 开启方式
-1. 系统设置 → 无障碍 →（已下载的服务/服务）→ 开启「DeepSeek Harness 屏幕助手」
-2. 在 App 里让 AI：先用 `android_screen` 读屏 → 用 `android_tap` / `android_type` / `android_scroll` 操作 → 需要看图时用 `android_see` 截图理解
-
-### AI 可用工具
-| 工具 | 能力 |
-|---|---|
-| `android_a11y_status` | 查询无障碍服务状态（未开启时返回引导文案） |
-| `android_screen` | 读当前屏幕控件树（文字 / 坐标 / 可点击性 / 可输入性） |
-| `android_tap` | 按文字 / 描述 / 坐标点击 |
-| `android_type` | 输入文本到输入框（WebView / 网页输入框用 `paste:true` 走剪贴板粘贴） |
-| `android_back` / `android_home` | 系统返回键 / 回桌面 |
-| `android_scroll` | 上 / 下 / 左 / 右滚动 |
-| `android_see` | 无障碍截图并发送给视觉模型理解（需 Android 11+ 与支持图片的模型，如 `deepseek-v4-flash-vision-exp`） |
-
-> 无障碍通道与特权通道互补：无障碍不依赖授权、擅长读屏与点击；Shizuku/root 通道擅长系统级操作（装应用 / 改设置 / 系统输入）。
-
-## 🖥️ 虚拟屏 vscreen（v1.10+）
-
-让 AI 在**一块独立于主屏的虚拟屏**里干活：你的主屏照常用，AI 在自己的屏里启动 App、点击、滑动、输入；右上角悬浮窗**实时显示虚拟屏画面**，AI 在干什么全程可见。
-
-### 用法（3 步）
-
-1. **安装 APK**（正式版或 Lite 共存版）
-2. **装好并授权 [Shizuku](https://shizuku.rikka.app/)**（或设备有 root）—— 虚拟屏服务端必须以 shell 身份运行，没这一步虚拟屏用不了
-3. **打开一次 App** —— 虚拟屏桥自动启动（此时它会拉起 shell 身份的服务端）
-4. **让 AI 建屏**（或直接调 `android_vscreen_create`）→ 右上角自动弹出预览悬浮窗（**可单指拖动、双指缩放**）
-
-### 尺寸：一律手机比例
-
-- 竖屏 **9:16**（默认 1008×1792）、横屏 **16:9**（1792×1008）
-- 即使显式传了非手机比例的宽高（如 1520×720），服务端也会**归一化**成 16:9（v1.11 修复）
-- 切换横竖屏需先关屏再建屏
-
-### AI 可用工具
-
-| 工具 | 能力 |
-|---|---|
-| `android_vscreen_create` | 建虚拟屏（`orientation` 可选 portrait / landscape） |
-| `android_vscreen_status` | 查询当前虚拟屏（displayId / 宽高 / 是否在跑） |
-| `android_vscreen_launch` | 把指定 App 启动到虚拟屏 |
-| `android_vscreen_see` | 截虚拟屏画面发给视觉模型（返回换算系数，供坐标换算） |
-| `android_vscreen_tap` / `swipe` / `key` | 在虚拟屏上点击 / 滑动 / 按键 |
-| `android_vscreen_close` | 关闭虚拟屏 |
-
-### 权限
-
-| 权限 | 用途 | 必需？ |
-|---|---|---|
-| **Shizuku 或 root** | **整个虚拟屏功能**——服务端（现役核心 `vscreen/Main.java`）必须以 **shell 身份**运行：建屏、截图、把 App 启动到虚拟屏、注入触摸/按键全在它身上 | **必需**。没有 Shizuku/root 就拉不起服务端，**虚拟屏完全不可用**（不是“能看不能点”） |
-| 悬浮窗（显示在其他应用上层） | 虚拟屏预览窗 | 要看预览必须授权 |
-| 存储（所有文件） | 虚拟屏截图保存 | 截图必需 |
-| ~~无障碍~~ | — | **不需要**。虚拟屏与无障碍服务无关（不读控件树、不走 `dispatchGesture`），插件/服务端/桥都没有引用无障碍 |
-
-### 技术要点
-
-预览**不是轮询截图**，而是 **服务端 MediaCodec H.264 编码 → App 内解码 → 渲染到悬浮窗**的实时视频流。
-该视频流方案与虚拟屏创建机制**移植/对齐自开源项目 [Operit](https://github.com/AAswordman/Operit)**（LGPL-3.0）。
-
-### 已知限制
-
-- 需要 **Android 11+**；
-- **需要 Shizuku 或 root**（原因见上表：服务端跑在 shell 身份下）；
-- 正式版与 Lite 共存版**同时启动**时 8999 端口互斥 → 虚拟屏实际二选一；
-- 虚拟屏为 PUBLIC 类型显示，部分系统弹窗（如输入法）行为与主屏有差异。
+| 🐟 **卡通大肥鱼形象** | 悬浮球与头像换成**卡通大肥鱼**全身立绘，配套应用图标与启动页 |
+| 🫧 **实用悬浮窗** | 小人常驻屏幕边缘（可拖动、靠边半藏），头顶**状态气泡**：`思考中…` / `正在 <工具>…` / `正在向用户提问...` / `任务已完成` / `会话已结束` / `下班啦` / `摸鱼中…`；点开面板有「打开 / 控制台 / 退出」（退出为两步确认）。气泡与面板**不会挤动小人** |
+| ⚡ **启动体验** | 进 App **不必先等引擎起来**（界面先可用），引导期间后台预热运行环境；慢启动时**继续等待**而不是判失败；默认工作区开箱可用 |
+| 🔐 **remote 插件登录体验** | 点「DS 登录」**直接打开系统浏览器**完成授权，回到 App 后**自动刷新状态** |
+| 🖥️ **终端可用** | 打包 Android 预编译的 **node-pty** 并换用**真 bash**，终端端到端可用（DSH rcfile 生效） |
+| 🧰 **工具优化** | 免特权列出/启动应用（`android_apps` / `android_launch`）；区域截图与坐标契约；能力探测、输入提示与防呆 |
+| 🔌 **预装 remote 插件** | 默认内置 **[ds-harness-remote](https://github.com/blue-soda/ds-harness-remote/)**（npm 发布版），安装后即可用远程访问，不必手动装插件 |
 
 ## 📦 安装
 
-下载 [Releases](https://github.com/woaiys3/deepseek-harness-android-app/releases) 里的 APK 安装即可：
+下载本仓库 [Releases](https://github.com/blue-soda/deepseek-harness-android-app/releases)（发布自 `master` 分支）：
 
-- **`DeepSeekHarness-official-v1.17.3.apk`（正式版，推荐）**：包名 `com.deepseek.harness`，从旧版本同签名升级
-- **`DeepSeekHarness-lite-v1.17.3.apk`（Lite 共存版）**：包名 `com.deepseek.harness.beta`（端口 3082），与正式版完全独立、可同时安装；数据独立在 `/sdcard/DeepSeekHarnessLite/`，API Key 需单独填
-- **`DeepSeekHarness-compat-v1.17.3.apk`（兼容版）**：包名 `com.deepseek.harness.compat`（端口 3084），**内置 GeckoView（不依赖系统 WebView）**，老设备可用；体积约 250MB、要求 **Android 8.0（API 26）**及以上
+- **`DeepSeekHarness-community-<版本>-arm64.apk`** —— 社区构建（包名 `com.deepseek.harness.community`，与上游各变体**可共存**）
+- 要求：**arm64 真机**、Android 7.0（API 24）及以上
 
-> ⚠️ **从任何旧版本升级，请直接装 v1.17.3**（这是 v1.17.1 之后的第一次发布，内容覆盖 v1.17.2 + v1.17.3）：
-> ① **兼容版内嵌 GeckoView**，老设备不再白屏；② **控制台「一切皆自定义」**（主题包：外观含背景图 / 布局含整页控件树 / 文案 / 自定义按钮与动作）；
-> ③ **混装树自愈** —— 升级后引擎起不来可以一键「重新解压」修好，不必再清数据；④ 修掉两个真机问题：多模态全挂（`fsync EINVAL`）与展开侧边栏后正文纯白；
-> ⑤ 老 WebView 提示阈值 80 → 94（不再静默白屏）。**覆盖安装不会丢配置**（模型/供应商、API Key、会话、插件都保留）；同签名可直接覆盖，无需卸载。
-> 完整变更见 [CHANGES.md](CHANGES.md)。
+## 🚀 快速上手
 
-> ℹ️ 内核已是 **DSH 0.2.0-rc.2**（v1.17.0 升级，上游当前 latest），并**移除了自研定时任务**（0.2.0 内核自带 `@deepseek-ai/dsh-schedule`，到点作为 follow-up 投递回原会话，可在 控制台 →「插件」页启用）。v1.17.1 另修了两个社区报告的缺陷：虚拟屏入口闪退（[#36](https://github.com/woaiys3/deepseek-harness-android-app/issues/36)）、平板分屏界面白闪（[#37](https://github.com/woaiys3/deepseek-harness-android-app/issues/37)）。
-> 更早的 v1.15.3 → v1.16.1 修掉了「插件装不上 / GitHub 装插件不通 / 证书报错 / 插件重启后消失 / 每次开机配置被重置」，并新增**内置 Python 与 npm**。完整变更见 [CHANGES.md](CHANGES.md)。
+1. 安装 APK → 按引导授权（**存储 / 所有文件访问**必给；悬浮窗、电池优化、通知建议给）
+2. 首次启动会解压运行环境（**1–3 分钟**，期间别切后台）
+3. 填写 API Key 开始对话；需要「操作手机」时，再按引导开启 **Shizuku / root** 或**无障碍屏幕助手**
 
-要求：
-- Android 7.0（API 24）及以上
-- 系统操作能力需配合 [Shizuku](https://shizuku.rikka.app/)（免 Root 授权）或有 root；**都不授予也能正常使用**（文件操作只需「所有文件访问」权限）
-- API Key 在 App 内页面填写，只存本机，绝不打包进 APK
+## 🔗 上游项目
 
-> 🆘 **打不开 / 白屏 / 连接失败？** 先看 [启动排查](docs/启动排查.md)（常见问题都能自助解决）。
+本分支的绝大部分能力来自上游：
 
-## 🐞 遇到问题？日志在哪 / 怎么反馈
+**https://github.com/woaiys3/deepseek-harness-android-app**
 
-- **v1.12 及以后（有控制台）**：打开 App → 控制台 →「日志」页 —— 「查看日志」看 `dsh-web.log` 末尾 200 行（可**截图**发来），「分享」把日志**以文件形式**发出（QQ / 微信 / 邮件都能选；启动失败时还会带上 `startup-diag.txt`）
-- **不用 App 也能取（v1.7.1 起，无需 root / adb）**：用文件管理器进手机存储根目录 ——
-  正式版 `/sdcard/DeepSeekHarness/dsh-web.log`、Lite 共存版 `/sdcard/DeepSeekHarnessLite/dsh-web.log`、兼容版 `/sdcard/DeepSeekHarnessCompat/dsh-web.log`；
-  启动失败时同目录另有 `startup-diag.txt`（错误 + 端口 + node 是否存活 + 日志尾部）
-- **v1.7.0 及更早**：既没有控制台也没有外部日志镜像 → 只能 `adb logcat | grep -i deepseek`（引擎日志在 App 私有目录，无 root 一般读不到）；建议先升级到 v1.12+
-- 反馈请附：**日志** + 机型 / Android 版本 + 用的哪个包（正式版 / Lite / 兼容版）+ 复现步骤
+（APK 一键安装、免 Root 特权（Shizuku / root）、无障碍屏幕助手、虚拟屏 vscreen、内置 Python/npm 等都在上游实现。）
+上游的完整功能说明、各变体（正式版 / Lite / 兼容版）与更新日志请见上游仓库。
 
-## 📁 目录结构
+## 🔨 构建
 
-```
-CHANGES.md              版本改动记录（含 @Suyi222 贡献的 v1.1.1 稳定基线）
-
-android-app/             APK 构建工程（正式版源码；Lite = 同一份源码改包名）
-├── build.sh             一键打包脚本
-├── env.sh               编译工具链环境（可 export PREFIX 覆盖）
-├── AndroidManifest.xml  包名/targetSdk(28)/横竖屏自由旋转/Shizuku 声明
-├── libs/                Shizuku 官方 aar（api/provider/aidl 13.1.5）
-├── res/                 图标 + 字符串资源
-├── sdk/                 放 platform android.jar（见 sdk/README.md）
-├── compat/              **兼容版差异文件**（内嵌 GeckoView）：只放与上面不同的 4 个文件 + 说明 → compat/README.md
-└── src/.../             原生壳：MainActivity（权限引导/控制台/引擎启停）、ConsoleTheme（主题包解析）、
-                         AccessibilityService（无障碍）、OverlayService（鲸鱼悬浮球）、
-                         VsreenBridgeService（虚拟屏桥）、EngineService、LogShareProvider（日志分享）等
-
-mobile-patch/            移动端适配（注入 DSH 前端，不覆盖原生代码）
-├── inject.sh            注入脚本（mobile.css + mobile.js 到 dist）
-├── mobile.css           触摸优化 + 竖屏适配 + 插件管理页 UI 适配
-└── mobile.js            软键盘适配（VisualViewport 方案，横竖屏通用）
-
-plugins/                 手机端自定义 DSH 工具插件
-├── dsh-tool-shizuku/    特权 shell（Shizuku 通道）
-├── dsh-tool-android/    结构化系统操作（包管理/应用/设置/截图/输入）
-├── dsh-tool-accessibility/  无障碍读屏/模拟操作（v1.7.0）
-└── dsh-tool-vscreen/    虚拟屏工具（create/status/launch/see/tap/swipe/key/close，v1.10+）
-
-console-theme/           控制台主题包规范与工具链（v1.17.3，随 APK 分发到设备）
-├── THEME-PACK-SPEC.md   自包含规范（字段速查 / 卡片·积木·动作三张 id 表 / 5 条提示词模板）
-├── console.schema.json  机器可读 schema（与 App 侧解析同一套规则）
-├── console.example.json 可直接用的示例主题
-├── theme_pack_check.py  零依赖离线校验器（AI 生成主题包后自检用）
-├── test-checker.py      校验器自测（5 用例）
-└── make-demo-theme.py   扮演"生成主题包的 AI"：现画背景图 → 写配置 → 打包 → 自检
-
-dsh-patches/             DSH 源码补丁归档 + overlay
-├── README.md            补丁说明（适配原因/升级 DSH/打包）
-├── apply.sh             重新应用源码补丁
-└── overlay/             改好后的源码文件
-
-config/cordis.patch.yml  DSH 组合配置（禁原生模块 + 插入 bash-local/shizuku/android 插件）
-
-docs/开发指南.md            项目开发指南（架构/常用命令/注意事项）
+```bash
+bash tools/build-apk.sh --variant community
 ```
 
-## 🔨 构建说明
+需要 `android.jar` 与 JDK；社区版使用仓库内的**公开密钥** `android-app/community.jks`。
+详见 **`master` 分支**的 [BUILD.md](https://github.com/blue-soda/deepseek-harness-android-app/blob/master/BUILD.md)
+与 [android-app/README.md](https://github.com/blue-soda/deepseek-harness-android-app/blob/master/android-app/README.md)。
 
-详见 `docs/开发指南.md` 第六节「常用命令」与第七节「注意事项」。
+## 🙏 致谢与许可
 
-关键点：
-- `targetSdk` 必须保持 **28**（≥29 会导致 node 二进制 EACCES 起不来）
-- 需准备 `runtime/`（node v26 + 依赖库）和 `dshroot/`（DSH 内核）才能打完整 APK
-- `build.sh` 会自动注入 mobile.css/mobile.js，并做 API Key 安全检查
+- 上游项目：[woaiys3/deepseek-harness-android-app](https://github.com/woaiys3/deepseek-harness-android-app)
+- 内置插件：[ds-harness-remote](https://github.com/blue-soda/ds-harness-remote/)
+- [Operit](https://github.com/AAswordman/Operit) —— 虚拟屏（vscreen）移植来源，LGPL-3.0，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- [Shizuku](https://github.com/RikkaApps/Shizuku) —— 免 Root 特权通道
+- 本仓库源码主体为 [MIT](LICENSE)（例外与依赖许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）
 
-> ⚠️ 这是源码与配置仓库，**不含 APK 二进制、签名密钥（release.jks）、node 运行时、payload.zip、凭证文件**。
-> 📦 安装包（DeepSeekHarness.apk）、node 运行时与 DSH 内核分块包见 [Releases](https://github.com/woaiys3/deepseek-harness-android-app/releases)；构建源码前需准备 runtime/ 与 dshroot/（分块包合并方法见 Release 说明）。
-
-## 💬 交流讨论
-
-遇到问题、想提建议、或想交流用法？欢迎加入 QQ 群 / QQ 频道：
-
-| QQ 群 | QQ 频道 |
-|---|---|
-| ![QQ 群](docs/qq-group.jpg) | ![QQ 频道](docs/qq-channel.jpg) |
-
-> 也可以直接在 [Issues](https://github.com/woaiys3/deepseek-harness-android-app/issues) 反馈，我会尽快回复。
-
-## 🙏 致谢与开源许可
-
-- **[Operit](https://github.com/AAswordman/Operit)**（[AAswordman](https://github.com/AAswordman)）—— 本项目**虚拟屏（vscreen）功能移植/对齐自 Operit 的 shower 模块**（虚拟屏创建、H.264 视频流预览、反射/隐藏 API 规避等）。Operit 采用 **LGPL-3.0**，因此本仓库的虚拟屏相关文件**同样按 LGPL-3.0 分发**。完整致谢与许可说明见 **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)**。
-- **[Shizuku](https://github.com/RikkaApps/Shizuku)**（[RikkaApps](https://github.com/RikkaApps)，Apache-2.0）—— 免 Root 特权通道。
-- **DeepSeek Harness（`@deepseek-ai/dsh`）** —— 本项目的运行内核。
-- **Node.js**（MIT）—— APK 内置运行时。
-
-## 📄 许可证
-
-本项目源码**主体**采用 [MIT](LICENSE) 许可证。
-
-- ⚠️ **例外**：`android-app/src/com/deepseek/harness/vscreen/`（虚拟屏）**移植自 [Operit](https://github.com/AAswordman/Operit)，按 LGPL-3.0 分发**。
-  这部分及其衍生修改**必须继续以 LGPL-3.0 分发**并保留原始声明，详见 **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)**（LGPL-3.0 / GPL-3.0 全文见 [`licenses/`](licenses/)）。
-- 依赖的 DSH 内核（@deepseek-ai/dsh）为 MIT；Shizuku SDK 为 Apache-2.0；node 运行时为 MIT。
-- 仓库不含签名密钥与凭证；安装包与运行时见 [Releases](https://github.com/woaiys3/deepseek-harness-android-app/releases)。
+> 本仓库是源码与配置仓库，**不含 APK 二进制与私有签名密钥**（社区公开密钥除外）；安装包见上方 Releases。
