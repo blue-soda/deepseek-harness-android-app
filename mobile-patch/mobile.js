@@ -270,6 +270,59 @@
 })();
 
 /**
+ * v1.21：把**前端报错**记到壳里，便于真机排查（真机报障"默认工作区建立失败"，但引擎日志里没有）。
+ *
+ * 抓三类：
+ *   · window.onerror / unhandledrejection（页面脚本异常）
+ *   · 非 2xx 的 fetch 响应（只记 URL 与状态码）—— workspace / session 相关接口失败最有用
+ *   · console.error
+ * 通过 dshshell.note(...) 送到 App，App 追加到 files/web-notes.log（控制台「日志→分享」会带上）。
+ */
+(function () {
+  try {
+    if (window.__dshErrHooked) return;
+    window.__dshErrHooked = true;
+    function note(msg) {
+      try { if (window.dshshell && window.dshshell.note) window.dshshell.note(String(msg).slice(0, 500)); } catch (e) {}
+    }
+    window.addEventListener('error', function (e) {
+      try { note('[js-error] ' + (e && e.message ? e.message : 'unknown') + ' @ ' + (e && e.filename ? e.filename : '') + ':' + (e && e.lineno ? e.lineno : '')); } catch (x) {}
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      try {
+        var r = e && e.reason;
+        note('[js-reject] ' + String((r && (r.message || r.code)) || r).slice(0, 300));
+      } catch (x) {}
+    });
+    try {
+      var ce = console.error;
+      console.error = function () {
+        try {
+          note('[console.error] ' + Array.prototype.map.call(arguments, function (a) {
+            return (a && a.message) ? a.message : String(a);
+          }).join(' ').slice(0, 400));
+        } catch (x) {}
+        return ce.apply(console, arguments);
+      };
+    } catch (x) {}
+    try {
+      var of = window.fetch;
+      window.fetch = function (input, init) {
+        var url = '';
+        try { url = (typeof input === 'string') ? input : ((input && input.url) || ''); } catch (x) {}
+        return of.apply(this, arguments).then(function (res) {
+          try { if (res && !res.ok) note('[fetch] ' + res.status + ' ' + String(url).slice(0, 200)); } catch (x) {}
+          return res;
+        }, function (err) {
+          try { note('[fetch-fail] ' + String(url).slice(0, 200) + ' ' + ((err && err.message) || err)); } catch (x) {}
+          throw err;
+        });
+      };
+    } catch (x) {}
+  } catch (e) {}
+})();
+
+/**
  * v1.21：接管 window.open → 用**系统浏览器**打开（插件登录授权页专用）。
  *
  * 背景：ds-harness-remote 点「DS 登录」时是

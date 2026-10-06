@@ -478,11 +478,25 @@ public class MainActivity extends Activity {
                     }});
                 }
 
-                /** v1.21：页面侧埋点（只落日志，便于排查"点登录为什么没跳浏览器"）。 */
+                /** v1.21：页面侧埋点（前端报错/接口失败）。落 logcat，同时**追加到 files/web-notes.log**， */
+                /** 该文件列在控制台「日志→分享」里 —— 真机排查前端错误（如"默认工作区建立失败"）靠它。 */
                 @android.webkit.JavascriptInterface
                 public void note(String msg) {
                     if (msg == null) return;
-                    Log.i(TAG, "page-note: " + msg);
+                    final String line = msg.replace('\n', ' ');
+                    Log.i(TAG, "page-note: " + line);
+                    try {
+                        File f = new File(getFilesDir(), "web-notes.log");
+                        // 控制单文件大小（超过 256KB 就重开，避免无限增长）
+                        if (f.exists() && f.length() > 256 * 1024) f.delete();
+                        java.io.FileOutputStream fos = new java.io.FileOutputStream(f, true);
+                        try {
+                            fos.write((new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                                    .format(new java.util.Date()) + " " + line + "\n").getBytes("UTF-8"));
+                        } finally {
+                            try { fos.close(); } catch (Throwable ignored) {}
+                        }
+                    } catch (Throwable ignored) {}
                 }
             }, "dshshell");
         } catch (Throwable ignored) {}
@@ -9085,6 +9099,8 @@ public class MainActivity extends Activity {
                 // v1.21：工作区判定事实（偏好值 / 四级候选目录的可写性 / 权限状态 / 引擎 cwd）。
                 // 真机报"默认工作区无法设置"时，这份文件一眼就能看出卡在哪一级。
                 new File(getFilesDir(), "workspace-diag.txt"),
+                // v1.21：前端报错/接口失败（mobile.js 的 error/reject/fetch 钩子经 dshshell.note 落盘）。
+                new File(getFilesDir(), "web-notes.log"),
                 new File(extRoot, "dsh-web.log"),
                 new File(extRoot, "startup-diag.txt"),
                 new File(extRoot, "workspace-diag.txt"),
