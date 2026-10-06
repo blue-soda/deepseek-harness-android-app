@@ -434,6 +434,55 @@ function settingsBinding(initial: Config): PluginSettingsBinding {
 
 function signal(): AbortSignal { return new AbortController().signal }
 
+describe('PluginControlRuntime DeepSeek sign-in', () => {
+  /**
+   * The client polls `settings.configure` while the browser sign-in page is open.
+   * Every call used to re-run the authorization, which re-verifies the grant with
+   * the platform and re-registers the device — rotating the tokens the Host
+   * connection was already using, so it failed with AUTH_INVALID intermittently
+   * right after a sign-in. A completed grant is verified once.
+   */
+  it('authorizes a completed grant once across repeated polls', async () => {
+    const directory = await temporaryDirectory()
+    const settings = settingsBinding({})
+    const calls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      calls.push(url)
+      if (url.endsWith('/api/v1/auth/deepseek')) {
+        return json({
+          token: 'account-token-value',
+          expiresAt: Date.now() + 600_000,
+          account: 'deepseek@example.com',
+          profile: {},
+          isAdmin: false,
+        })
+      }
+      if (url.endsWith('/devices/register')) return json(tokens())
+      throw new Error(`unexpected request: ${url}`)
+    }))
+    const handler = register(new PluginControlRuntime(
+      resolveConfig(settings.get()), directory, settings, undefined, undefined,
+      { read: async () => ({ token: 'platform-grant-value' }), startSignIn: async () => ({}), signOut: async () => true },
+    ))
+    const payload = { role: 'client', serverUrl: 'https://sakakibara.ink:8443', provider: 'deepseek' }
+
+    await expect(handler('settings.configure', payload, signal())).resolves.toMatchObject({ ok: true })
+    const afterFirst = calls.length
+    expect(calls.filter(url => url.endsWith('/api/v1/auth/deepseek'))).toHaveLength(1)
+
+    // A second poll must reuse the verified authorization: no further platform
+    // request and no second registration that would rotate the tokens again.
+    await expect(handler('settings.configure', payload, signal())).resolves.toMatchObject({ ok: true })
+    expect(calls).toHaveLength(afterFirst)
+
+    // Signing out discards it, so the next sign-in verifies anew.
+    await expect(handler('settings.logout', {}, signal())).resolves.toMatchObject({ ok: true })
+    await expect(handler('settings.configure', payload, signal())).resolves.toMatchObject({ ok: true })
+    expect(calls.filter(url => url.endsWith('/api/v1/auth/deepseek'))).toHaveLength(2)
+  })
+})
+
 describe('PluginControlRuntime host connection', () => {
   /**
    * The switch that stops this machine being reachable used to clear the

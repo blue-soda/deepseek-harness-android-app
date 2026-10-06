@@ -9,7 +9,7 @@ import {
   type HostAuthorizationControl,
 } from './client-runtime.js'
 import { IdentityStore, serverStorageDirectory } from './identity-store.js'
-import { ClientServerApi, HostServerApi } from './server-api.js'
+import { ClientServerApi, HostServerApi, type DeviceAuthorization } from './server-api.js'
 import { ServerCredentialStore } from './server-credentials.js'
 import { registerControlRoute, type HostWebServerLike } from './control-route.js'
 import { ControlStatusStream } from './control-stream.js'
@@ -99,6 +99,18 @@ export class PluginControlRuntime {
     private readonly host: HostAuthorizationControl | undefined,
     private readonly deepseekSession: DeepSeekSessionSource | undefined = undefined,
   ) {}
+
+  /**
+   * The DeepSeek grant whose Server authorization this runtime already completed.
+   *
+   * The client polls this control endpoint while the browser page is open, and
+   * every call used to re-run the authorization: that repeats a platform request
+   * and re-registers the device, which rotates its tokens. The Host connection
+   * using those tokens then fails with AUTH_INVALID, intermittently, right after a
+   * sign-in. Verify once per grant instead.
+   */
+  private verifiedDeepSeekToken?: string
+  private verifiedDeepSeekAuthorization?: DeviceAuthorization
 
   register(connection: HostConnectionHandle, webServer?: HostWebServerLike): () => Promise<void> {
     const statusStream = new ControlStatusStream(() => this.streamStatus())
@@ -242,7 +254,16 @@ export class PluginControlRuntime {
           ...(started.authorizeUrl === undefined ? {} : { authorizeUrl: started.authorizeUrl }),
         }
       }
-      authorization = await api.authorizeWithDeepSeek(identity, session.token)
+      // Verify a completed grant once. Re-verifying repeats a platform request and
+      // re-registers the device, rotating the tokens the Host connection is already
+      // using; polling this endpoint must not invalidate them.
+      if (this.verifiedDeepSeekToken === session.token && this.verifiedDeepSeekAuthorization !== undefined) {
+        authorization = this.verifiedDeepSeekAuthorization
+      } else {
+        authorization = await api.authorizeWithDeepSeek(identity, session.token)
+        this.verifiedDeepSeekToken = session.token
+        this.verifiedDeepSeekAuthorization = authorization
+      }
     } else {
       if (typeof value.email !== 'string' || typeof value.password !== 'string') {
         throw new ClientModeError('INVALID_MESSAGE', 'Email and password are required for account authorization.')
@@ -390,6 +411,10 @@ export class PluginControlRuntime {
       throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
     }
     const config = resolveConfig(this.settings.get())
+    // Signing out discards the credentials, so the next sign-in has to verify its
+    // grant with the Server again rather than reuse a cached authorization.
+    this.verifiedDeepSeekToken = undefined
+    this.verifiedDeepSeekAuthorization = undefined
     if (config.serverUrl !== undefined) {
       await Promise.all([
         this.client?.clearClientAuthorization(),

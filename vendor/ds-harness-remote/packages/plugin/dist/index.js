@@ -21640,6 +21640,17 @@ var PluginControlRuntime = class {
     this.host = host;
     this.deepseekSession = deepseekSession;
   }
+  /**
+   * The DeepSeek grant whose Server authorization this runtime already completed.
+   *
+   * The client polls this control endpoint while the browser page is open, and
+   * every call used to re-run the authorization: that repeats a platform request
+   * and re-registers the device, which rotates its tokens. The Host connection
+   * using those tokens then fails with AUTH_INVALID, intermittently, right after a
+   * sign-in. Verify once per grant instead.
+   */
+  verifiedDeepSeekToken;
+  verifiedDeepSeekAuthorization;
   register(connection, webServer) {
     const statusStream = new ControlStatusStream(() => this.streamStatus());
     return registerControlRoute(
@@ -21763,7 +21774,13 @@ var PluginControlRuntime = class {
           ...started.authorizeUrl === void 0 ? {} : { authorizeUrl: started.authorizeUrl }
         };
       }
-      authorization = await api.authorizeWithDeepSeek(identity, session.token);
+      if (this.verifiedDeepSeekToken === session.token && this.verifiedDeepSeekAuthorization !== void 0) {
+        authorization = this.verifiedDeepSeekAuthorization;
+      } else {
+        authorization = await api.authorizeWithDeepSeek(identity, session.token);
+        this.verifiedDeepSeekToken = session.token;
+        this.verifiedDeepSeekAuthorization = authorization;
+      }
     } else {
       if (typeof value.email !== "string" || typeof value.password !== "string") {
         throw new ClientModeError("INVALID_MESSAGE", "Email and password are required for account authorization.");
@@ -21893,6 +21910,8 @@ var PluginControlRuntime = class {
       throw new ClientModeError("SETTINGS_UNAVAILABLE", "DSH user settings are unavailable in this profile.");
     }
     const config = resolveConfig(this.settings.get());
+    this.verifiedDeepSeekToken = void 0;
+    this.verifiedDeepSeekAuthorization = void 0;
     if (config.serverUrl !== void 0) {
       await Promise.all([
         this.client?.clearClientAuthorization(),
