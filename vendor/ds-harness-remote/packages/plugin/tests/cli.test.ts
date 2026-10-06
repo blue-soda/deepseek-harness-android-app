@@ -116,7 +116,13 @@ describe('Remote CLI', () => {
     expect(errors.text).toContain('QR login expired')
   })
 
-  it('revokes the Host and rotates its local identity on logout', async () => {
+  /**
+   * Signing out used to revoke the device and rotate its identity, which made the
+   * next sign-in register a second device for the same installation. An account
+   * holds at most 256 devices and the limit only counts new identities, so the
+   * repeated sign-outs that costs could exhaust it.
+   */
+  it('clears credentials on logout without revoking or rotating the device', async () => {
     const dshHome = join(tmpdir(), `dsh-remote-cli-logout-${crypto.randomUUID()}`)
     directories.push(dshHome)
     const env = { DSH_HOME: dshHome }
@@ -133,6 +139,7 @@ describe('Remote CLI', () => {
     })
     const output = writer()
     const revoke = vi.fn(async () => undefined)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('logout must not call the Server') }))
 
     await expect(runCli(['logout'], {
       env,
@@ -147,12 +154,14 @@ describe('Remote CLI', () => {
       }),
     })).resolves.toBe(0)
 
-    expect(revoke).toHaveBeenCalledOnce()
-    const rotated = JSON.parse(await readFile(join(directory, 'device.json'), 'utf8')) as { deviceId: string }
-    expect(rotated.deviceId).not.toBe(original.deviceId)
-    await expect(new ServerCredentialStore(directory).load('https://sakakibara.ink:8443', rotated.deviceId))
+    // No revocation: the device row is reused by the next sign-in.
+    expect(revoke).not.toHaveBeenCalled()
+    const kept = JSON.parse(await readFile(join(directory, 'device.json'), 'utf8')) as { deviceId: string }
+    expect(kept.deviceId).toBe(original.deviceId)
+    // The credentials themselves are gone, so this device stops authenticating.
+    await expect(new ServerCredentialStore(directory).load('https://sakakibara.ink:8443', original.deviceId))
       .resolves.toBeUndefined()
-    expect(output.text).toContain('local device identity was rotated')
+    expect(output.text).toContain('stays registered')
   })
 
   it('reports Host authorization and credential readiness without exposing tokens', async () => {

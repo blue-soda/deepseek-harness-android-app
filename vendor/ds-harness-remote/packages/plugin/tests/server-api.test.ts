@@ -293,6 +293,38 @@ describe('HostServerApi', () => {
     await expect(store.load('https://dsh.r2049.cn', identity.deviceId)).resolves.toBeUndefined()
   })
 
+  /**
+   * The authorization lives in two places: the credential store and this API's
+   * memory. Clearing only the store left a stale in-memory copy that kept
+   * reporting the device as authorized, so the Host skipped re-authorization
+   * after a sign-out and its connection retried tokens the Server no longer
+   * accepted.
+   */
+  it('clears the in-memory authorization along with the stored credential', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-server-clear-auth-'))
+    directories.push(directory)
+    const identity = hostIdentity()
+    const store = new ServerCredentialStore(directory)
+    await store.save({
+      serverUrl: 'https://dsh.r2049.cn',
+      deviceId: identity.deviceId,
+      authorizationMethod: 'account',
+      account: 'owner@example.com',
+      ...tokens(),
+    })
+    const fetchMock = vi.fn(async () => json({ deviceId: identity.deviceId })) as unknown as typeof fetch
+    const api = new HostServerApi('https://dsh.r2049.cn', store, fetchMock)
+    api.bindIdentity(identity)
+
+    await api.authenticate(identity)
+    expect(api.currentAuthorization()).toMatchObject({ method: 'account', account: 'owner@example.com' })
+
+    await api.clearAuthorization()
+
+    expect(api.currentAuthorization()).toBeUndefined()
+    await expect(store.load('https://dsh.r2049.cn', identity.deviceId)).resolves.toBeUndefined()
+  })
+
   it('reports account authorization when a fresh Host cannot register anonymously', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'dsh-server-account-required-'))
     directories.push(directory)

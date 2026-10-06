@@ -198,20 +198,13 @@ async function logout(args: readonly string[], runtime: CliRuntime): Promise<num
 
   const deviceName = hostname()
   const identities = runtime.createIdentityStore({ directory, env: runtime.env })
-  const identity = await identities.loadOrCreate(deviceName)
-  const api = runtime.createHostApi(serverUrl, new ServerCredentialStore(directory))
-  api.bindIdentity(identity)
-  let revokeFailure: unknown
-  try {
-    await api.revokeCurrentDevice()
-  } catch (error) {
-    revokeFailure = error
-  }
-  await identities.reset(deviceName)
-  if (revokeFailure !== undefined) {
-    throw new Error(`Local Host credentials were cleared, but Server revocation failed: ${cliErrorMessage(revokeFailure)}`)
-  }
-  write(runtime.stdout, 'Remote Host logged out and its local device identity was rotated. Restart dsh-tui.\n')
+  await identities.loadOrCreate(deviceName)
+  // Clear the credentials and keep the device identity. Revoking and rotating
+  // would register a second device for this installation on the next login, and
+  // an account holds at most 256 devices. Signing in again reuses this device and
+  // the Server invalidates the previous tokens at that point.
+  await new ServerCredentialStore(directory).clear()
+  write(runtime.stdout, 'Remote Host logged out. This device stays registered and is reused on the next login. Restart dsh-tui.\n')
   return 0
 }
 

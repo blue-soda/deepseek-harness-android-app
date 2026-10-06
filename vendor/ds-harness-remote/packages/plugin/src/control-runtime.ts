@@ -151,9 +151,18 @@ export class PluginControlRuntime {
         const status = await this.client.setHostAuthorization(value.enabled)
         if (this.settings !== undefined) {
           const current = resolveConfig(this.settings.get())
-          await this.settings.replace(editableConfig({ ...current, hostControl: { enabled: value.enabled } }))
+          await this.settings.replace(editableConfig({
+            ...current,
+            // Releasing the authorization must not silently drop a pause.
+            hostControl: { enabled: value.enabled, paused: current.hostControl?.paused ?? false },
+          }))
         }
         return ok(status)
+      }
+      if (endpoint === 'host.connection.set') {
+        const value = record(payload)
+        if (typeof value.connected !== 'boolean') throw new ClientModeError('INVALID_MESSAGE', 'Host connection state is required.')
+        return ok(await this.setHostConnection(value.connected))
       }
       if (endpoint === 'host.reconnect') {
         if (this.host === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'This plugin is not running as a Host.')
@@ -407,6 +416,32 @@ export class PluginControlRuntime {
     return { ...(await this.settingsView()), deepseekSignedOut }
   }
 
+  /**
+   * Stop or resume this machine's remote availability without releasing its
+   * authorization, and remember the choice so a restart respects it.
+   *
+   * This is the non-destructive counterpart of releasing the authorization: it
+   * closes the connection, keeps the credentials and the device identity, and
+   * therefore costs neither a re-authorization nor a device identity.
+   * @param connected - whether this machine should accept remote connections.
+   * @returns the refreshed status for the caller's view.
+   */
+  private async setHostConnection(connected: boolean): Promise<unknown> {
+    if (this.host === undefined) {
+      throw new ClientModeError('METHOD_NOT_ALLOWED', 'This plugin is not running as a Host.')
+    }
+    if (connected) await this.host.resumeHostConnection?.()
+    else await this.host.pauseHostConnection?.()
+    if (this.settings !== undefined) {
+      const current = resolveConfig(this.settings.get())
+      await this.settings.replace(editableConfig({
+        ...current,
+        hostControl: { enabled: current.hostControl?.enabled ?? true, paused: !connected },
+      }))
+    }
+    return this.client === undefined ? this.hostOnlyStatus() : await this.client.status()
+  }
+
   private async settingsView(): Promise<PluginSettingsView> {
     const config = this.settings === undefined ? editableConfig(this.config) : editableConfig(resolveConfig(this.settings.get()))
     const associations = await this.associations(config)
@@ -469,7 +504,7 @@ function editableConfig(config: ResolvedConfig): Config {
     role: config.role,
     ...(config.serverUrl === undefined ? {} : { serverUrl: config.serverUrl }),
     terminal: config.terminal,
-    hostControl: config.hostControl ?? { enabled: true },
+    hostControl: config.hostControl ?? { enabled: true, paused: false },
     loopback: config.loopback,
     forceRelay: config.forceRelay,
     logLevel: config.logLevel,

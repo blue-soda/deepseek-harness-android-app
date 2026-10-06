@@ -54,6 +54,8 @@ export interface HostRemoteStatus {
   account?: string
   authorized: boolean
   accountRequired: boolean
+  /** Set when the user paused remote availability while staying signed in. */
+  paused: boolean
   connectedClients: HostConnectedClient[]
 }
 
@@ -66,6 +68,14 @@ export class HostPluginRuntime {
   private identity?: HostIdentity
   private readonly serverApi?: HostServerApi
   private serverConnection?: HostServerConnection
+  /**
+   * Whether the user asked this machine to stay unreachable.
+   *
+   * Pausing keeps the credentials and the device identity: it only stops the
+   * outbound connection, so resuming needs no re-authorization and consumes no
+   * device identity, unlike clearing the authorization.
+   */
+  private paused: boolean
   private harnessVersion?: string
   private closed = false
   private readonly codex: CodexRemoteDomain
@@ -85,6 +95,9 @@ export class HostPluginRuntime {
   ) {
     this.terminalEnabled = config.terminal.enabled
     this.loopbackPorts = [...config.loopback.ports]
+    // Honour a pause recorded by an earlier run, so "do not connect me" is not
+    // silently undone by restarting DSH.
+    this.paused = config.hostControl?.paused === true
     this.codex = new CodexRemoteDomain(config.codex, logger)
     this.connections = new ConnectionController(this.identities, (context, send) => {
       const harnessApi = this.apiProxy === undefined
@@ -170,7 +183,9 @@ export class HostPluginRuntime {
       this.serverApi.setHarnessVersion(this.harnessVersion)
       this.serverApi.bindIdentity(this.identity)
       this.serverConnection = this.createServerConnection(this.identity)
-      this.serverConnection.start()
+      // A paused installation stays quiet until the user resumes it; a restart
+      // must not turn a paused machine reachable again.
+      if (!this.paused) this.serverConnection.start()
     }
   }
 
@@ -199,6 +214,7 @@ export class HostPluginRuntime {
       ...(authorization?.account === undefined ? {} : { account: authorization.account }),
       authorized: authorization !== undefined,
       accountRequired: error === 'ACCOUNT_AUTH_REQUIRED' || error === 'AUTH_INVALID' || error === 'TOKEN_EXPIRED',
+      paused: this.paused,
       connectedClients: this.listConnectedClients(),
     }
   }
@@ -223,11 +239,38 @@ export class HostPluginRuntime {
     return this.harnessVersion
   }
 
+  /**
+   * Stop this machine from being reachable without releasing its authorization.
+   *
+   * Clearing the authorization revokes the device and rotates its identity, so a
+   * user who only wants to stop being remotely reachable would have to authorize
+   * again and would consume a device identity. Pausing closes the connection and
+   * keeps both.
+   */
+  async pauseHostConnection(): Promise<void> {
+    this.paused = true
+    await this.serverConnection?.stop()
+    this.logger.info('Host connection paused')
+  }
+
+  /** Resume a paused connection with the same credentials and identity. */
+  async resumeHostConnection(): Promise<void> {
+    const wasPaused = this.paused
+    this.paused = false
+    this.serverConnection?.resume()
+    if (wasPaused) this.logger.info('Host connection resumed')
+  }
+
+  isPaused(): boolean { return this.paused }
+
   reconnectHost(): void {
     if (this.closed) throw new Error('remote runtime is closed')
     if (this.serverConnection === undefined) {
       throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Configure serverUrl before reconnecting.', false)
     }
+    // Asking to reconnect is explicit: it lifts a pause rather than being
+    // swallowed by it, so the button always has an effect.
+    this.paused = false
     this.serverConnection.reconnect()
   }
 
@@ -256,19 +299,27 @@ export class HostPluginRuntime {
     return result
   }
 
+  /**
+   * Stop this Host from being authorized, keeping its device identity.
+   *
+   * Revoking the device here would force a new identity on the next sign-in and
+   * register a second device for the same installation. An account holds at most
+   * 256 devices and the count only grows for new identities, so signing out
+   * often enough could exhaust it. The credentials themselves are cleared by the
+   * caller; this device simply stops authenticating.
+   */
   async clearHostAuthorization(): Promise<void> {
     await this.serverConnection?.stop()
-    let revokeFailure: unknown
-    try {
-      await this.serverApi?.revokeCurrentDevice()
-    } catch (error) {
-      revokeFailure = error
+    // Clearing the stored credential is not enough: this API caches the
+    // authorization in memory too, and the stale copy keeps reporting the Host as
+    // authorized. That makes `authorizeHostByDefault()` skip re-authorization and
+    // leaves the connection retrying tokens the Server no longer accepts.
+    await this.serverApi?.clearAuthorization()
+    // The connection survives, bound to the identity it keeps.
+    if (this.serverApi !== undefined && this.identity !== undefined) {
+      this.serverConnection = this.createServerConnection(this.identity)
     }
-    this.identity = await this.identities.reset(this.config.deviceName)
-    this.serverApi?.bindIdentity(this.identity)
-    if (this.serverApi !== undefined) this.serverConnection = this.createServerConnection(this.identity)
     this.logger.info('Host authorization cleared')
-    if (revokeFailure !== undefined) throw revokeFailure
   }
 
   async authorizeHostAsOwned(accessToken: string, account?: string): Promise<DeviceAuthorization> {
@@ -287,7 +338,9 @@ export class HostPluginRuntime {
       result = await this.serverApi.authorizeOwnedRole(this.identity, accessToken, account)
       this.logger.info('Rotated revoked Host identity before owned-device authorization')
     }
-    this.serverConnection?.resume()
+    // An authorization does not lift an explicit pause: the UI shows the paused
+    // state with its own resume action, so the user's choice stays in force.
+    if (!this.paused) this.serverConnection?.resume()
     this.logger.info('Host authorized as an owned device')
     return result
   }
@@ -297,7 +350,9 @@ export class HostPluginRuntime {
       throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Configure serverUrl before signing in.', false)
     }
     const result = await this.serverApi.authorizeWithAccount(this.currentIdentity(), email, password)
-    this.serverConnection?.resume()
+    // An authorization does not lift an explicit pause: the UI shows the paused
+    // state with its own resume action, so the user's choice stays in force.
+    if (!this.paused) this.serverConnection?.resume()
     this.logger.info('Host account authorized')
     return result
   }
@@ -307,7 +362,9 @@ export class HostPluginRuntime {
       throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Configure serverUrl before entering a Host registration code.', false)
     }
     const result = await this.serverApi.authorizeHostWithCode(this.currentIdentity(), code)
-    this.serverConnection?.resume()
+    // An authorization does not lift an explicit pause: the UI shows the paused
+    // state with its own resume action, so the user's choice stays in force.
+    if (!this.paused) this.serverConnection?.resume()
     this.logger.info('Host registration code authorized')
     return result
   }

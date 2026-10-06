@@ -154,6 +154,8 @@ export interface HostAuthorizationControl {
     account?: string
     authorized: boolean
     accountRequired: boolean
+    /** Whether the user asked this machine to stay unreachable while signed in. */
+    paused?: boolean
     connectedClients?: Array<{
       deviceId: string
       name: string
@@ -163,6 +165,10 @@ export interface HostAuthorizationControl {
   }
   hasStoredAuthorization?(): Promise<boolean>
   reconnectHost(): void
+  /** Stop being reachable without releasing the authorization. */
+  pauseHostConnection?(): Promise<void>
+  /** Resume with the same credentials and device identity. */
+  resumeHostConnection?(): Promise<void>
   clearHostAuthorization(): Promise<void>
   localHarnessVersion?(): string | undefined
   authorizeHostAsOwned(accessToken: string, account?: string): Promise<unknown>
@@ -183,6 +189,14 @@ export class ClientModeRuntime {
   private preview?: LoopbackPreview
   private identity?: HostIdentity
   private connected?: ConnectedRemote
+  /**
+   * Set when a remote session dropped and the runtime fell back to local.
+   *
+   * The mode then reads 'local', which is what every "return to local" control is
+   * gated on, so without this the user is left in a stale remote view with no way
+   * back except signing out.
+   */
+  private fellBackToLocal = false
   private pendingWorkspaceSelection?: RemoteWorkspaceSelection
   private codexVirtual?: CodexVirtualHarness
   private readonly proxySwitch?: ApiProxySwitch
@@ -282,6 +296,7 @@ export class ClientModeRuntime {
       serverUrl: this.config.serverUrl,
       ...targetStatus,
       connected: this.connected !== undefined,
+      fellBackToLocal: this.fellBackToLocal,
       transport: this.connected?.client.getStats().mode ?? 'Disconnected',
       connectedTargetDeviceId: this.connected?.target.deviceId,
       preferredTransports: this.config.forceRelay ? ['relay'] : ['lan', 'p2p', 'turn', 'relay'],
@@ -392,6 +407,21 @@ export class ClientModeRuntime {
     return result
   }
 
+  /**
+   * Stop this Client from being authorized, keeping its device identity.
+   *
+   * The device is deliberately *not* revoked and the identity is deliberately
+   * *not* rotated. Signing out used to revoke the device, which forced a new
+   * identity on the next sign-in and registered a second device for the same
+   * installation; an account holds at most 256 devices, so signing out often
+   * enough could exhaust it. Keeping the row also means the next sign-in reuses
+   * it, and the server invalidates the previous tokens at that point.
+   *
+   * The cost, by choice: while signed out the device stays in the account and
+   * its old tokens stay valid until the next sign-in or their expiry, so signing
+   * out is no longer a way to cut a leaked token off immediately. Removing the
+   * device for good is an operator action on the server's state file.
+   */
   async clearClientAuthorization(): Promise<void> {
     const previous = this.connected
     this.connected = undefined
@@ -403,9 +433,12 @@ export class ClientModeRuntime {
     this.gatewaySwitch.selectLocal()
     await this.closeCodexStreams(previous?.client)
     await previous?.client.close().catch(() => undefined)
-    await this.server.revokeCurrentDevice()
-    this.identity = await this.identities.reset(this.config.deviceName)
-    this.server.bindIdentity(this.identity)
+    // Clear the in-memory authorization as well as the stored credential. The
+    // caller clears the credential file, but this API also caches the
+    // authorization in memory, and a stale copy keeps reporting the Client as
+    // authorized — which stops the Host from re-authorizing and leaves the
+    // connection retrying tokens the Server no longer accepts.
+    await this.server.clearAuthorization()
   }
 
   async setHostAuthorization(enabled: boolean): Promise<unknown> {
@@ -452,6 +485,8 @@ export class ClientModeRuntime {
     this.pendingWorkspaceSelection = undefined
     await this.closeCodexVirtual()
     this.selectRemoteTarget(next)
+    // A fresh remote session clears the record of an earlier dropped one.
+    this.fellBackToLocal = false
     await this.closeCodexStreams(previous?.client)
     await previous?.client.close().catch(() => undefined)
     this.logger.info('Harness target switched', { mode: 'remote', targetDeviceId: shortId(next.target.deviceId) })
@@ -958,6 +993,10 @@ export class ClientModeRuntime {
         void this.closeCodexVirtual()
         this.proxySwitch?.selectLocal()
         this.gatewaySwitch.selectLocal()
+        // The UI keeps whatever the remote session rendered and offers no exit
+        // route once the mode reads 'local' again, so remember that the session
+        // dropped. The card uses this to keep a way back to the local shell.
+        this.fellBackToLocal = true
         void connectedClient.close().catch(() => undefined)
         this.logger.warn('remote Harness transport closed; falling back to local mode', {
           targetDeviceId: shortId(target.deviceId),

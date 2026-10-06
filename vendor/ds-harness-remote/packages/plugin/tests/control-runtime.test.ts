@@ -434,6 +434,56 @@ function settingsBinding(initial: Config): PluginSettingsBinding {
 
 function signal(): AbortSignal { return new AbortController().signal }
 
+describe('PluginControlRuntime host connection', () => {
+  /**
+   * The switch that stops this machine being reachable used to clear the
+   * authorization, which revokes the device and rotates its identity. A user who
+   * only wanted to stop being reachable paid for that with a re-authorization and
+   * a consumed device identity, so the two paths must stay separate.
+   */
+  it('pauses without releasing the authorization, and remembers it', async () => {
+    const directory = await temporaryDirectory()
+    const settings = settingsBinding({})
+    const pauseHostConnection = vi.fn(async () => undefined)
+    const resumeHostConnection = vi.fn(async () => undefined)
+    const clearHostAuthorization = vi.fn(async () => undefined)
+    const host = {
+      hostStatus: () => ({
+        configured: true, online: true, reconnecting: false,
+        authorized: true, accountRequired: false, paused: false, connectedClients: [],
+      }),
+      pauseHostConnection,
+      resumeHostConnection,
+      clearHostAuthorization,
+    } as unknown as HostAuthorizationControl
+    const handler = register(new PluginControlRuntime(
+      resolveConfig(settings.get()), directory, settings, undefined, host,
+    ))
+
+    await expect(handler('host.connection.set', { connected: false }, signal()))
+      .resolves.toMatchObject({ ok: true })
+    expect(pauseHostConnection).toHaveBeenCalledOnce()
+    // The destructive path must stay untouched: no revoke, no identity rotation.
+    expect(clearHostAuthorization).not.toHaveBeenCalled()
+    // Persisted, so restarting DSH does not silently make the machine reachable.
+    expect(resolveConfig(settings.get()).hostControl?.paused).toBe(true)
+
+    await expect(handler('host.connection.set', { connected: true }, signal()))
+      .resolves.toMatchObject({ ok: true })
+    expect(resumeHostConnection).toHaveBeenCalledOnce()
+    expect(resolveConfig(settings.get()).hostControl?.paused).toBe(false)
+  })
+
+  it('rejects a connection state that is not a boolean', async () => {
+    const handler = register(new PluginControlRuntime(
+      resolveConfig({}), '/unused', undefined, undefined, undefined,
+    ))
+
+    await expect(handler('host.connection.set', { connected: 'yes' }, signal()))
+      .resolves.toMatchObject({ ok: false })
+  })
+})
+
 function tokens(overrides: Partial<ReturnType<typeof baseTokens>> = {}) {
   return { ...baseTokens(), ...overrides }
 }

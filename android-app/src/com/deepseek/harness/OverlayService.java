@@ -341,22 +341,29 @@ public class OverlayService extends Service {
         statusBubble.setBackground(bbg);
         // v1.21（用户报障修复）：默认用 INVISIBLE 而**不是** GONE ——
         // 气泡槽位必须恒定保留：GONE 时根布局变矮、VISIBLE 时变高，而窗口锚定 TOP|START，
-        // 结果是"一冒消息小人就被往下挤"。INVISIBLE 保留高度 → 小人永远不动。
+        // 结果是"一冒消息小人就被往下挤"。
         statusBubble.setVisibility(View.INVISIBLE);
-        LinearLayout.LayoutParams bubLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        // v1.21（用户报障修复）：**锚定小人左缘**，不再用 CENTER_HORIZONTAL ——
-        // 居中是相对根布局宽度算的，面板一展开根布局变宽 → 气泡就"偏右"飘走。
-        // 小人恒在最左，所以左对齐 + 与 iconRow 相同的左边距（4dp）就能让它一直待在小人头顶。
-        bubLp.gravity = Gravity.START;
+        // v1.21（用户报障修复·二）：气泡必须放进**固定尺寸的槽位**里。
+        // 根布局是 WRAP_CONTENT 窗口：只要气泡自身的测量尺寸参与其中，窗口宽高就会随
+        // "有没有气泡 / 气泡文字多长"变化 —— 实测气泡隐藏时窗口变窄，小人被裁得只剩左边一小条
+        //（用户报障：静止态只露出一部分，点击或有气泡时才完整显示）。
+        // 固定槽位后窗口尺寸恒定：小人既不会被裁，也不会上下移动。
+        android.widget.FrameLayout bubbleSlot = new android.widget.FrameLayout(this);
+        bubbleSlot.setLayoutParams(new LinearLayout.LayoutParams(dp(136), dp(22)));
+        // 槽位内**左对齐 + 垂直居中**：小人恒在最左，所以气泡永远停在小人头顶，
+        // 不会被面板展开（根布局变宽）带得偏右。
+        android.widget.FrameLayout.LayoutParams bubLp = new android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT);
+        bubLp.gravity = Gravity.START | Gravity.CENTER_VERTICAL;
         bubLp.leftMargin = dp(4);
-        bubLp.bottomMargin = dp(2);
         statusBubble.setLayoutParams(bubLp);
         // 点一下收起（尤其"任务已完成/会话已结束"这种常驻终态）
         statusBubble.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { hideBubble(); }
         });
-        rootView.addView(statusBubble);           // 先加 = 在小人上方
+        bubbleSlot.addView(statusBubble);
+        rootView.addView(bubbleSlot);             // 先加 = 在小人上方
         rootView.addView(iconRow);
 
         // ===== 状态面板（紧凑版，默认隐藏）=====
@@ -641,15 +648,38 @@ public class OverlayService extends Service {
     /**
      * 贴边坐标：snappedRight 决定靠哪边；tucked 决定是否半藏。
      * 面板收起（静置）→ 半藏：x 让窗口越出屏幕 (1-露出的比例)；展开 → 完整可见 + 留 4dp 边距。
+     *
+     * v1.21（用户报障修复）：半藏偏移必须按**小人图标宽度**算，不能按窗口宽度 ——
+     * 气泡槽位（固定 136dp）让窗口远宽于小人；按窗口宽算会让偏移放大数倍，小人几乎被推出屏幕
+     *（用户报障：静止态只露出一小条；点击/有气泡时才完整）。窗口右侧多出的是透明槽位，不该参与。
+     * 同时用运行时量到的"小人相对窗口的左偏移"（根布局 padding + 图标行 padding），不写死数值。
      */
     private int edgeXFor(int viewWidth) {
         int screenW = getResources().getDisplayMetrics().widthPixels;
-        boolean tucked = !panelVisible;
-        if (tucked) {
-            int off = Math.round(viewWidth * (1f - TUCK_VISIBLE_FRACTION));
-            return snappedRight ? screenW - viewWidth + off : -off;
+        if (!panelVisible) {
+            int avatarW = (iconView != null && iconView.getWidth() > 0) ? iconView.getWidth() : dp(40);
+            int inset = avatarInsetInWindow();
+            int off = Math.round(avatarW * (1f - TUCK_VISIBLE_FRACTION));
+            return snappedRight ? screenW + off - (inset + avatarW) : -(inset + off);
         }
         return snappedRight ? Math.max(dp(4), screenW - viewWidth - dp(4)) : dp(4);
+    }
+
+    /** 小人图标相对 rootView 的左偏移（累加各级 getLeft()）；未布局时按 10dp+4dp 兜底。 */
+    private int avatarInsetInWindow() {
+        try {
+            int sum = 0;
+            View v = iconView;
+            while (v != null && v != rootView) {
+                sum += v.getLeft();
+                android.view.ViewParent p = v.getParent();
+                if (!(p instanceof View)) break;
+                v = (View) p;
+            }
+            return sum > 0 ? sum : dp(14);
+        } catch (Throwable t) {
+            return dp(14);
+        }
     }
 
     /** 面板显示/隐藏；animate=true 时带旋转抖动 + 位置过渡（唤出、收起共用）。 */
