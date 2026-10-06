@@ -497,6 +497,17 @@ public class MainActivity extends Activity {
                         //（workspace-diag 也是这样做的，实测能看到）
                         java.io.FileOutputStream lf = new java.io.FileOutputStream(new File(getFilesDir(), "dsh-web.log"), true);
                         try { lf.write(("[app] " + stamped).getBytes("UTF-8")); } finally { try { lf.close(); } catch (Throwable ignored) {} }
+                        // 再镜像一份到外部目录 —— /data/user/0/... 是 App 私有目录，文件管理器进不去，
+                        // 用户要"自己看"就得有一份在 /sdcard 下（<变体目录>/web-notes.log）
+                        try {
+                            File extRoot = new File(Environment.getExternalStorageDirectory(), pkgRoot());
+                            if (extRoot.exists() || extRoot.mkdirs()) {
+                                File ext = new File(extRoot, "web-notes.log");
+                                if (ext.exists() && ext.length() > 256 * 1024) ext.delete();
+                                java.io.FileOutputStream ef = new java.io.FileOutputStream(ext, true);
+                                try { ef.write(stamped.getBytes("UTF-8")); } finally { try { ef.close(); } catch (Throwable ignored) {} }
+                            }
+                        } catch (Throwable ignored) {}
                     } catch (Throwable ignored) {}
                 }
             }, "dshshell");
@@ -1375,6 +1386,108 @@ public class MainActivity extends Activity {
                 defaultPluginBusy = false;
             }
         }}, "dsh-plugin-install").start();
+    }
+
+    /**
+     * v1.21：给 DSH **预置**一个"文件管理器里找得到"的默认工作区。
+     *
+     * 为什么需要（真机 + 模拟器实测）：DSH 的工作区只能从它**自己的目录空间**里选 ——
+     * 工作区存储里那条记录是 `{"path":"<filesDir>","title":"files"}`，那个选择器的根也是
+     * `<filesDir>`，用户**选不到** /sdcard/DeepSeekHarness/Workspace。
+     * 而用户诉求是"默认就是 /sdcard/DeepSeekHarness/Workspace、不必手动选"。
+     * 所以这里直接写 DSH 的工作区存储（`dshhome/storages/workspace.json`，unit version 2）：
+     *   · 一条工作区都没有 → 建我们的记录，并设为 global.defaultWorkspaceId（前端就不再让用户选）；
+     *   · 已有工作区       → **只追加**我们的记录（已存在则跳过），不动既有记录、不改默认值。
+     * 只在**引擎启动前**做（避免与运行中的引擎抢写），并留 `.bak-seed` 备份；失败只记日志。
+     */
+    private void seedDefaultWorkspaceRecord(File payload, File wsDir) {
+        try {
+            if (wsDir == null) return;
+            String path = wsDir.getAbsolutePath();
+            String title = wsDir.getName();
+            File store = new File(payload, "dshhome/storages/workspace.json");
+            org.json.JSONObject root;
+            if (store.exists() && store.length() > 0) {
+                try {
+                    root = new org.json.JSONObject(readFileText(store));
+                } catch (Throwable t) {
+                    Log.w(TAG, "workspace.json 解析失败，跳过预置（不冒险改坏它）", t);
+                    return;
+                }
+            } else {
+                root = new org.json.JSONObject();
+                org.json.JSONObject unit = new org.json.JSONObject();
+                unit.put("name", "workspace");
+                unit.put("version", 2);
+                root.put("unit", unit);
+            }
+            org.json.JSONObject tables = root.optJSONObject("tables");
+            if (tables == null) { tables = new org.json.JSONObject(); root.put("tables", tables); }
+            org.json.JSONObject workspaces = tables.optJSONObject("workspaces");
+            if (workspaces == null) { workspaces = new org.json.JSONObject(); tables.put("workspaces", workspaces); }
+            org.json.JSONObject global = root.optJSONObject("global");
+            if (global == null) { global = new org.json.JSONObject(); root.put("global", global); }
+            org.json.JSONArray ids = global.optJSONArray("workspaceIds");
+            if (ids == null) { ids = new org.json.JSONArray(); global.put("workspaceIds", ids); }
+            if (global.optJSONArray("archivedSessionIds") == null) global.put("archivedSessionIds", new org.json.JSONArray());
+            if (global.optJSONArray("pinnedSessionIds") == null) global.put("pinnedSessionIds", new org.json.JSONArray());
+
+            // 已有同样路径的工作区？→ 什么都不用做
+            String existingId = null;
+            java.util.Iterator<String> it = workspaces.keys();
+            while (it.hasNext()) {
+                String id = it.next();
+                org.json.JSONObject w = workspaces.optJSONObject(id);
+                if (w != null && path.equals(w.optString("path"))) { existingId = id; break; }
+            }
+            if (existingId != null) {
+                // 顺手把默认值指向它（仅当还没有默认值）
+                if (!global.has("defaultWorkspaceId")) {
+                    global.put("defaultWorkspaceId", existingId);
+                    backupThenWrite(store, root);
+                    Log.i(TAG, "default workspace: 已有记录，已设为默认 " + path);
+                }
+                return;
+            }
+            boolean hadNone = workspaces.length() == 0;
+            String id = java.util.UUID.randomUUID().toString();
+            String now = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US)
+                    .format(new java.util.Date());
+            org.json.JSONObject w = new org.json.JSONObject();
+            w.put("path", path);
+            w.put("title", title);
+            w.put("sessionIds", new org.json.JSONArray());
+            w.put("createdAt", now);
+            w.put("updatedAt", now);
+            workspaces.put(id, w);
+            ids.put(id);
+            global.put("initialized", true);
+            if (hadNone && !global.has("defaultWorkspaceId")) global.put("defaultWorkspaceId", id);
+            backupThenWrite(store, root);
+            Log.i(TAG, "default workspace: 已预置 " + path + (hadNone ? "（并设为默认）" : "（追加）"));
+        } catch (Throwable t) {
+            Log.w(TAG, "seedDefaultWorkspaceRecord failed", t);
+        }
+    }
+
+    /** 先备份再写（备份失败也继续写；只保留一份 .bak-seed）。 */
+    private void backupThenWrite(File store, org.json.JSONObject root) throws Exception {
+        try {
+            File bak = new File(store.getParentFile(), "workspace.json.bak-seed");
+            if (store.exists() && !bak.exists()) {
+                byte[] buf = new byte[64 * 1024];
+                java.io.FileInputStream in = new java.io.FileInputStream(store);
+                java.io.FileOutputStream out = new java.io.FileOutputStream(bak);
+                try {
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                } finally {
+                    try { in.close(); } catch (Throwable ignored) {}
+                    try { out.close(); } catch (Throwable ignored) {}
+                }
+            }
+        } catch (Throwable ignored) {}
+        writeFileText(store, root.toString(2) + "\n");
     }
 
     /** 退出确认对话框（浮动按钮与系统返回键共用） */    private void confirmExit() {
@@ -4932,6 +5045,9 @@ public class MainActivity extends Activity {
         }
         // v1.21：把这次的判定事实落盘（控制台「日志→分享」会带上），真机出问题时一眼可见
         writeWorkspaceDiag(wsDir);
+        // v1.21：给 DSH 预置"文件管理器里找得到"的默认工作区（只写它自己的工作区存储；
+        // 引擎启动前做，避免与运行中的引擎抢写）—— 这才是"默认工作区不必手动选"的正解。
+        seedDefaultWorkspaceRecord(new File(getFilesDir(), "payload"), wsDir);
         java.util.Map<String, String> env = pb.environment();
         env.put("LD_LIBRARY_PATH", lib.getAbsolutePath());
         // Termux 共存修复（v1.7.4）：内置 node 在 Termux 环境编译，OPENSSLDIR 被编译死为
