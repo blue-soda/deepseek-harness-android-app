@@ -20,8 +20,26 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- 读取已安装应用列表（android_apps / 「打开微信」这类工具依赖）。
+         说明：本应用 targetSdk=28，而 Android 11+ 的**应用可见性过滤只作用于 targetSdk≥30**，
+         所以现在 getInstalledApplications() 本就能看到全部应用 —— 这条声明当前**是冗余的**，
+         属于事前防护：一旦将来把 targetSdk 提到 30+，没有它（或 <queries>）工具会"只看到自己"。
+         另：部分国产系统（MIUI/ColorOS 等）会在「应用信息 → 权限」里单独给一个「读取应用列表」
+         开关，首启引导的「读取应用列表」页与它对应。 -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
     <!-- 定时任务：精确闹钟（Android 12+ 需要；setAlarmClock 不受此权限限制，双保险） -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+    <!-- 应用可见性（Android 11+，仅对 targetSdk≥30 生效）：显式声明"能看到所有带启动入口的应用"。
+         与上面的 QUERY_ALL_PACKAGES 互为备份 —— 后者在 Google Play 上属于敏感权限，
+         若将来要上架可以只保留这段 queries；自签侧载则两者都留着更稳。 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:label="@string/app_name"

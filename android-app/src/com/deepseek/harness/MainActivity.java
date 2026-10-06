@@ -2029,16 +2029,48 @@ public class MainActivity extends Activity {
         guidePages.add(p8);
 
         GuidePage p9 = new GuidePage();
-        p9.title = "Shizuku / Root 特权（可选）"; p9.actionLabel = "去配置";
-        p9.desc = "授权后 AI 可以执行系统级操作：安装/卸载应用、改系统设置、模拟点击等。\n\n不给也完全能用 —— 文件读写、预览、编辑只需要上面的「所有文件访问」。";
+        p9.title = "无障碍服务"; p9.actionLabel = "去开启";
+        p9.desc = "这是 AI 能「看见并操作手机界面」的前提：读屏、点按、输入、截图理解"
+                + "（工具 android_screen / tap / type / see），**不需要 root，也不需要 Shizuku**。\n\n"
+                + "系统不允许弹窗授权，只能在系统设置里手动打开本应用的无障碍服务 —— "
+                + "点下面的按钮会直接跳到那个页面。\n\n"
+                + "想用「帮我点一下」「看看这个界面」这类能力，这一步必须开。";
         p9.provider = new StatusProvider() { @Override public boolean granted() {
+            return conA11yEnabled();
+        }};
+        p9.action = new View.OnClickListener() { @Override public void onClick(View v) {
+            try { startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)); }
+            catch (Throwable t) { openSystemSetting(Settings.ACTION_ACCESSIBILITY_SETTINGS); }
+        }};
+        guidePages.add(p9);
+
+        GuidePage p10 = new GuidePage();
+        p10.title = "读取应用列表"; p10.actionLabel = "去授权";
+        p10.desc = "让 AI 知道你装了哪些应用、并帮你启动它们（「帮我打开微信」「列出我装的游戏」这类请求）。\n\n"
+                + "本应用 targetSdk=28，Android 11+ 的应用可见性限制只对 targetSdk≥30 的应用生效，"
+                + "所以多数手机**无需授权**就能读取。\n\n"
+                + "但部分国产系统（MIUI / HyperOS / ColorOS / 鸿蒙等）会在**第一次真正读取时**"
+                + "弹一个系统框「允许读取已安装应用列表吗？」—— 点下面的按钮就会触发那次询问，"
+                + "在这里一次性允许掉，免得用 AI 的时候突然弹框。";
+        p10.provider = new StatusProvider() { @Override public boolean granted() {
+            return conAppListOk();
+        }};
+        p10.action = new View.OnClickListener() { @Override public void onClick(View v) {
+            requestAppListAccess();
+        }};
+        guidePages.add(p10);
+
+        GuidePage p11 = new GuidePage();
+        p11.title = "Shizuku / Root 特权（可选）"; p11.actionLabel = "去配置";
+        p11.desc = "授权后 AI 可以执行系统级操作：安装/卸载应用、改系统设置、模拟点击等。\n\n不给也完全能用 —— 文件读写、预览、编辑只需要上面的「所有文件访问」。";
+        p11.provider = new StatusProvider() { @Override public boolean granted() {
             // 只读缓存：root 探测在后台线程执行（probeShizuku），不在主线程跑 su
             return (shizukuOk != null && shizukuOk) || (rootOk != null && rootOk);
         }};
-        p9.action = new View.OnClickListener() { @Override public void onClick(View v) {
+        p11.action = new View.OnClickListener() { @Override public void onClick(View v) {
             showShizukuDialog();
         }};
-        guidePages.add(p9);
+        guidePages.add(p11);
     }
 
     private void showPermissionScreen() {
@@ -8733,7 +8765,7 @@ public class MainActivity extends Activity {
 
     // ---------- 权限页 ----------
     private String conPermSummary() {
-        String[] ids = {"storage", "notify", "overlay", "battery", "root", "shizuku", "a11y", "install"};
+        String[] ids = {"storage", "notify", "overlay", "battery", "root", "shizuku", "a11y", "applist", "install"};
         int ok = 0;
         for (int i = 0; i < ids.length; i++) if (conPermOk(ids[i])) ok++;
         return "已授权 " + ok + " / " + ids.length;
@@ -8757,6 +8789,7 @@ public class MainActivity extends Activity {
             if ("root".equals(id)) return conRootOk;
             if ("shizuku".equals(id)) return shizukuOk != null && shizukuOk.booleanValue();
             if ("a11y".equals(id)) return conA11yEnabled();
+            if ("applist".equals(id)) return conAppListOk();
             if ("install".equals(id)) return Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls();
         } catch (Throwable t) { return false; }
         return false;
@@ -8768,6 +8801,76 @@ public class MainActivity extends Activity {
             if (s == null) return false;
             return s.toLowerCase().contains(getPackageName().toLowerCase());
         } catch (Throwable t) { return false; }
+    }
+
+    /** 最近一次"能看到多少个应用"（引导页/权限页显示用；-1 = 还没测过）。 */
+    private volatile int lastAppListCount = -1;
+
+    /**
+     * 「读取应用列表」是否可用。
+     *
+     * 事实（见 AndroidManifest 与 dsh-tool-android 注释）：本应用 **targetSdk=28**，
+     * 而 Android 11+ 的应用可见性过滤**只作用于 targetSdk≥30 的应用** ——
+     * 所以现在 `getInstalledApplications()` 本就能看到全部应用，**不需要、也没有**
+     * 可弹窗授予的权限；清单里的 QUERY_ALL_PACKAGES / &lt;queries&gt; 是给"将来提 targetSdk"兜底的。
+     *
+     * 判据用**实际能看到的应用数**（≥10 视为正常）：这样两种真实故障都能反映出来 ——
+     *   ① 将来提 targetSdk 后没声明可见性 → 只看到自己（1~2 个）；
+     *   ② 部分国产系统（MIUI/ColorOS 等）在「应用信息 → 权限」里把「读取应用列表」关掉。
+     */
+    private boolean conAppListOk() {
+        try {
+            PackageManager pm = getPackageManager();
+            int n = pm.getInstalledApplications(0).size();
+            lastAppListCount = n;
+            return n >= 10;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 打开本应用的「应用信息 → 权限」页（国产 ROM 的「读取应用列表」开关在这里）。 */
+    private void openAppDetailsSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName())));
+        } catch (Throwable t) {
+            openSystemSetting(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+        }
+    }
+
+    /**
+     * 主动触发一次「读取应用列表」并刷新状态。
+     *
+     * 为什么需要它：部分国产系统（MIUI / HyperOS / ColorOS / HarmonyOS 等）会在应用**第一次真正
+     * 查询已安装应用**时弹一个系统框「允许 XXX 读取已安装应用列表吗？」——它既不是 Android
+     * 标准运行时权限（无法用 requestPermissions 申请），也不在 AOSP 的权限列表里，所以只能
+     * "真的去查一次"才会出现。用户此前的实际遭遇：引导页没这一项 → 直到让 agent 查应用时才弹框，
+     * 场景很突兀。现在把这次查询挪到引导页/ap权限页的按钮上，在用户知情时一次性问掉。
+     *
+     * 查询走后台线程（binder 调用可能较慢）；结果回主线程：刷新状态行、给提示；
+     * 如果仍然看不到足够应用（用户点了拒绝，或 ROM 把它做成了设置开关），再跳「应用信息」页。
+     */
+    private void requestAppListAccess() {
+        new Thread(new Runnable() { @Override public void run() {
+            int count = -1;
+            try { count = getPackageManager().getInstalledApplications(0).size(); }
+            catch (Throwable ignored) { count = -1; }
+            final int n = count;
+            ui.post(new Runnable() { @Override public void run() {
+                lastAppListCount = n;
+                if (n < 0) {
+                    conToast("读取应用列表失败，请在「应用信息 → 权限」里检查");
+                } else if (n >= 10) {
+                    conToast("已能看到 " + n + " 个应用 ✓");
+                } else {
+                    conToast("当前只能看到 " + n + " 个应用：若刚才弹窗请选「允许」；"
+                            + "仍不行就到「应用信息 → 权限」打开「读取应用列表」");
+                }
+                try { refreshAllStatuses(); } catch (Throwable ignored) {}
+                if (n >= 0 && n < 10) openAppDetailsSettings();
+            }});
+        }}, "applist-probe").start();
     }
 
     private void conRefreshRootAsync() {
@@ -8792,6 +8895,7 @@ public class MainActivity extends Activity {
         addPermRow(col, "root（超级用户）", "替代 Shizuku 跑特权命令：装应用 / 改设置 / 虚拟屏点击 / 任意 shell", "root");
         addPermRow(col, "Shizuku（免 root 特权通道）", "有 root 时用 root；没 root 时装 Shizuku 走同一套能力", "shizuku");
         addPermRow(col, "无障碍服务（读屏 / 点屏）", "android_screen / tap / type / see（不需要 root 或 Shizuku）", "a11y");
+        addPermRow(col, "读取应用列表", "AI 查看 / 启动你装的应用（多数手机无需授权）", "applist");
         addPermRow(col, "安装未知应用", "android_package 装 APK 用", "install");
         // issue #30：工作区入口原先只在首启引导完成页，走完引导就再无入口（只能清数据重走引导）。
         // 这里复用同一套 onWorkspaceRowClick()，使权限页也能查看 / 更改 / 恢复默认。
@@ -8912,6 +9016,12 @@ public class MainActivity extends Activity {
             }
             if ("a11y".equals(id)) {
                 startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                return;
+            }
+            if ("applist".equals(id)) {
+                // 国产 ROM 的「读取应用列表」是"第一次真查询时弹框"，没有可申请的权限；
+                // 所以这里直接触发一次真实查询（弹框就在这里出），查询完再刷新状态。
+                requestAppListAccess();
                 return;
             }
             if ("install".equals(id)) {
