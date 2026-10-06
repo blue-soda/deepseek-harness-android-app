@@ -47,6 +47,29 @@ DSH 只有看到它在 bundles 里才会组合进插件树。
 
 ## 更新步骤（人工）
 
+### 方式 A：npm 渠道（发布版，最省事）
+
+```bash
+# 查最新版本 / 下载 tarball（本机实测 registry.npmjs.org 可达）
+curl -s https://registry.npmjs.org/@blue-soda/dsh-remote | head -c 400
+curl -L -o /tmp/dsh-remote.tgz \
+  https://registry.npmjs.org/@blue-soda/dsh-remote/-/dsh-remote-<版本>.tgz
+mkdir -p /tmp/npm && tar -xzf /tmp/dsh-remote.tgz -C /tmp/npm     # 解出 package/
+```
+
+⚠ **npm 包是"扁平发布布局"**（`package.json` 的 `main = ./dist/index.js`，目录为
+`dist/ bin/ locale/ cordis.patch.yml dsh-plugin.json …`），与本仓库现在用的
+**GitHub 仓库布局**（`packages/plugin/dist/…`，根 `index.js`）**不同**，两者不能混放。
+要用 npm 包就必须整包替换（相应地 payload 里那个目录也要换成扁平布局），否则会 `failed to import`。
+
+> 2026-10 决定：**内置改用 npm 发布版布局**（`dist/index.js`，main 指向它）。
+> 维护者确认 npm 上的 `0.4.28` 就是含最新提交（`9426dca`）的代码，比 GitHub main 上当时可见的
+> `46d689e` 更新；换布局后已在模拟器验证插件能正常加载
+> （引擎日志出现 `[dsh-remote] host identity ready …`，且无 `failed to import`）。
+> 以后更新直接照上面方式 A 拉 npm tgz、整包替换（`node_modules/` 保留即可，依赖清单没变）。
+
+### 方式 B：GitHub 渠道（默认，含未发布提交）
+
 ```bash
 # 1) 拉新版源码（在有 GitHub 访问的机器上）
 git clone --depth 1 https://github.com/blue-soda/ds-harness-remote.git /tmp/dsr

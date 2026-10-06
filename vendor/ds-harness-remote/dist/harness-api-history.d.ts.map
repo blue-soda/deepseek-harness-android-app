@@ -1,0 +1,1 @@
+{"version":3,"file":"harness-api-history.d.ts","sourceRoot":"","sources":["../src/harness-api-history.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,WAAW,EAAE,MAAM,oCAAoC,CAAA;AAOrE,wBAAgB,kBAAkB,CAChC,eAAe,EAAE,CAAC,OAAO,EAAE,OAAO,KAAK,OAAO,CAAC,WAAW,CAAC,OAAO,CAAC,CAAC,EACpE,OAAO,EAAE,OAAO,EAChB,KAAK,EAAE,MAAM,GACZ,OAAO,CAAC,WAAW,CAAC,OAAO,CAAC,CAAC,CAG/B"}

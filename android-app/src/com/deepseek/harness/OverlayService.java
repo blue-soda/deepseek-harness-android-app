@@ -1104,23 +1104,26 @@ public class OverlayService extends Service {
      * 在其上弹对话框体验差（会被其他覆盖层挡住/焦点行为不一致），两步确认更稳。
      */
     private void onExitButtonTap() {
-        // v1.21（用户需求）：点「退出」后小人头顶显示「下班啦」—— 不管后面是否真的点了确认退出。
-        // sticky=true ⇒ 常驻不自动收（用户点气泡可收起）。
-        try { applyBubble("下班啦", true, 0L); } catch (Throwable ignored) {}
         if (!exitArmed) {
+            // 第一次点「退出」：按钮变红 = 确认退出，并把小人头顶消息换成「下班啦」。
+            // v1.21（用户规格）：**气泡与红按钮共用一个 TTL**（与其它气泡消息时长一致，
+            // 即 BUBBLE_TTL_MS）；TTL 到 → 气泡自动消失、按钮变回普通「退出」。
             setExitArmed(true);
+            applyBubble("下班啦", false, 0L);          // 非 sticky ⇒ 走 BUBBLE_TTL_MS 自动收起
+            handler.removeCallbacks(exitDisarm);
+            handler.postDelayed(exitDisarm, BUBBLE_TTL_MS);
             try {
                 android.widget.Toast.makeText(getApplicationContext(),
                         "再点一次「确认退出」将彻底关闭：停引擎、关悬浮窗、结束进程",
                         android.widget.Toast.LENGTH_LONG).show();
             } catch (Throwable ignored) {}
-            // v1.21（用户需求）：确认退出按钮**不再自动弹回**「退出」。
-            // 原来 4 秒后会自动 setExitArmed(false)，用户看到的就是"红按钮愣一会又变回去"。
-            // 现在保持红色待确认状态，直到用户点它确认退出（或重新打开面板）。
             return;
         }
+        // 点红色「确认退出」：真正退出。
+        // v1.21（用户规格）：这里**不**把按钮变回普通态、气泡也**不**消失 ——
+        // 气泡改成常驻（sticky，取消 TTL），一直留到 App 整体关闭。
         handler.removeCallbacks(exitDisarm);
-        setExitArmed(false);
+        applyBubble("下班啦", true, 0L);
         try {
             android.widget.Toast.makeText(getApplicationContext(),
                     "正在退出…", android.widget.Toast.LENGTH_SHORT).show();

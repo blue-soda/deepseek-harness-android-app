@@ -1,12 +1,12 @@
 {
   "$schema": "https://dsh.community/schemas/dsh-plugin-0.15.json",
   "id": "com.r2049.ds-harness-remote",
-  "name": "ds-harness-remote",
+  "name": "@blue-soda/dsh-remote",
   "version": "0.4.28",
   "manifestVersion": "0.15",
   "facets": {
     "host": {
-      "entry": "index.js",
+      "entry": "dist/index.js",
       "apiVersion": "v1alpha1"
     }
   },
@@ -36,6 +36,6 @@
   "subscriptions": [],
   "license": "MIT",
   "source": {
-    "repository": "https://github.com/liguobao/ds-harness-remote"
+    "repository": "https://github.com/blue-soda/ds-harness-remote"
   }
 }
