@@ -1,6 +1,6 @@
 ---
 name: dsh-self-customization
-description: 当任务要求"改这个 App 自己"（改 DSH/壳的行为、改界面、装插件、打内核补丁、重建或升级 APK、换签名）时使用。给出「走 plugin_manager/profile 补丁」还是「必须重建 APK」的判断矩阵、设备内与 PC 两条构建路径、社区密钥与共存规则、数据迁移步骤，以及哪些改动会被升级覆盖。
+description: 当任务要求"改这个 App 自己"（改 DSH/壳的行为、改界面、装插件、打内核补丁、重建或升级 APK、换签名）时使用。给出「走 plugin_manager/profile 补丁」还是「必须重建 APK」的判断矩阵、设备内与 PC 两条构建路径、社区密钥与共存规则、数据迁移步骤，以及哪些改动会被升级覆盖。源码仓库 https://github.com/blue-soda/deepseek-harness-android-app（上游 https://github.com/woaiys3/deepseek-harness-android-app）；社区签名密钥在 android-app/community.jks（alias=community，密码 dsh-community，公开密钥、故意入库）。
 ---
 
 <!-- dsh-android-managed: v1 -->
@@ -8,6 +8,30 @@ description: 当任务要求"改这个 App 自己"（改 DSH/壳的行为、改�
      壳只覆盖带本标记的文件，用户自己写的技能不受影响。 -->
 
 # 改造 DeepSeek Harness（Android）自身
+
+## 源码与签名密钥（自开发必读）
+
+| 项 | 值 |
+|---|---|
+| 本仓库（fork，remote `blue-soda`） | `https://github.com/blue-soda/deepseek-harness-android-app` |
+| 上游仓库（remote `origin`） | `https://github.com/woaiys3/deepseek-harness-android-app` |
+| **社区签名密钥** | `android-app/community.jks` —— **已入库，公开密钥** |
+| · store 密码 / alias / key 密码 | `dsh-community` / `community` / `dsh-community` |
+| · 证书 SHA-256 | `18:C9:7C:04:0B:B7:AB:30:15:60:63:41:E8:99:05:9B:4C:9D:05:25:3E:2D:E4:1B:4F:A5:D0:E4:B4:10:A8:E3` |
+| 其它变体密钥 | `release.jks`（**不入仓库**，需自行准备；可用 `DSH_KEYSTORE` 覆盖） |
+
+签名命令（`android-app/build.sh` 内部就是这一套）：
+
+```bash
+apksigner sign --ks android-app/community.jks \
+  --ks-pass pass:dsh-community --ks-key-alias community \
+  --out DeepSeekHarness-community.apk <unsigned.apk>
+```
+
+> ⚠ 社区密钥是**公开**的：任何人都能签出同包名 APK，因此它只适合社区分发。
+> 要正式发布请换自己的 `release.jks`，并确保以后升级用同一把密钥（否则只能卸载重装）。
+> ⚠ 真机构建时**不要**设置 `DSH_X64_BARE_LIBS`（那是 x86_64 模拟器适配，会把 x86_64 的
+> libz/libssl/libcrypto 打进 payload → 真机 arm64 上 node 启动即崩）。
 
 ## 0. 先做判断：三条路，代价差一个数量级
 

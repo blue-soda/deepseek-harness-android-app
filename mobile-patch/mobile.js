@@ -315,8 +315,19 @@
             var u = String(url);
             // workspace 相关请求**无论成功失败都记**（真机排查"默认工作区建立失败"：
             // 需要看到它到底调了哪个接口、返回什么码，光记失败可能什么都看不到）
-            if (/workspace/i.test(u)) note('[fetch] ' + (res && res.status) + ' ' + u.slice(0, 220));
-            else if (res && !res.ok) note('[fetch] ' + res.status + ' ' + u.slice(0, 200));
+            if (/workspace/i.test(u)) {
+              note('[fetch] ' + (res && res.status) + ' ' + u.slice(0, 220));
+              // 关键：HTTP 200 也可能是业务失败（真机实测 initializeDefault 返回 200 却报错）
+              // → 用 clone() 读一份响应体（不消费原流），截断后上报
+              try {
+                res.clone().text().then(function (txt) {
+                  var s = String(txt).replace(/\s+/g, ' ');
+                  note('[fetch-body] ' + u.slice(0, 120) + ' => ' + s.slice(0, 400));
+                }, function () {});
+              } catch (x) {}
+            } else if (res && !res.ok) {
+              note('[fetch] ' + res.status + ' ' + u.slice(0, 200));
+            }
           } catch (x) {}
           return res;
         }, function (err) {
