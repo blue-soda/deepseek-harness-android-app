@@ -6,6 +6,8 @@
 ![Stars](https://img.shields.io/github/stars/woaiys3/deepseek-harness-android-app)
 ![Release](https://img.shields.io/github/v/release/woaiys3/deepseek-harness-android-app)
 
+**下载安装包 → [dshaa.xin](https://dshaa.xin)**　（官方下载页，含 SHA-256 校验值；也可在本仓库 [Releases](https://github.com/woaiys3/deepseek-harness-android-app/releases) 页下载）
+
 ## ✨ 核心亮点
 
 - 🌐 **AI 浏览器：AI 真的能操作网页**（v1.19.1 → v1.19.6）：给它一个地址，它就能**打开页面 → 读出结构化元素表（含稳定 ref）→ 找到要点的东西 → 点/输入 → 确认这一下点没点动 → 读正文**。定位靠**DOM 语义快照**而不是截图猜；`ref` 是元素身份指纹，**跨快照保持不变**；`snapshot{since}` 支持**真差分**（页面没变只花几十 token）。v1.19.6 起还有三件事：① 浏览器搬进**独立进程 `:browser`** —— **页面崩了不会带走控制台和引擎**（一键「整套丢弃」后下一次操作自动拉起全新进程）；② **多页签**（第 10 个工具 `browser_tabs`：列出 / 新建 / 切换 / 关闭；拿 A 页签的 ref 去点 B 页签会被拦下并提示先切换）；③ 控制台多了**「AI 浏览器」页** —— 看它正在哪一页、页签列表、「同屏查看」开关（把画面显示在屏幕上，**只读：能看不能点**）；浏览器插件在「插件」页**可以随时开关**。工具共 10 个（caps/open/snapshot/find/click/type/read/nav/scroll/tabs），只允许 http/https 且**禁止访问本机回环地址**
