@@ -146,7 +146,7 @@ public class OverlayService extends Service {
     private final Runnable bubbleHide = new Runnable() {
         // v1.21：用 INVISIBLE 而不是 GONE —— 见 buildOverlay() 里气泡占位的说明：
         // 气泡槽位必须**恒定保留**，否则气泡出现/消失会把小人上下挤动。
-        @Override public void run() { if (statusBubble != null) statusBubble.setVisibility(View.INVISIBLE); }
+        @Override public void run() { hideBubble(); }
     };
 
     /** 最近一次气泡状态：服务被重启后据此恢复（只恢复 10 分钟内的）。 */
@@ -167,8 +167,77 @@ public class OverlayService extends Service {
     private android.widget.FrameLayout bubbleSlotView = null;
     /** v1.21：图标行（小人所在的那一行）—— 也要显式设 layout_gravity，否则靠右停靠时小人不动。 */
     private LinearLayout iconRowView = null;
+    /** v1.21：横向行，装着"面板 + 小人"，小人恒为该行末尾 ⇒ 小人右边 = 行右边（与面板宽度无关）。 */
+    private LinearLayout bottomRowView = null;
+    /** v1.21：竖向容器，**左侧停靠**时装面板（小人下方）——保证左侧行为不变。 */
+    private LinearLayout panelRowView = null;
+    /** v1.21：权重留白（插在面板与小人之间，把小人顶到行末端）。 */
+    private View rowSpacerView = null;
+    /** v1.21：当前横向行是否为"右侧顺序"（面板在前、小人在后），避免每次布局都重排。 */
+    private boolean bottomRowOrderIsRight = false;
     /** v1.21：最近一次几何快照（供 /overlay?action=geom 查询，便于用数字验证布局）。 */
     static volatile String lastGeom = "";
+    /** v1.21（重构）：气泡独立窗口。 */
+    private android.widget.FrameLayout bubbleWindowView = null;
+    /** v1.21（重构）：面板独立窗口。 */
+    private android.widget.FrameLayout panelWindowView = null;
+    /** v1.21（重构）：气泡/面板两个附属窗口的布局参数。 */
+    private WindowManager.LayoutParams lpBubble = null;
+    private WindowManager.LayoutParams lpPanel = null;
+    /** v1.21（重构）：气泡当前是否有内容要显示。 */
+    private volatile boolean bubbleShowing = false;
+
+    /**
+     * v1.21（重构核心）：给气泡/面板两个**独立窗口**定位，全部以小人窗口为锚点 ——
+     *   · 气泡：靠右停靠 ⇒ 右边界 = 小人右边界（只向左增长）；靠左停靠 ⇒ 左边界 = 小人左边界
+     *   · 面板：水平同理；纵向贴在小人下方
+     * 独立窗口之间不参与彼此的测量，所以"谁出现/消失"都不会挤动别人 ——
+     * 这正是原来"一个窗口装三样东西"时做不到的。
+     */
+    private void layoutCompanions() {
+        try {
+            if (lp == null || rootView == null) return;
+            int avW = rootView.getWidth() > 0 ? rootView.getWidth() : dp(48);
+            int avH = rootView.getHeight() > 0 ? rootView.getHeight() : dp(48);
+            int avL = lp.x;
+            int avR = lp.x + avW;
+            boolean visible = rootView.getVisibility() == View.VISIBLE;
+
+            if (bubbleWindowView != null && lpBubble != null) {
+                boolean show = visible && bubbleShowing;
+                bubbleWindowView.setVisibility(show ? View.VISIBLE : View.GONE);
+                if (show) {
+                    // ⚠ 必须显式给窗口定尺寸：WRAP_CONTENT 的独立窗口实测会被报成"整屏 frame"，
+                    // 那样即使带 FLAG_NOT_TOUCH_MODAL 也会挡住全屏触摸。用已测量到的视图尺寸当窗口尺寸。
+                    int bw = bubbleWindowView.getMeasuredWidth() > 0 ? bubbleWindowView.getMeasuredWidth()
+                            : (bubbleWindowView.getWidth() > 0 ? bubbleWindowView.getWidth() : dp(60));
+                    int bh = bubbleWindowView.getMeasuredHeight() > 0 ? bubbleWindowView.getMeasuredHeight()
+                            : (bubbleWindowView.getHeight() > 0 ? bubbleWindowView.getHeight() : dp(22));
+                    lpBubble.width = bw;
+                    lpBubble.height = bh;
+                    lpBubble.x = snappedRight ? (avR - bw) : avL;
+                    lpBubble.y = lp.y - bh - dp(2);
+                    wm.updateViewLayout(bubbleWindowView, lpBubble);
+                }
+            }
+            if (panelWindowView != null && lpPanel != null) {
+                boolean show = visible && panelVisible;
+                panelWindowView.setVisibility(show ? View.VISIBLE : View.GONE);
+                if (show) {
+                    int pw = panelWindowView.getMeasuredWidth() > 0 ? panelWindowView.getMeasuredWidth()
+                            : (panelWindowView.getWidth() > 0 ? panelWindowView.getWidth() : dp(200));
+                    int ph = panelWindowView.getMeasuredHeight() > 0 ? panelWindowView.getMeasuredHeight()
+                            : (panelWindowView.getHeight() > 0 ? panelWindowView.getHeight() : dp(120));
+                    lpPanel.width = pw;
+                    lpPanel.height = ph;
+                    lpPanel.x = snappedRight ? (avR - pw) : avL;
+                    lpPanel.y = lp.y + avH + dp(2);
+                    wm.updateViewLayout(panelWindowView, lpPanel);
+                }
+            }
+            updateGeomSnapshot();
+        } catch (Throwable ignored) {}
+    }
 
     /** v1.21：让 /overlay?action=geom 能主动刷新一次几何快照（只读，不改变位置）。 */
     static void nudgeGeometry() {
@@ -385,33 +454,26 @@ public class OverlayService extends Service {
         bbg.setCornerRadius(dp(8));
         bbg.setStroke(dp(1), 0x55FFFFFF);
         statusBubble.setBackground(bbg);
-        // v1.21（用户报障修复）：默认用 INVISIBLE 而**不是** GONE ——
-        // 气泡槽位必须恒定保留：GONE 时根布局变矮、VISIBLE 时变高，而窗口锚定 TOP|START，
-        // 结果是"一冒消息小人就被往下挤"。
-        statusBubble.setVisibility(View.INVISIBLE);
-        // v1.21（用户报障修复·二）：气泡必须放进**固定尺寸的槽位**里。
-        // 根布局是 WRAP_CONTENT 窗口：只要气泡自身的测量尺寸参与其中，窗口宽高就会随
-        // "有没有气泡 / 气泡文字多长"变化 —— 实测气泡隐藏时窗口变窄，小人被裁得只剩左边一小条
-        //（用户报障：静止态只露出一部分，点击或有气泡时才完整显示）。
-        // 固定槽位后窗口尺寸恒定：小人既不会被裁，也不会上下移动。
-        android.widget.FrameLayout bubbleSlot = new android.widget.FrameLayout(this);
-        bubbleSlot.setLayoutParams(new LinearLayout.LayoutParams(dp(136), dp(22)));
-        bubbleSlotView = bubbleSlot;
-        // 槽位内**左对齐 + 垂直居中**（停靠左侧时的默认；停靠右侧会镜像成右对齐，
-        // 见 applyDockAlignment() —— 否则气泡向左长不起来会被屏幕右缘截短）。
-        android.widget.FrameLayout.LayoutParams bubLp = new android.widget.FrameLayout.LayoutParams(
+        // v1.21（重构）：气泡**不再**和共用同一个窗口 —— 它有自己的窗口（bubbleWindowView），
+        // 位置由 layoutCompanions() 从"小人的右边界"算出来。
+        // 这样：气泡出现/消失只影响自己那个窗口，永远挤不动小人；
+        // 气泡右边界固定在小人右边界、宽度自适应 ⇒ 只向**左**增长。
+        statusBubble.setVisibility(View.VISIBLE);   // 自身可见性由窗口整体控制，这里保持可见
+        statusBubble.setMaxWidth(dp(240));          // 有自己的窗口后可以放宽，长文案更完整
+        statusBubble.setLayoutParams(new android.widget.FrameLayout.LayoutParams(
                 android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
-                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT);
-        bubLp.gravity = Gravity.START | Gravity.CENTER_VERTICAL;
-        bubLp.leftMargin = dp(4);
-        statusBubble.setLayoutParams(bubLp);
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT));
         // 点一下收起（尤其"任务已完成/会话已结束"这种常驻终态）
         statusBubble.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { hideBubble(); }
         });
-        bubbleSlot.addView(statusBubble);
-        rootView.addView(bubbleSlot);             // 先加 = 在小人上方
+        bubbleWindowView = new android.widget.FrameLayout(this);
+        bubbleWindowView.addView(statusBubble);
+        bubbleWindowView.setVisibility(View.GONE);
+
+        // 小人：只装它自己（这个窗口就是"小人窗口"，位置由 lp.x/lp.y 固定，气泡/面板都不影响它）
         rootView.addView(iconRow);
+        rootView.setPadding(0, 0, 0, 0);
 
         // ===== 状态面板（紧凑版，默认隐藏）=====
         // v1.21 修复"展开面板后文字一字一行（竖排）"：
@@ -528,7 +590,10 @@ public class OverlayService extends Service {
 
         panelView.addView(btnRow);
         panelView.addView(btnRowVs);
-        rootView.addView(panelView);
+        // v1.21（重构）：面板也有自己的窗口，位置由 layoutCompanions() 从小人下方算出。
+        panelWindowView = new android.widget.FrameLayout(this);
+        panelWindowView.addView(panelView);
+        panelWindowView.setVisibility(View.GONE);
         setPanelVisible(false, false);
 
         // ===== 拖动 + 点击 + 拖底隐藏 =====
@@ -551,6 +616,7 @@ public class OverlayService extends Service {
                             lp.y = (int) (startY + (ev.getRawY() - touchY));
                             try { wm.updateViewLayout(rootView, lp); } catch (Throwable ignored) {}
                             updateDismissHint(ev.getRawY());
+                    layoutCompanions();   // v1.21（重构）：拖动时气泡/面板跟随
                         }
                         return true;
                     case MotionEvent.ACTION_UP:
@@ -639,7 +705,7 @@ public class OverlayService extends Service {
         try {
             if (rootView != null) {
                 boolean show = !foregroundWantsHidden && !userHidden;
-                rootView.setVisibility(show ? View.VISIBLE : View.GONE);
+                rootView.setVisibility(show ? View.VISIBLE : View.GONE); layoutCompanions();   // v1.21（重构）：小人隐藏时气泡/面板一起收
             }
         } catch (Throwable ignored) {}
     }
@@ -663,6 +729,32 @@ public class OverlayService extends Service {
         lp.y = dp(160);
         try {
             wm.addView(rootView, lp);
+            // v1.21（重构）：气泡与面板各自一个窗口，位置由 layoutCompanions() 从小人算出。
+            // 三个窗口互不参与对方的测量 ⇒ 谁出现/消失都不会挤动别人。
+            try {
+                lpBubble = new WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        type,
+                        // 气泡只用来"看"和"点掉"，不需要焦点，也不抢触摸模态
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                        PixelFormat.TRANSLUCENT);
+                lpBubble.gravity = Gravity.TOP | Gravity.START;
+                wm.addView(bubbleWindowView, lpBubble);
+                lpPanel = new WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        type,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                                | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                        PixelFormat.TRANSLUCENT);
+                lpPanel.gravity = Gravity.TOP | Gravity.START;
+                wm.addView(panelWindowView, lpPanel);
+            } catch (Throwable ignored) {}
             // 只做一次"布局落定后摆正"。
             // ⚠ 不要在这里挂长期的 OnLayoutChangeListener：拖动窗口、以及"半藏"时
             // 系统重测宽度都会触发 layoutChange，长期监听会把 x 每帧拽回贴边位 ——
@@ -726,11 +818,11 @@ public class OverlayService extends Service {
             int w = rootView.getWidth() > 0 ? rootView.getWidth() : dp(60);
             int h = rootView.getHeight() > 0 ? rootView.getHeight() : dp(56);
             snappedRight = (lp.x + w / 2) > getResources().getDisplayMetrics().widthPixels / 2;
-            applyDockAlignment();
             lp.x = edgeXFor(w);
             if (lp.y < 0) lp.y = 0;
             if (lp.y > screenH - h) lp.y = Math.max(0, screenH - h);
             wm.updateViewLayout(rootView, lp);
+            layoutCompanions();     // v1.21（重构）：气泡/面板跟随小人
             // v1.21 诊断：把停靠方向、窗口几何、小人实际位置、气泡可见性打出来。
             // 真机/模拟器上"小人在半空""气泡被截短"这类问题只能靠这几个数定位（不能再靠猜）。
             try {
@@ -749,7 +841,15 @@ public class OverlayService extends Service {
                         + " winRight=" + (lp.x + w)
                         + " avatar=[" + aLeft + "," + aRight + "]"
                         + " bubbleVis=" + (statusBubble != null ? statusBubble.getVisibility() : -1)
-                        + " slotW=" + (bubbleSlotView != null ? bubbleSlotView.getWidth() : -1));
+                        + " slotW=" + (bubbleSlotView != null ? bubbleSlotView.getWidth() : -1)
+                        // v1.21 诊断（定位"小人没靠右"）：根布局 gravity / 小人行 gravity 与其实际区间
+                        + " rootG=" + (rootView != null ? rootView.getGravity() : -99)
+                        + " rowG=" + (iconRowView != null && iconRowView.getLayoutParams() instanceof LinearLayout.LayoutParams
+                                ? ((LinearLayout.LayoutParams) iconRowView.getLayoutParams()).gravity : -99)
+                        + " rowRect=[" + (iconRowView != null ? iconRowView.getLeft() : -1)
+                        + "," + (iconRowView != null ? iconRowView.getRight() : -1) + "]"
+                        + " slotRect=[" + (bubbleSlotView != null ? bubbleSlotView.getLeft() : -1)
+                        + "," + (bubbleSlotView != null ? bubbleSlotView.getRight() : -1) + "]");
                 // v1.21：同时刷新几何快照，供 /overlay?action=geom 查询 ——
                 // 以后这类"位置不对"的问题可以用数字验证，不必依赖截图（悬浮窗在 App 前台会隐藏）。
                 updateGeomSnapshot();
@@ -771,9 +871,10 @@ public class OverlayService extends Service {
         try {
             int g = snappedRight ? Gravity.END : Gravity.START;
             if (rootView != null) rootView.setGravity(g);
-            // ⚠ v1.21（真机实测）：**每个子视图都要显式设 layout_gravity** ——
-            // 只设 rootView.setGravity() 时，图标行并没有跟着靠右（用户截图：气泡到了右上角，
-            // 小人却仍在中间），于是"靠右停靠"根本没生效。这里逐个设清楚。
+            // v1.21（真机实测）：**逐个子视图显式设 layout_gravity**。
+            // 只设 rootView.setGravity() 时，图标行并没有跟着靠右（用户截图：气泡到了右上角、
+            // 小人仍在中间），所以这里对每一行都说清楚；左侧停靠时这些值就是默认的 START/4dp 左边距，
+            // 与改动前**完全一致**（不动左侧行为）。
             if (bubbleSlotView != null) {
                 android.view.ViewGroup.LayoutParams raw = bubbleSlotView.getLayoutParams();
                 if (raw instanceof LinearLayout.LayoutParams) {
@@ -785,18 +886,40 @@ public class OverlayService extends Service {
                 }
             }
             if (iconRowView != null) {
-                android.view.ViewGroup.LayoutParams raw = iconRowView.getLayoutParams();
-                if (raw instanceof LinearLayout.LayoutParams) {
-                    LinearLayout.LayoutParams ilp = (LinearLayout.LayoutParams) raw;
-                    ilp.gravity = g;
-                    iconRowView.setLayoutParams(ilp);
+                iconRowView.setPadding(dp(4), dp(2), dp(4), dp(2));
+            }
+            // v1.21（确定性对齐）：靠右停靠时，气泡与面板都用**右外边距**对齐到"小人的右边界"。
+            // 因为窗口比内容宽/窄都无所谓 —— 只要右缘位置 = 窗口右缘 − (窗口宽 − 小人右边界)，
+            // 三者（小人、气泡、面板）的右边界就完全一致，且都不依赖 gravity 的分配空间。
+            int rightGap = 0;
+            if (rootView != null && rootView.getWidth() > 0) {
+                rightGap = Math.max(0, rootView.getWidth() - avatarRightInWindow());
+            }
+            if (statusBubble != null) {
+                android.view.ViewGroup.LayoutParams bp = statusBubble.getLayoutParams();
+                if (bp instanceof android.widget.FrameLayout.LayoutParams) {
+                    android.widget.FrameLayout.LayoutParams blp =
+                            (android.widget.FrameLayout.LayoutParams) bp;
+                    blp.gravity = (snappedRight ? Gravity.END : Gravity.START) | Gravity.CENTER_VERTICAL;
+                    blp.leftMargin = snappedRight ? 0 : dp(4);
+                    blp.rightMargin = snappedRight ? rightGap : 0;
+                    statusBubble.setLayoutParams(blp);
+                }
+            }
+            if (panelView != null) {
+                android.view.ViewGroup.LayoutParams pp = panelView.getLayoutParams();
+                if (pp instanceof LinearLayout.LayoutParams) {
+                    LinearLayout.LayoutParams plp = (LinearLayout.LayoutParams) pp;
+                    plp.gravity = snappedRight ? Gravity.END : Gravity.START;
+                    plp.rightMargin = snappedRight ? rightGap : 0;
+                    panelView.setLayoutParams(plp);
                 }
             }
             if (panelView != null) {
                 android.view.ViewGroup.LayoutParams raw = panelView.getLayoutParams();
                 if (raw instanceof LinearLayout.LayoutParams) {
                     LinearLayout.LayoutParams plp = (LinearLayout.LayoutParams) raw;
-                    plp.gravity = g;
+                    plp.gravity = g;                       // 面板与小人同一侧 ⇒ 右对齐
                     panelView.setLayoutParams(plp);
                 }
             }
@@ -811,8 +934,6 @@ public class OverlayService extends Service {
                     statusBubble.setLayoutParams(blp);
                 }
             }
-            // 改完 gravity 必须让布局重新跑一次，否则这一帧还是旧对齐（实测会出现
-            // "小人停在半空 / 气泡被截短"的中间态）。
             if (rootView != null) rootView.requestLayout();
         } catch (Throwable ignored) {}
     }
@@ -843,7 +964,9 @@ public class OverlayService extends Service {
             //（用户复现两次："右侧气泡还是短的"）。
             // 现在内容已右对齐（applyDockAlignment），窗口右缘 = 小人右缘，所以直接把**窗口右缘**
             // 对准 screenW+off：小人和气泡就都贴在这一侧，气泡整条都在屏幕内。
-            if (snappedRight) return screenW + off - viewWidth;
+            // v1.21（确定性方案）：按**小人自身的几何**定位窗口 ——
+            // 让"小人右边界"落在屏幕右缘（+半藏偏移 off）。这个公式不依赖任何 gravity 语义。
+            if (snappedRight) return screenW + off - avatarRightInWindow();
             return -(inset + off);
         }
         return snappedRight ? Math.max(dp(4), screenW - viewWidth - dp(4)) : dp(4);
@@ -866,10 +989,17 @@ public class OverlayService extends Service {
         }
     }
 
+    /** v1.21：小人右边界相对 rootView 左边缘的距离（用于把窗口定位成"小人贴屏幕右缘"）。 */
+    private int avatarRightInWindow() {
+        int inset = avatarInsetInWindow();
+        int w = (iconView != null && iconView.getWidth() > 0) ? iconView.getWidth() : dp(40);
+        return inset + w;
+    }
+
     /** 面板显示/隐藏；animate=true 时带旋转抖动 + 位置过渡（唤出、收起共用）。 */
     private void setPanelVisible(boolean show, boolean animate) {
         panelVisible = show;
-        if (panelView != null) panelView.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (panelView != null) panelView.setVisibility(show ? View.VISIBLE : View.GONE); layoutCompanions();   // v1.21（重构）：面板窗口显隐/定位
         if (show) refreshPanelDynamicRows();
         if (lp == null) return;
         lp.width = WindowManager.LayoutParams.WRAP_CONTENT;
@@ -1199,12 +1329,18 @@ public class OverlayService extends Service {
         // v1.21（ANR 修正）：文案与当前显示完全相同时**不重绘**。
         // 内核侧已按事件节流，这里再兜一道：悬浮窗每次 setText/显隐都会让窗口重排重绘，
         // 模拟器软件渲染下高频重绘会把主线程卡在出帧（实测 ANR：nSyncAndDrawFrame）。
-        boolean same = text.contentEquals(statusBubble.getText()) && statusBubble.getVisibility() == View.VISIBLE;
+        boolean same = bubbleShowing && text.contentEquals(statusBubble.getText());
         lastAgentStatusAt = System.currentTimeMillis();
         if (same) return;
         statusBubble.setText(text);
-        statusBubble.setVisibility(View.VISIBLE);
+        bubbleShowing = true;
         handler.removeCallbacks(bubbleHide);
+        // v1.21（重构）：气泡只影响**自己那个窗口**的位置（在小人上方、右边界对齐小人右边界）。
+        // 先按"旧尺寸"摆一次，等它测量完再摆一次（尺寸变了位置才准）——不影响小人。
+        layoutCompanions();
+        if (bubbleWindowView != null) {
+            bubbleWindowView.post(new Runnable() { @Override public void run() { layoutCompanions(); } });
+        }
         final boolean idle = text.startsWith("摸鱼");
         final boolean terminal = text.startsWith("任务已完成") || text.startsWith("会话已结束");
         // 终态与空闲态常驻（用户点一下收起）；瞬时状态（思考中/调用工具）TTL 后自动收
@@ -1215,8 +1351,9 @@ public class OverlayService extends Service {
 
     private void hideBubble() {
         handler.removeCallbacks(bubbleHide);
-        // v1.21：INVISIBLE（不是 GONE）—— 保留气泡槽位，避免小人在气泡显隐时上下移动
-        if (statusBubble != null) statusBubble.setVisibility(View.INVISIBLE);
+        // v1.21（重构）：气泡是独立窗口，直接把自己的窗口收起来 —— 不再需要"占位保留"这类技巧。
+        bubbleShowing = false;
+        layoutCompanions();
     }
 
     /**
