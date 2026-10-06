@@ -3961,7 +3961,14 @@ public class MainActivity extends Activity {
                 return "{\"ok\":true,\"bubble\":\"" + text.replace("\"", "'")
                         + "\",\"running\":" + OverlayService.isRunning + "}";
             }
-            return "{\"ok\":false,\"error\":\"未知 action（show/hide/toggle/status/bubble）\"}";
+            // v1.21：主动拉取一次几何快照（供排版类问题做**数字**验证，不必依赖截图）。
+            if (action.equals("geom")) {
+                OverlayService.nudgeGeometry();
+                return OverlayService.lastGeom.isEmpty()
+                        ? "{\"ok\":false,\"error\":\"悬浮窗未运行或还没排过版\"}"
+                        : OverlayService.lastGeom;
+            }
+            return "{\"ok\":false,\"error\":\"未知 action（show/hide/toggle/status/bubble/geom）\"}";
         } catch (Throwable t) {
             return "{\"ok\":false,\"error\":\"" + String.valueOf(t.getMessage()).replace("\"", "'") + "\"}";
         }

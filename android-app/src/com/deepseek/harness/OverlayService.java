@@ -165,6 +165,40 @@ public class OverlayService extends Service {
     private boolean snappedRight = false;
     /** v1.21：气泡槽位（停靠方向变化时要改它的对齐方式，见 applyDockAlignment）。 */
     private android.widget.FrameLayout bubbleSlotView = null;
+    /** v1.21：图标行（小人所在的那一行）—— 也要显式设 layout_gravity，否则靠右停靠时小人不动。 */
+    private LinearLayout iconRowView = null;
+    /** v1.21：最近一次几何快照（供 /overlay?action=geom 查询，便于用数字验证布局）。 */
+    static volatile String lastGeom = "";
+
+    /** v1.21：让 /overlay?action=geom 能主动刷新一次几何快照（只读，不改变位置）。 */
+    static void nudgeGeometry() {
+        OverlayService s = instance;
+        if (s != null) {
+            try { s.updateGeomSnapshot(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /** 采集一次几何快照（窗口/小人/气泡/面板的屏幕 x 区间）。 */
+    private void updateGeomSnapshot() {
+        try {
+            if (lp == null || rootView == null) return;
+            int w = rootView.getWidth();
+            int[] aLoc = new int[2];
+            int[] bLoc = new int[2];
+            int[] pLoc = new int[2];
+            if (iconView != null) iconView.getLocationOnScreen(aLoc);
+            if (statusBubble != null) statusBubble.getLocationOnScreen(bLoc);
+            if (panelView != null) panelView.getLocationOnScreen(pLoc);
+            lastGeom = "{\"dock\":\"" + (snappedRight ? "R" : "L") + "\""
+                    + ",\"panel\":" + panelVisible
+                    + ",\"screenW\":" + getResources().getDisplayMetrics().widthPixels
+                    + ",\"win\":[" + lp.x + "," + (lp.x + w) + "]"
+                    + ",\"avatar\":[" + aLoc[0] + "," + (aLoc[0] + (iconView != null ? iconView.getWidth() : 0)) + "]"
+                    + ",\"bubble\":[" + bLoc[0] + "," + (bLoc[0] + (statusBubble != null ? statusBubble.getWidth() : 0)) + "]"
+                    + ",\"bubbleVis\":" + (statusBubble != null ? statusBubble.getVisibility() : -1)
+                    + ",\"panelRect\":[" + pLoc[0] + "," + (pLoc[0] + (panelView != null ? panelView.getWidth() : 0)) + "]}";
+        } catch (Throwable ignored) {}
+    }
     /** v1.13.11：App 在前台 → 悬浮窗应隐藏（由 MainActivity.onStart/onStop 维护）。 */
     private volatile boolean foregroundWantsHidden = true;
     /** v1.13.11：被虚拟屏预览「收起到小鲸鱼」钉住 —— 只负责持续拉预览帧，不再影响可见性。 */
@@ -327,6 +361,7 @@ public class OverlayService extends Service {
 
         // ===== 图标行（小鲸鱼）=====
         LinearLayout iconRow = new LinearLayout(this);
+        iconRowView = iconRow;
         iconRow.setOrientation(LinearLayout.HORIZONTAL);
         iconRow.setGravity(Gravity.CENTER_VERTICAL);
         iconRow.setPadding(dp(4), dp(2), dp(4), dp(2));
@@ -715,6 +750,9 @@ public class OverlayService extends Service {
                         + " avatar=[" + aLeft + "," + aRight + "]"
                         + " bubbleVis=" + (statusBubble != null ? statusBubble.getVisibility() : -1)
                         + " slotW=" + (bubbleSlotView != null ? bubbleSlotView.getWidth() : -1));
+                // v1.21：同时刷新几何快照，供 /overlay?action=geom 查询 ——
+                // 以后这类"位置不对"的问题可以用数字验证，不必依赖截图（悬浮窗在 App 前台会隐藏）。
+                updateGeomSnapshot();
             } catch (Throwable ignored) {}
         } catch (Throwable ignored) {}
     }
@@ -733,6 +771,9 @@ public class OverlayService extends Service {
         try {
             int g = snappedRight ? Gravity.END : Gravity.START;
             if (rootView != null) rootView.setGravity(g);
+            // ⚠ v1.21（真机实测）：**每个子视图都要显式设 layout_gravity** ——
+            // 只设 rootView.setGravity() 时，图标行并没有跟着靠右（用户截图：气泡到了右上角，
+            // 小人却仍在中间），于是"靠右停靠"根本没生效。这里逐个设清楚。
             if (bubbleSlotView != null) {
                 android.view.ViewGroup.LayoutParams raw = bubbleSlotView.getLayoutParams();
                 if (raw instanceof LinearLayout.LayoutParams) {
@@ -741,6 +782,22 @@ public class OverlayService extends Service {
                     slp.leftMargin = snappedRight ? 0 : dp(4);
                     slp.rightMargin = snappedRight ? dp(4) : 0;
                     bubbleSlotView.setLayoutParams(slp);
+                }
+            }
+            if (iconRowView != null) {
+                android.view.ViewGroup.LayoutParams raw = iconRowView.getLayoutParams();
+                if (raw instanceof LinearLayout.LayoutParams) {
+                    LinearLayout.LayoutParams ilp = (LinearLayout.LayoutParams) raw;
+                    ilp.gravity = g;
+                    iconRowView.setLayoutParams(ilp);
+                }
+            }
+            if (panelView != null) {
+                android.view.ViewGroup.LayoutParams raw = panelView.getLayoutParams();
+                if (raw instanceof LinearLayout.LayoutParams) {
+                    LinearLayout.LayoutParams plp = (LinearLayout.LayoutParams) raw;
+                    plp.gravity = g;
+                    panelView.setLayoutParams(plp);
                 }
             }
             if (statusBubble != null) {
