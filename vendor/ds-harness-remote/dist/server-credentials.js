@@ -1,6 +1,7 @@
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
+import { replaceFile, sweepStaleTemporaries } from './atomic-file.js';
 import { uuidV7 } from './ids.js';
 const credentialSchema = z.object({
     schemaVersion: z.literal(1),
@@ -76,11 +77,13 @@ export class ServerCredentialsBusyError extends Error {
     }
 }
 async function atomicWrite(path, contents) {
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    const directory = dirname(path);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await sweepStaleTemporaries(directory);
     const temporary = `${path}.${process.pid}.${uuidV7()}.tmp`;
     await writeFile(temporary, contents, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     await chmod(temporary, 0o600);
-    await rename(temporary, path);
+    await replaceFile(temporary, path);
     await chmod(path, 0o600);
 }
 async function assertPrivateMode(path) {

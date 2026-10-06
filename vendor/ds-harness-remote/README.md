@@ -2,7 +2,7 @@
 
 Continue DeepSeek Harness sessions and experimental Codex workspaces from another device over an end-to-end encrypted connection.
 
-[GitHub](https://github.com/blue-soda/ds-harness-remote) · [Full guide](https://github.com/blue-soda/ds-harness-remote#readme) · [中文说明](https://github.com/blue-soda/ds-harness-remote/blob/main/README.zh.md) · [Remote Web](https://dsh.r2049.cn/app) · [Android](https://github.com/blue-soda/ds-harness-remote/releases/latest)
+[GitHub](https://github.com/blue-soda/ds-harness-remote) · [Full guide](https://github.com/blue-soda/ds-harness-remote#readme) · [中文说明](https://github.com/blue-soda/ds-harness-remote/blob/main/README.zh.md) · [Releases](https://github.com/blue-soda/ds-harness-remote/releases) · [Android app](https://github.com/blue-soda/deepseek-harness-android-app/tree/master)
 
 `ds-harness-remote` is the Remote Host and workspace plugin for DeepSeek Harness. Harness keeps running on your work computer with its existing workspaces, tools, and permission controls; Remote gives authorized devices another window into that environment.
 
@@ -23,7 +23,7 @@ Continue DeepSeek Harness sessions and experimental Codex workspaces from anothe
 Add the current package version to the `web` profile, then restart Harness:
 
 ```sh
-dsh plugin --profile web add -w @blue-soda/dsh-remote@0.4.28
+dsh plugin --profile web add -w @blue-soda/dsh-remote@0.4.29
 ```
 
 ### dsh-TUI Host
@@ -31,7 +31,7 @@ dsh plugin --profile web add -w @blue-soda/dsh-remote@0.4.28
 Remote can also run as a Host in a terminal-only [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) profile:
 
 ```sh
-dsh plugin --profile dsh-tui add -w @blue-soda/dsh-remote@0.4.28
+dsh plugin --profile dsh-tui add -w @blue-soda/dsh-remote@0.4.29
 ```
 
 After starting dsh-TUI, manage Remote with `/remote`, `/remote login`, `/remote status`, and `/remote logout`.
@@ -48,7 +48,7 @@ After starting dsh-TUI, manage Remote with `/remote`, `/remote login`, `/remote 
 
 ## Compatibility
 
-Plugin `0.4.28` targets DeepSeek Harness `dsh-v0.2.0-rc.2` and retains `dsh-v0.1.7-rc.1` compatibility; it also supports `dsh-v0.1.6-alpha.2` and earlier settings hosts. It supports:
+Plugin `0.4.29` targets DeepSeek Harness `dsh-v0.2.0-rc.2` and retains `dsh-v0.1.7-rc.1` compatibility; it also supports `dsh-v0.1.6-alpha.2` and earlier settings hosts. It supports:
 
 - `dsh-v0.1.1-rc.2` through the official legacy `ApiProxy`;
 - `dsh-v0.1.2-alpha.1` through `dsh-v0.1.2-rc.1` through the official Typert Remote Gateway;
@@ -58,7 +58,7 @@ The same package feature-detects the older settings registry and the `0.1.7-rc.1
 
 ## Self-hosted Server
 
-This repository includes a minimal, single-account self-hosted Relay Server in [`apps/server`](https://github.com/blue-soda/ds-harness-remote/tree/main/apps/server). Configure `DSH_SERVER_ACCOUNT` and `DSH_SERVER_PASSWORD`, then point the Host and clients at the same server URL. It provides account login, device credentials, encrypted Control/Noise forwarding, Relay, and a device-status page. It does not provide the complete multi-account Server, Remote Web session UI, or WebRTC/TURN deployment.
+This repository includes a self-hosted, Relay-only Server in [`apps/server`](https://github.com/blue-soda/ds-harness-remote/tree/main/apps/server) that supports multiple accounts, with devices and tokens namespaced per account. `DSH_SERVER_ACCOUNT` and `DSH_SERVER_PASSWORD` configure a seed account; account creation is off by default and can be enabled with `DSH_SERVER_REGISTRATION_CODE`, or replaced by DeepSeek platform sign-in (`DSH_SERVER_DEEPSEEK_LOGIN=on`) or a QR provider (`DSH_SERVER_OAUTH_PROVIDER`). It provides account login, device credentials, encrypted Control/Noise forwarding, Relay, and a device-status page. It does not provide the complete site - Remote Web session UI or Admin - or WebRTC/TURN deployment.
 
 ## Security boundary
 

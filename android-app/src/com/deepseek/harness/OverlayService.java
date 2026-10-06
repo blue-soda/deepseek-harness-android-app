@@ -1124,11 +1124,8 @@ public class OverlayService extends Service {
             setExitArmed(true);
             applyBubble("下班啦", true, 0L);
             handler.removeCallbacks(exitDisarm);      // 不再排 TTL 定时器
-            try {
-                android.widget.Toast.makeText(getApplicationContext(),
-                        "再点一次「确认退出」将彻底关闭：停引擎、关悬浮窗、结束进程",
-                        android.widget.Toast.LENGTH_LONG).show();
-            } catch (Throwable ignored) {}
+            // v1.21（用户要求）：**不再弹**"再点一次「确认退出」…"的 Toast。
+            // 按钮变红 + 头顶「下班啦」已经足够表达"已进入待确认"，底部反复弹提示条很打扰。
             return;
         }
         // 点红色「确认退出」：真正退出。
