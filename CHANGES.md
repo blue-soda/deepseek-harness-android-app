@@ -1917,3 +1917,22 @@ APK **135.6MB → 151.1MB**（+15.5MB；Python 26M + npm 13M，APK 内为压缩�
 - targetSdk 保持 28（≥29 会导致 node 二进制 EACCES）。
 - 首次启动需解压 payload（2 万+ 文件，约 1-3 分钟），期间勿切后台。
 - 外部存储权限未授予时回退内部 dshroot；授予后外部优先（已有文件不覆盖，白名单除外）。
+
+## 真机加固（2026-10-06）
+
+本轮针对真机（arm64）报障的修复，按发现顺序：
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| 真机引擎起不来、连日志都很少，安全模式同样失败 | payload 里混进 **x86_64** 的 libz/libssl/libcrypto（构建入口启用了模拟器适配 `DSH_X64_BARE_LIBS`），真机 arm64 上 node 的 OpenSSL dlopen 失败即崩 | 真机构建不设该变量；`build.sh` 在该分支加醒目警告；`tools/build-apk.sh --emulator` 自动把输出改名为 `*-x64.apk`，避免覆盖交付包 |
+| 引导页"通知权限"点「去授权」无反应 | targetSdk=28 在 Android 13+ 上 `POST_NOTIFICATIONS` 运行时申请常常什么都不弹 | 直接打开系统「通知设置」页（并带包名 extra） |
+| 首启同时出现"引导页 + 系统权限弹窗"，且后面「忽略电池优化」显示已配置 | `onCreate` 里无条件调用 `checkBatteryOptimization()`，抢在引导前弹 | 只在走完向导（`setup_done`）后检查 |
+| **默认工作区建立失败**（`api/workspace/initializeDefault` 返回 200 但 `ok:false`） | 内核 `dsh-api-workspace-controller/lib/types/default-directory.js` 只处理 darwin/win32/linux，其它平台直接 `throw`；Node 在 Android 上 `process.platform === 'android'` → **默认工作区永远建不出来**（与权限、cwd 无关） | 用该文件自带的官方覆盖项 `config.documentsDirectory`（App 启动时保证 profile 补丁里有这条）；默认工作区 = `<documentsDirectory>/deepseek-harness/default-workspace`，App 的工作区偏好与之一致 |
+| 插件登录第一次点击不跳浏览器 | 插件首次请求服务端只拿到 pending、**没有 authorizeUrl**（无地址可开） | 四层兜底：`window.open` shim、界面出现授权链接即自动交系统浏览器、主 WebView 外链拦截、原生 `onCreateWindow`；授权后回前台自动刷新界面，避免卡片停在 AUTH_INVALID |
+| 模拟器里浏览器打不开 DS 平台（卡加载条一半） | 模拟器 DNS 只认 `/system/etc/hosts` 里写死的域名 | `tools/emu-netfix.sh` 把 guest DNS（UDP/TCP 53）DNAT 到公共 DNS（默认 223.5.5.5）；⚠ 规则在内存里，模拟器重启后需重跑 |
+
+诊断设施（排查期间加，长期保留）：
+
+- `files/workspace-diag.txt`：工作区判定事实（偏好值、四级候选目录可写性、权限状态、引擎 cwd），并**追加进 `dsh-web.log`**。
+- `files/web-notes.log`：前端报错与接口调用（`window.onerror` / `unhandledrejection` / `console.error` / `fetch` 非 2xx 与 workspace 相关请求的**响应体**），同样追加进 `dsh-web.log`，并镜像到 `/sdcard/<变体目录>/`。
+- 以上都在控制台「日志 → 分享 / 清空」的范围内。

@@ -2302,8 +2302,52 @@ public class MainActivity extends Activity {
      * 但工作区按维护者要求用**共用**的 DeepSeekHarness/Workspace（用户视角更简单、更好找）。
      * 若以后要按变体隔离，只改这一处即可。
      */
+    /** DSH 自己的默认工作区（与 documentsDirectory 配置配套，见 ensureWorkspaceControllerConfig）。 */
     private File defaultWorkspaceDir() {
+        return new File(android.os.Environment.getExternalStorageDirectory(), "deepseek-harness/default-workspace");
+    }
+
+    /** 旧默认工作区（v1.21 之前用 /sdcard/DeepSeekHarness/Workspace）；仅用于"把旧偏好升级掉"的判断。 */
+    private File legacyWorkspaceDir() {
         return new File(android.os.Environment.getExternalStorageDirectory(), "DeepSeekHarness/Workspace");
+    }
+
+    /**
+     * v1.21（真机根因修复）：给 workspace-controller 配 `documentsDirectory`。
+     *
+     * 真机实测：DSH 前端的 `api/workspace/initializeDefault` 返回
+     *   {"ok":false,"error":{"code":"gateway/internal",
+     *    "message":"system Documents directory is unavailable on android"}}
+     * 原因在内核 `dsh-api-workspace-controller/lib/types/default-directory.js`：它只处理
+     * darwin/win32/linux 三个平台，其它平台直接 throw —— 而 Node 在 Android 上
+     * `process.platform === 'android'`，于是**永远建不出默认工作区**（不是权限问题）。
+     * 好在同一文件提供了官方开关：config.documentsDirectory（"explicit deployment override
+     * for the system Documents directory"），最终工作区 = <documentsDirectory>/deepseek-harness/default-workspace。
+     * 这里保证 profile 补丁里有这条配置（写在 payload 里，App 启动时补齐 → 升级也自动生效）。
+     */
+    private void ensureWorkspaceControllerConfig(File payload) {
+        try {
+            File patch = new File(payload, "dshhome/profiles/web/cordis.patch.yml");
+            String text = patch.exists() ? readFileText(patch) : "";
+            if (text.contains("documentsDirectory")) return;   // 已配好
+            String ext = android.os.Environment.getExternalStorageDirectory().getAbsolutePath();
+            StringBuilder sb = new StringBuilder(text);
+            if (sb.length() > 0 && sb.charAt(sb.length() - 1) != '\n') sb.append('\n');
+            sb.append("\n# v1.21：Android 上内核解析不出「系统 Documents 目录」，直接导致\n")
+              .append("# `api/workspace/initializeDefault` 报 system Documents directory is unavailable on android，\n")
+              .append("# 默认工作区永远建不出来。这里用官方提供的 documentsDirectory 覆盖项指定一个可用目录，\n")
+              .append("# 最终默认工作区 = <documentsDirectory>/deepseek-harness/default-workspace。\n")
+              .append("- id: workspace-controller\n")
+              .append("  name: \"@deepseek-ai/dsh-api-workspace-controller\"\n")
+              .append("  config:\n")
+              .append("    documentsDirectory: ").append(ext).append('\n');
+            File parent = patch.getParentFile();
+            if (parent != null && !parent.exists()) parent.mkdirs();
+            writeFileText(patch, sb.toString());
+            Log.i(TAG, "已写入 workspace-controller.documentsDirectory = " + ext);
+        } catch (Throwable t) {
+            Log.w(TAG, "ensureWorkspaceControllerConfig failed", t);
+        }
     }
 
     /** 确保默认工作区存在并写进偏好（幂等）。 */
@@ -2351,9 +2395,10 @@ public class MainActivity extends Activity {
         return new File(getFilesDir(), "Workspace");
     }
 
-    /** 判断某个路径是不是"我们自己算出来的兜底目录"（用于决定能否升级到偏好目录）。 */
+    /** 判断某个路径是不是"我们自己算出来的默认/兜底目录"（用于决定能否升级到偏好目录）。 */
     private boolean isOurFallbackWorkspace(String path) {
         if (path == null) return false;
+        if (path.equals(legacyWorkspaceDir().getAbsolutePath())) return true;   // 旧默认，一并升级掉
         if (path.equals(variantWorkspaceDir().getAbsolutePath())) return true;
         File ext = appExternalWorkspaceDir();
         if (ext != null && path.equals(ext.getAbsolutePath())) return true;
@@ -2373,9 +2418,14 @@ public class MainActivity extends Activity {
     private File workspaceDirOrFallback() {
         File preferred = defaultWorkspaceDir();
         if (isWritableDir(preferred)) return preferred;
+        File legacy = legacyWorkspaceDir();
+        if (isWritableDir(legacy)) {
+            Log.i(TAG, "规范工作区不可写，回退到旧的共享目录 " + legacy.getAbsolutePath());
+            return legacy;
+        }
         File alt = variantWorkspaceDir();
         if (isWritableDir(alt)) {
-            Log.i(TAG, "共用工作区不可写，回退到 " + alt.getAbsolutePath());
+            Log.i(TAG, "共享目录都不可写，回退到 " + alt.getAbsolutePath());
             return alt;
         }
         File ext = appExternalWorkspaceDir();
@@ -3255,6 +3305,10 @@ public class MainActivity extends Activity {
                     // 再另起线程跑"联网安装"兜底（内置包在时它会直接跳过）。
                     ensureDefaultPluginRegisteredSync(payload);
                     ensureDefaultPluginsAsync(payload);
+                    // v1.21：Android 上内核解析不出系统 Documents 目录 → 默认工作区永远建不出来
+                    //（真机日志：initializeDefault 返回 "system Documents directory is unavailable on android"）。
+                    // 这里补上官方覆盖项，必须**在引擎启动前**写好。
+                    ensureWorkspaceControllerConfig(payload);
                     launchEngine(payload);
                 } catch (Throwable t) {
                     Log.e(TAG, "engine error", t);
@@ -5045,9 +5099,6 @@ public class MainActivity extends Activity {
         }
         // v1.21：把这次的判定事实落盘（控制台「日志→分享」会带上），真机出问题时一眼可见
         writeWorkspaceDiag(wsDir);
-        // v1.21：给 DSH 预置"文件管理器里找得到"的默认工作区（只写它自己的工作区存储；
-        // 引擎启动前做，避免与运行中的引擎抢写）—— 这才是"默认工作区不必手动选"的正解。
-        seedDefaultWorkspaceRecord(new File(getFilesDir(), "payload"), wsDir);
         java.util.Map<String, String> env = pb.environment();
         env.put("LD_LIBRARY_PATH", lib.getAbsolutePath());
         // Termux 共存修复（v1.7.4）：内置 node 在 Termux 环境编译，OPENSSLDIR 被编译死为

@@ -435,6 +435,14 @@ if [ "$DO_EMULATOR" = 1 ]; then
    （从模拟器取：adb pull /system/lib64/libz.so $X64/ 等三个；详见 tools/LOCAL-BUILD.md 第四节）"
   fi
   export DSH_X64_BARE_LIBS="$X64"
+  # v1.21：模拟器包**不要**写成交付文件名 —— 曾因此把 x86_64 库带进交付 APK，
+  # 真机 arm64 装上一启动就崩（libz.so is for EM_X86_64 (62) instead of EM_AARCH64 (183)）。
+  # 除非调用方用 --out 显式指定，否则自动加 -x64 后缀区分。
+  case "$OUT" in
+    *-x64.apk) ;;
+    *) OUT="${OUT%.apk}-x64.apk" ;;
+  esac
+  echo "⚠ 模拟器(x86_64)构建，输出改为：$OUT（不要装到真机 arm64）" >&2
   # v1.18：不再设置 DSH_X64_NO_LINKS（清空 LINKS.txt）。App 侧 applyLinks() 现在是**硬链优先**
   # （Os.link → 软链 → 复制兜底），带版本号的 soname 必须由 LINKS.txt 重建，
   # 清空反而会让 node 报 "library libz.so.1 not found"。
