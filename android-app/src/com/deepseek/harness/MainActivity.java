@@ -5333,7 +5333,13 @@ public class MainActivity extends Activity {
 
     private void waitForServer() {
         long start = System.currentTimeMillis();
-        long deadline = start + 90000;
+        int extraRounds = 0;
+        boolean engineAlive = false;
+        // v1.21：外层循环 —— 只要**引擎进程还活着**就继续等（最多再等 4 轮 × 90 秒）。
+        // 背景（模拟器/慢设备实测）：引擎最终确实起来了（3086 在听、日志有启动 URL），
+        // 但 App 90 秒就判超时 → 用户看到的就是"DSH 起不来"（其实只是慢）。
+        while (true) {
+        long deadline = System.currentTimeMillis() + 90000;
         while (System.currentTimeMillis() < deadline) {
             if (engineStartAborted) return;   // v1.13：用户点了「停止」→ 立即收手，别再刷“已等待 N 秒”
             if (healthOk()) { loadHome(); return; }
@@ -5349,10 +5355,22 @@ public class MainActivity extends Activity {
         // 进程健在、端口没起；此时全量重推 1.2 万文件既没用，又让用户看到"进度条一直跳"，
         // 误以为在解压（且修完再起仍卡同一处，形成循环）。
         // 只有在**进程真的死了**时才做文件层修复（那才是"缺文件"的场景）。
-        boolean engineAlive = findEnginePid() > 0;
+        engineAlive = findEnginePid() > 0;
         if (engineAlive) {
             Log.w(TAG, "engine process alive but port " + enginePort
                     + " not ready —— 判定为插件/网络请求卡住，跳过全量修复");
+            if (extraRounds < 4) {
+                // v1.21：进程健在 ⇒ 多半只是慢（模拟器转译、首启解压、网络慢）→ 继续等，别报失败。
+                extraRounds++;
+                Log.w(TAG, "engine alive —— 继续等待（第 " + extraRounds + " 轮）");
+                setStatus("引擎正在启动（较慢），继续等待…（已等待 "
+                        + ((System.currentTimeMillis() - start) / 1000) + " 秒）");
+                try { Thread.sleep(3000); } catch (InterruptedException e) { return; }
+                continue;
+            }
+            Log.w(TAG, "engine alive but not ready after extra rounds —— 交回原有兜底流程");
+        }
+        break;
         }
         // v1.5.2 慢启动修复兜底：本次走了「快速同步」（同内核升级），若引擎仍起不来，
         // 可能外部 dshroot 有缺失文件（快速路径不 stat 已有文件）→ 全量补齐后重启引擎再等一轮。

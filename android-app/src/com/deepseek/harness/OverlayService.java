@@ -1004,6 +1004,18 @@ public class OverlayService extends Service {
     private void setPanelVisible(boolean show, boolean animate) {
         panelVisible = show;
         if (panelView != null) panelView.setVisibility(show ? View.VISIBLE : View.GONE); layoutCompanions();   // v1.21（重构）：面板窗口显隐/定位
+        // v1.21（用户规格·改）：退出确认的复位时机 = **面板关闭**（不再用 TTL）。
+        // 用户流程：打开面板 → 点「退出」（变红 + 头顶「下班啦」）→ 关闭面板 ⇒
+        // 气泡消失、按钮变回普通「退出」。注意"确认退出"分支不会走这里（那时面板仍开着，
+        // 即使关了也不该复位 —— shutdownEverything 会立刻结束进程）。
+        if (!show) {
+            try {
+                boolean dyed = statusBubble != null && statusBubble.getText() != null
+                        && "下班啦".contentEquals(statusBubble.getText());
+                if (exitArmed) setExitArmed(false);
+                if (dyed && !MainActivity.shutdownPending(this)) hideBubble();
+            } catch (Throwable ignored) {}
+        }
         if (show) refreshPanelDynamicRows();
         if (lp == null) return;
         lp.width = WindowManager.LayoutParams.WRAP_CONTENT;
@@ -1106,12 +1118,12 @@ public class OverlayService extends Service {
     private void onExitButtonTap() {
         if (!exitArmed) {
             // 第一次点「退出」：按钮变红 = 确认退出，并把小人头顶消息换成「下班啦」。
-            // v1.21（用户规格）：**气泡与红按钮共用一个 TTL**（与其它气泡消息时长一致，
-            // 即 BUBBLE_TTL_MS）；TTL 到 → 气泡自动消失、按钮变回普通「退出」。
+            // v1.21（用户规格·改）：**不用 TTL 复位** —— 两者的复位时机是**面板关闭**
+            //（见 setPanelVisible(false, …)：面板一关，气泡消失、按钮变回普通「退出」）。
+            // 所以气泡这里用 sticky（不自动收），避免没关面板就先自己消失了。
             setExitArmed(true);
-            applyBubble("下班啦", false, 0L);          // 非 sticky ⇒ 走 BUBBLE_TTL_MS 自动收起
-            handler.removeCallbacks(exitDisarm);
-            handler.postDelayed(exitDisarm, BUBBLE_TTL_MS);
+            applyBubble("下班啦", true, 0L);
+            handler.removeCallbacks(exitDisarm);      // 不再排 TTL 定时器
             try {
                 android.widget.Toast.makeText(getApplicationContext(),
                         "再点一次「确认退出」将彻底关闭：停引擎、关悬浮窗、结束进程",
@@ -1120,8 +1132,7 @@ public class OverlayService extends Service {
             return;
         }
         // 点红色「确认退出」：真正退出。
-        // v1.21（用户规格）：这里**不**把按钮变回普通态、气泡也**不**消失 ——
-        // 气泡改成常驻（sticky，取消 TTL），一直留到 App 整体关闭。
+        // 这里不改按钮、不撤气泡（保持红色 + 「下班啦」），一直留到 App 整体关闭。
         handler.removeCallbacks(exitDisarm);
         applyBubble("下班啦", true, 0L);
         try {
