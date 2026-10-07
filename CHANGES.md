@@ -459,6 +459,46 @@ L1（DSH 设置页诊断面板）与 L2（本机资产救援页）暂不做，�
 > （`python tools/java-syntax-sanity.py android-app/src/com/deepseek/harness/MainActivity.java`
 > = 括号/引号配平 OK）。真机行为（尤其国产 ROM 弹框时机）待下次构建后验证。
 
+### 十五之五、引擎启动分段计时（2026-10-07 性能分析，v1.17.5 基线）
+
+维护者要求：在模拟器上把"引擎启动 ~30 s 花在哪"量出来，再谈优化。**不改内核树**：
+用 Node 26 的**同线程** `module.registerHooks()` 记每次模块加载，+ `--cpu-prof` 采 CPU，
+外加 `plain` 纯基线对照。工具见 [tools/boot-timing/](tools/boot-timing/)（含用法与踩坑）。
+
+**测量结果（模拟器 community，1.17.5，spawn → HTTP 就绪）**
+
+| 模式 | 时间 |
+|---|---|
+| `plain`（无探针，3 次） | **33 / 26 / 32 s**（≈30 s ±3） |
+| `hooks`（同线程钩子） | 34 s |
+| `profhooks`（钩子 + CPU 采样） | 35 s |
+| 旧 `register()`（跨线程钩子） | 44 s ← **探针自身污染 11 s**，已弃用 |
+
+**时间线**：1519 次模块加载 / 14.5 MB 源码；模块加载跨度 29-31 s，其中
+**真实读盘+转换（load 钩子）合计仅 944 ms**（≈3%），而相邻加载之间的空档合计 **17.7 s** ——
+主线程在做解析/编译/求值/插件初始化。空档是**长尾**：2.4 / 2.3 / 2.1 / 1.6 s，之后一堆 300-900 ms，
+没有单一热区。
+
+**CPU 归因（36 s 采样）**：`@deepseek-ai/cordis` + `cordis-plugin-loader` ≈ **6.4 s**；
+模块解析/编译（`compileSourceTextModule` 2.6 s + `compileForInternalLoader` 1.1 s + `wrapSafe` 1.0 s
++ V8 解析 0.8 s + `getPackageScopeConfig`/`URL`/`deserializePackageJSON`/`finalizeResolution`）≈ **5-8 s**；
+`js-yaml` + `schemastery` + `zod` + `dsh-app-boot` ≈ **3.8 s**；文件 I/O ≈ 3.7 s（其中 `realpathSync`
+属模块解析的路径解析）；GC ≈ 0.9 s。
+
+**结论与取舍**
+1. 瓶颈是 **CPU**（模块解析/编译 + cordis 挂载 DI + schema 校验），**不是磁盘 I/O**（真实读盘 ~1 s）。
+   这修正了"文件太多导致慢"的直觉 —— 载荷里 25,829 个文件，启动实际只 import 了 1,378 个 / 14.5 MB。
+2. **裁插件/profile（少 import、少挂载）收益最直接**：cordis+loader 6.4 s 与插件数强相关，
+   模块解析/编译 5-8 s 也与模块数相关。
+3. **把第三方依赖打成单文件收益有限**：省的是 resolution/stat（数百 ms 量级），不是编译。
+4. **V8 快照架构上不可行**：Node 快照只支持单入口且不能加载额外用户模块，与"插件运行时动态挂载"冲突
+   （见前文 G 的论证）。
+5. **清 `.ts`/`.md`（载荷里还有 973+960 个 / 20 MB）只影响安装体积**，对启动几乎无影响。
+6. 模拟器是 arm64 经 ndk_translation 翻译执行，CPU 类成本被放大数倍；**真机 arm64 需复核**，
+   预期这 30 s 里的大头会明显缩短。
+
+**复现**：见 `tools/boot-timing/README.md`（4 条命令：推工具 → 跑 plain/hooks/profhooks → 拉产物 → `analyze.py`）。
+
 ### 十六、悬浮窗 agent 状态气泡（v1.21 需求 2）
 
 用户诉求：让 DSH 做屏幕控制类任务时不必靠猜判断是否结束 —— 在小人上方加一个小气泡，
