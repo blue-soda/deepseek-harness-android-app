@@ -512,7 +512,7 @@ function apply(ctx) {
       "默认按「可启动优先、名称」排序；返回里 total 是匹配总数、count 是本次返回条数，被截断时用 filter 或 limit 收窄。" +
       "要打开某个应用用 android_launch。",
     parameters: {
-      filter: { type: "string", description: "按包名或显示名做不区分大小写的关键字过滤" },
+      filter: { type: "string", description: "按包名或显示名做不区分大小写的关键字过滤（只匹配这两者：搜 wechat 找不到「微信」，得用包名 com.tencent.mm）" },
       third_party_only: { type: "boolean", description: "true 只列第三方应用（排除系统应用）" },
       launchable_only: { type: "boolean", description: "true 只列有桌面入口、能被启动的应用" },
       limit: { type: "number", description: "最多返回条目数（默认 200，上限 1000）" }
