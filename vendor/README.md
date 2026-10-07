@@ -91,7 +91,7 @@ cd <repo>/vendor/ds-harness-remote && npm install --omit=dev --ignore-scripts \
 # 上一步会生成 node_modules/，即内置依赖
 
 # 4) 重新构建 APK，装到设备上确认引擎日志出现 [dsh-remote] 行
-bash .cache/build-local.sh community
+bash tools/build/build-local.sh community
 ```
 
 ## 已验证 / 未验证（2026-10-05，模拟器 community）

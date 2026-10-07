@@ -85,7 +85,7 @@
 - `build.sh` 的 javac 参数：合并时把"我们的 staged 源码 + 变体 R.java"与"上游的原始源码 +
   official R.java"两套都留下了 → 找不到 `out/gen/com/deepseek/harness/R.java` 而构建失败。
   上游那套是因为他们没有变体改名机制；本仓库用我们的写法（已删掉上游那两行）。
-- 新增 `.cache/build-local.sh`（隔离工作区专用）：`DSH_DEV_HOME` 用克隆内缓存副本、
+- 新增 `tools/build/build-local.sh`（路径由脚本自身位置推导）：`DSH_DEV_HOME` 用克隆内缓存副本、
   输出固定为克隆内 `-x64.apk`，**绝不写主仓库**。
 
 ## 七、尚未做

@@ -70,7 +70,7 @@ done
 cat <<'EOF'
 
 下一步：
-  1) 重建社区版：bash .cache/build-local.sh community    （tools/build-apk.sh --variant community）
+  1) 重建社区版：bash tools/build/build-local.sh community    （tools/build-apk.sh --variant community）
   2) 设备上启动引擎（会走 dshroot-add 把新文件补上），再试「新建终端」
   3) 提交：git add dsh-patches && git commit -m "feat(terminal): 打包原生 node-pty（Termux 构建，ABI 147）"
 EOF

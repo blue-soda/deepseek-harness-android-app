@@ -178,7 +178,7 @@ if [ -n "$DSH_X64_BARE_LIBS" ]; then
   #   而 payload 同步是"已存在文件不覆盖"，换 APK 也修不回来（只能卸载重装）。
   #   给真机构建时**不要**设置 DSH_X64_BARE_LIBS：
   #     · tools/build-apk.sh 默认不设（只有 --emulator 才设）
-  #     · .cache/build-local.sh 是本地**模拟器**入口，它设了 → 真机请用 .cache/build-arm64.sh
+  #     · tools/build/build-local.sh 是本地**模拟器**入口，它设了 → 真机请用 tools/build/build-arm64.sh
   echo "⚠⚠ 正在使用模拟器(x86_64)适配构建：DSH_X64_BARE_LIBS=$DSH_X64_BARE_LIBS" >&2
   echo "⚠⚠ 这个 APK 不要装到真机 arm64（node 的 OpenSSL 会 dlopen 失败并直接崩溃）" >&2
   for _l in libz.so libssl.so libcrypto.so; do
