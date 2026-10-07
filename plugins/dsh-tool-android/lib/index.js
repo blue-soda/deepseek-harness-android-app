@@ -422,6 +422,109 @@ function apply(ctx) {
   const dex = () => process.env.SHIZUKU_DEX;
   const appId = () => process.env.SHIZUKU_APP_ID;
 
+  // ===== v1.21（需求 2）：把 agent 状态推给 App 悬浮窗的小气泡 =====
+  // 目的：用户让 DSH 做屏幕控制类任务时，不必靠猜判断"是否已经完成"。
+  // 映射：思考中… / 正在调用 <tool>… / 任务已完成 / 会话已结束 / 出错了
+  //   （"摸鱼中…"由 App 侧按空闲时长补，不需要内核参与）
+  // 通道：App 本地 HTTP /overlay?action=bubble；App 没跑或没开悬浮窗时静默失败（不打扰）。
+  {
+    let busy = false;
+    // v1.21 修正（ANR）：**必须节流**。assistant-stream 是逐 token/逐帧触发的，
+    // 原来每个事件都 POST 一次气泡更新 → 悬浮窗被高频重排重绘，而模拟器是软件渲染，
+    // 主线程会卡在 HardwareRenderer.nSyncAndDrawFrame 出帧上 → 系统判 App 无响应（实测 ANR）。
+    // 现在：① 相同文案在 minGapMs 内不重复推；② 任意两次推送至少间隔 minGapMs。
+    let lastText = "";
+    let lastAt = 0;
+    const MIN_GAP_MS = 1200;
+    const bubble = (text, sticky) => {
+      try {
+        const now = Date.now();
+        if (text === lastText && now - lastAt < 5000) return;   // 文案没变，别刷新
+        if (now - lastAt < MIN_GAP_MS && !sticky) return;       // 节流（终态不丢）
+        lastText = text;
+        lastAt = now;
+        console.log("[bubble] " + text + (sticky ? " (sticky)" : ""));
+        appPost("/overlay", { action: "bubble", text, sticky: !!sticky, ttl: 0 });
+      } catch (e) { /* 忽略：状态气泡是尽力而为 */ }
+    };
+    // 有新输入被领取 = 开始干活
+    ctx.on("agent/inbox/claimed", () => { busy = true; bubble("思考中…", false); });
+    // 流式输出：带工具名就是工具调用，否则仍算思考/输出中
+    // v1.21：原来只认 frame.name/tool/toolName/call.name —— 真机反馈"正在调用 <工具>… 从没出现过"，
+    // 说明实际帧结构不是这几种。改成**深度扫描**帧里可能藏工具名的字段，
+    // 并在第一次扫描失败时把帧的键名打到日志（dsh-web.log）以便进一步校正。
+    let frameShapeLogged = false;
+    const findToolName = (o, depth) => {
+      if (!o || typeof o !== "object" || depth > 3) return "";
+      // 直接命中的常见字段
+      for (const k of ["tool", "toolName", "name", "tool_name", "toolCall", "tool_call", "function"]) {
+        const v = o[k];
+        if (typeof v === "string" && v && !["start", "delta", "text", "message", "content", "tool"].includes(v)) return v;
+        if (v && typeof v === "object") {
+          const n = v.name || v.toolName;
+          if (typeof n === "string" && n) return n;
+        }
+      }
+      // 类型里带 tool 的块，优先取其名
+      if (typeof o.type === "string" && /tool/i.test(o.type)) {
+        const n = o.name || o.toolName || (o.tool && (o.tool.name || o.tool)) || "";
+        if (typeof n === "string" && n) return n;
+      }
+      for (const k of Object.keys(o)) {
+        if (k === "parent" || k === "session" || k === "registry") continue;
+        const r = findToolName(o[k], depth + 1);
+        if (r) return r;
+      }
+      return "";
+    };
+    ctx.on("agent/assistant-stream", (p) => {
+      const f = p && p.frame;
+      const tool = findToolName(f, 0);
+      if (!frameShapeLogged && !tool && f && typeof f === "object") {
+        frameShapeLogged = true;
+        try { console.log("[bubble] assistant-stream 帧结构（用于校正工具名提取）: " + JSON.stringify(f).slice(0, 400)); } catch (e) {}
+      }
+      if (tool) {
+        busy = true;
+        const toolName = String(tool).replace(/^.*\//, "");
+        if (/ask[_-]?user[_-]?question|request[_-]?user[_-]?input|ask[_-]?question/i.test(toolName)) {
+          // v1.21：向用户提问是"等用户"，不是"在跑工具" —— 单独一个常驻状态
+          bubble("正在向用户提问...", true);
+        } else {
+          // v1.21：文案简化（用户要求）——「正在调用 <工具>…」→「正在 <工具>…」
+          bubble("正在 " + toolName + "…", false);
+        }
+      } else {
+        busy = true;
+        bubble("思考中…", false);
+      }
+    });
+    // agent 状态机：由"忙"回到 idle 才算任务完成（避免启动时的初始 idle 误报）
+    ctx.on("agent/status", (p) => {
+      const s = p && p.status;
+      if (!s) return;
+      // v1.21：waiting-input / waiting-for-input = 明确在**等用户输入**（例如 agent 提了问）
+      if (s === "waiting-input" || s === "waiting-for-input") {
+        busy = false;
+        bubble("正在向用户提问...", true);
+        return;
+      }
+      if (s === "idle" || s === "waiting") {
+        if (busy) { busy = false; bubble("任务已完成", true); }
+      } else {
+        busy = true;
+        bubble("思考中…", false);
+      }
+    });
+    ctx.on("agent/error", () => { busy = false; bubble("出错了（点开控制台看日志）", true); });
+    // 会话级：running → 思考中；由 running 变 false → 任务已完成；会话被移除 → 会话已结束
+    ctx.on("api-session/status", (_id, running) => {
+      if (running) { busy = true; bubble("思考中…", false); }
+      else if (busy) { busy = false; bubble("任务已完成", true); }
+    });
+    ctx.on("api-session/removed", () => { busy = false; bubble("会话已结束", true); });
+  }
+
   // ===== App 层工具（无需 root/Shizuku，走 App 本地 HTTP 服务）=====
   // 这些能力由 DeepSeek Harness App 自身实现（UsageStats/悬浮窗权限），
   // 不依赖特权通道，因此即使未授权 root/Shizuku 也注册。
@@ -869,6 +972,98 @@ function apply(ctx) {
         lines: text ? text.split("\n").length : 0,
         text,
         hint: "只包含本应用自己的日志（Android 11+ 的系统限制，不是工具问题）；要别的 App 的日志需要 root。"
+      };
+    }
+  }));
+
+  // ===== v1.23：让 agent 通过悬浮窗小人的消息气泡"说一句话" =====
+  // 上限：中文（含全角标点）≤ 20 个、其它字符 ≤ 40 个，两类**分开计、互不挤占**。
+  // 为什么分开：气泡是**单行**（setSingleLine + TruncateAt.END，最宽 240dp），一个汉字约占
+  // 两个半角宽，所以两类的合理上限不同。超限时本工具**直接报错**（让 agent 自己改短），
+  // 而不是静默截断；App 侧仍按同一规则兜底截断。
+  const BUBBLE_CJK_RE = /[\u3000-\u303F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]|[\u{20000}-\u{2FA1F}]/u;
+  const BUBBLE_MAX_CJK = 20;
+  const BUBBLE_MAX_ASCII = 40;
+  const countBubbleChars = (s) => {
+    let cjk = 0;
+    let ascii = 0;
+    for (const ch of String(s)) { if (BUBBLE_CJK_RE.test(ch)) cjk++; else ascii++; }
+    return { cjk, ascii };
+  };
+  ctx.tools.register(defineTool({
+    name: "android_say",
+    description:
+      "让手机悬浮窗小人**头顶气泡显示一句话**（给用户看的即时消息，例如「稍等，我在查资料」）。" +
+      "**字数上限：中文（含全角标点）不超过 " + BUBBLE_MAX_CJK + " 个、其它字符（英文 / 数字 / 半角标点 / emoji）不超过 "
+      + BUBBLE_MAX_ASCII + " 个；两类分开计、互不挤占** —— 气泡是单行，超长会被省略号截断，" +
+      "所以超限时本工具直接报错（不硬截），请把话改短后重试。" +
+      "何时用：需要让用户知道你在做什么、或请他看一眼屏幕时，调一次即可，不要刷屏。" +
+      "注意：气泡与「agent 状态」（思考中… / 正在调用…）**共用同一个位置**，后续状态更新会把它顶掉；" +
+      "想让它常驻就传 sticky=true。悬浮窗没开时返回 running=false（不报错）。",
+    parameters: {
+      text: { type: "string", required: true, description: "要显示的话：中文不超过 " + BUBBLE_MAX_CJK + " 个、其它字符不超过 " + BUBBLE_MAX_ASCII + " 个（两类分开计）" },
+      sticky: { type: "boolean", description: "true = 常驻显示，直到被新状态顶掉或用户点掉（默认 false）" },
+      ttl_seconds: { type: "number", description: "非 sticky 时显示多少秒后自动收起（默认 12）" }
+    },
+    output: {
+      schema: resultSchema({
+        text: { type: "string" },
+        cjk: { type: "number" },
+        ascii: { type: "number" },
+        maxCjk: { type: "number" },
+        maxAscii: { type: "number" },
+        truncated: { type: "boolean" },
+        running: { type: "boolean" },
+        hint: { type: "string" }
+      }),
+      render: (_a, value) => {
+        if (!value.ok) return renderResult(value);
+        const shown = value.running === false
+          ? "（悬浮窗没开，用户看不到）"
+          : "";
+        return [{ type: "text", text: "气泡已显示「" + (value.text || "") + "」"
+          + "（中文 " + (value.cjk || 0) + "/" + (value.maxCjk || BUBBLE_MAX_CJK)
+          + "，其它 " + (value.ascii || 0) + "/" + (value.maxAscii || BUBBLE_MAX_ASCII) + "）"
+          + (value.truncated ? "⚠ 被截断" : "") + shown }];
+      }
+    },
+    async execute(args) {
+      const raw = args.text === undefined ? "" : String(args.text);
+      if (!raw) return { ok: false, error: "android_say 需要 text 参数" };
+      const cnt = countBubbleChars(raw);
+      if (cnt.cjk > BUBBLE_MAX_CJK || cnt.ascii > BUBBLE_MAX_ASCII) {
+        return {
+          ok: false,
+          error: "超出气泡字数上限：本次中文 " + cnt.cjk + "/" + BUBBLE_MAX_CJK
+            + "、其它字符 " + cnt.ascii + "/" + BUBBLE_MAX_ASCII + "（两类分开计）",
+          cjk: cnt.cjk,
+          ascii: cnt.ascii,
+          maxCjk: BUBBLE_MAX_CJK,
+          maxAscii: BUBBLE_MAX_ASCII,
+          hint: "把话改短后重试（例：「稍等，我在查资料」= 中文 8 个）；细节可以用 android_screen / android_see 交待，气泡只放一句。"
+        };
+      }
+      const body = { token: process.env.APP_LOCAL_TOKEN || "", action: "bubble", text: raw };
+      if (args.sticky === true) body.sticky = "true";
+      const secs = args.ttl_seconds === undefined ? 12 : Math.max(0, Number(args.ttl_seconds) || 0);
+      body.ttl = String(Math.round(secs * 1000));
+      const r = await appPost("/overlay", body, 8000);
+      if (!r.ok) {
+        return {
+          ok: false,
+          error: r.error || "App 本地服务未响应",
+          hint: "App 没在跑、或悬浮窗没开时无法显示气泡；可先用 android_capabilities 看状态。"
+        };
+      }
+      return {
+        ok: true,
+        text: r.bubble !== undefined ? String(r.bubble) : raw,
+        cjk: typeof r.cjk === "number" ? r.cjk : cnt.cjk,
+        ascii: typeof r.ascii === "number" ? r.ascii : cnt.ascii,
+        maxCjk: typeof r.maxCjk === "number" ? r.maxCjk : BUBBLE_MAX_CJK,
+        maxAscii: typeof r.maxAscii === "number" ? r.maxAscii : BUBBLE_MAX_ASCII,
+        truncated: r.truncated === true,
+        running: r.running === true
       };
     }
   }));

@@ -98,6 +98,58 @@ public class MainActivity extends Activity {
     // 外部公共根目录不要用常量：它必须按包名派生（正式版 / Lite / 兼容版共存时互不干扰）。
     // 曾硬编码为 "DeepSeekHarness" → Lite/兼容版会写到正式版的外部目录（vscreen jar、外部回退 dshroot
     // 都会串到别的版本上）。统一用 pkgRoot()（见下）。
+    /** v1.23：悬浮窗气泡消息的字数上限 —— 中文与非中文字符**分开计**。
+     *  为什么分开：气泡是**单行**（setSingleLine + TruncateAt.END，最宽 240dp），
+     *  一个汉字约占一个半角字符两倍的宽度，所以两类的合理上限不同；
+     *  超过上限时 App 侧按上限截断（并回真实计数），工具侧也会先行拦截并给出明确报错。 */
+    public static final int BUBBLE_MAX_CJK = 20;     // 中日韩字符（含全角标点）上限
+    public static final int BUBBLE_MAX_ASCII = 40;   // 其它字符（拉丁 / 数字 / 半角标点 / emoji 等）上限
+
+    /** 是否算"中文"（中日韩字符 + 全角标点 / CJK 符号）。按码点判断。 */
+    private static boolean isCjkCodePoint(int cp) {
+        try {
+            Character.UnicodeScript s = Character.UnicodeScript.of(cp);
+            if (s == Character.UnicodeScript.HAN || s == Character.UnicodeScript.HIRAGANA
+                    || s == Character.UnicodeScript.KATAKANA || s == Character.UnicodeScript.HANGUL
+                    || s == Character.UnicodeScript.BOPOMOFO) {
+                return true;
+            }
+        } catch (Throwable ignored) {}
+        // 全角标点（，。！？：；）与 CJK 符号（「」…）也按"中文"计
+        return (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFF00 && cp <= 0xFFEF);
+    }
+
+    /**
+     * v1.23：把气泡文案裁到上限内，并把**截断后**的真实计数写回 out[0]=中文 / out[1]=其它。
+     * 规则：中文与其它各自限额、互不挤占；一旦某个字符会让它所属那类超限就停止（后面全部丢弃）。
+     */
+    private static String fitBubbleText(String text, int[] out) {
+        if (text == null) text = "";
+        int cjk = 0;
+        int ascii = 0;
+        StringBuilder sb = new StringBuilder();
+        int i = 0;
+        while (i < text.length()) {
+            int cp = text.codePointAt(i);
+            int n = Character.charCount(cp);
+            boolean isCjk = isCjkCodePoint(cp);
+            if (isCjk) {
+                if (cjk >= BUBBLE_MAX_CJK) break;
+                cjk++;
+            } else {
+                if (ascii >= BUBBLE_MAX_ASCII) break;
+                ascii++;
+            }
+            sb.appendCodePoint(cp);
+            i += n;
+        }
+        if (out != null && out.length >= 2) {
+            out[0] = cjk;
+            out[1] = ascii;
+        }
+        return sb.toString();
+    }
+
     // 官方维护、需随 APK 更新的路径前缀：即使外部 dshroot 已有同名文件也强制覆盖
     // （避免"保留 AI 修改"策略挡住官方修复，例如 shizuku 插件的三层补丁）。
     private static final String[] FORCE_OVERWRITE_PREFIXES = {
@@ -4323,12 +4375,26 @@ public class MainActivity extends Activity {
             // 转给 OverlayService 显示在小人上方（text 空 = 收起）。
             if (action.equals("bubble") || action.equals("agent-status")) {
                 String text = jsonField(raw, "text");
+                // v1.23：气泡是**单行**（setSingleLine + TruncateAt.END，宽 240dp），太长了会被省略号截断，
+                // 所以给出明确的字数上限；中文与非中文**分开计**（一个汉字约占两个半角宽）。
+                // 这里**强制执行**（超了按上限截断），并把真实计数回给调用方，好让它如实报告。
+                int[] cnt = new int[2];
+                String fitted = fitBubbleText(text, cnt);
+                boolean truncated = !fitted.equals(text);
                 boolean sticky = "true".equalsIgnoreCase(jsonField(raw, "sticky"));
                 long ttl = 0L;
                 try { ttl = Long.parseLong(jsonField(raw, "ttl")); } catch (Throwable ignored) {}
-                OverlayService.pushStatus(text, sticky, ttl);
-                return "{\"ok\":true,\"bubble\":\"" + text.replace("\"", "'")
-                        + "\",\"running\":" + OverlayService.isRunning + "}";
+                OverlayService.pushStatus(fitted, sticky, ttl);
+                StringBuilder sb = new StringBuilder("{\"ok\":true,\"bubble\":\"");
+                sb.append(fitted.replace("\"", "'"));
+                sb.append("\",\"cjk\":").append(cnt[0]);
+                sb.append(",\"ascii\":").append(cnt[1]);
+                sb.append(",\"maxCjk\":").append(BUBBLE_MAX_CJK);
+                sb.append(",\"maxAscii\":").append(BUBBLE_MAX_ASCII);
+                sb.append(",\"truncated\":").append(truncated);
+                sb.append(",\"running\":").append(OverlayService.isRunning);
+                sb.append('}');
+                return sb.toString();
             }
             // v1.21：主动拉取一次几何快照（供排版类问题做**数字**验证，不必依赖截图）。
             if (action.equals("geom")) {
