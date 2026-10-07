@@ -567,6 +567,13 @@ function apply(ctx) {
   }));
 
   // 小鲸鱼悬浮窗控制（含引擎状态显示；需已授予悬浮窗权限）
+  //
+  // v1.24：按维护者要求**默认不注册**这个工具（"感觉没什么用"）——
+  // 显示/隐藏悬浮窗用户自己拖一下、或点常驻通知的「显示小鲸鱼」就够了，
+  // 没必要占一个模型可见的工具位。**代码原样保留**，把下面开关改成 true 即可恢复
+  // （App 侧路由 /overlay 与 OverlayService 都不受影响，仍然可用）。
+  const ENABLE_OVERLAY_TOOL = false;
+  if (ENABLE_OVERLAY_TOOL) {
   ctx.tools.register(defineTool({
     name: "android_overlay",
     description: "控制悬浮窗小人：show 显示（点击可展开引擎状态面板）、hide 隐藏、status 查询悬浮窗与引擎状态。需要悬浮窗权限。",
@@ -584,6 +591,7 @@ function apply(ctx) {
           ok: { type: "boolean", required: true },
           error: { type: "string" },
           running: { type: "boolean" },
+          hidden: { type: "boolean" },        // v1.24：hide/toggle 后为 true（App 侧返回值）
           engineUp: { type: "boolean" },
           granted: { type: "boolean" },
           msg: { type: "string" }
@@ -595,6 +603,7 @@ function apply(ctx) {
       return await appRequest("/overlay", { action: String(args.action || "status") });
     }
   }));
+  }   // ← if (ENABLE_OVERLAY_TOOL)
 
   // ==========================================================================
   // 免特权路径（v1.19）：列出应用 / 启动应用 —— 走 App 进程的 PackageManager。
