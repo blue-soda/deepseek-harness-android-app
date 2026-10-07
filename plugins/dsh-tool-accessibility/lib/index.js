@@ -210,6 +210,53 @@ function a11yPost(path, body, timeoutMs) {
   });
 }
 
+// ============================================================================
+// v1.22：App 本地服务助手（通知端口）—— 供剪贴板回退用。
+//   android_focus_type 在 a11y setText 失败时要走「写剪贴板 + 粘贴」，剪贴板在 App 侧（/clipboard）。
+// ============================================================================
+const appPort = () => parseInt(process.env.APP_NOTIFY_PORT || "3081", 10);
+
+function appPost(path, obj, timeoutMs) {
+  return new Promise((resolve) => {
+    const payload = JSON.stringify(obj || {});
+    const req = httpRequest({
+      host: "127.0.0.1",
+      port: appPort(),
+      path,
+      method: "POST",
+      timeout: timeoutMs || 8000,
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
+    }, (res) => {
+      let data = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => { data += c; if (data.length > 65536) req.destroy(); });
+      res.on("end", () => {
+        if (!data) return resolve({ ok: false, error: "empty response" });
+        try { resolve(JSON.parse(data)); }
+        catch (e) { resolve({ ok: false, error: "App 响应解析失败: " + String(data).slice(0, 120) }); }
+      });
+    });
+    req.on("error", () => resolve({ ok: false, error: "App 本地服务不可用（请先启动 DeepSeek Harness）" }));
+    req.on("timeout", () => { req.destroy(); resolve({ ok: false, error: "App 本地服务超时" }); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+/** 读一次控件树；失败返回 null。 */
+async function dumpNodes(timeoutMs) {
+  const v = parseResult(await a11yRequest("/dump", undefined, timeoutMs || 8000));
+  return v && v.ok ? v : null;
+}
+
+/** 控件树指纹 —— 用于 android_wait_stable（比"截图哈希"省内存得多：不产生任何位图）。 */
+function treeFingerprint(v) {
+  const nodes = (v && v.nodes) || [];
+  const s = nodes.map((n) => (n.text || "") + "|" + (n.desc || "") + "|"
+    + n.x + "," + n.y + "," + n.w + "," + n.h).join("\n");
+  return createHash("sha256").update(s).digest("hex").slice(0, 16) + ":" + nodes.length;
+}
+
 function parseResult(raw, hint) {
   try {
     const v = JSON.parse(raw);
@@ -323,22 +370,86 @@ function apply(ctx) {
           package: { type: "string" },
           nodeCount: { type: "number" },
           canScreenshot: { type: "boolean" },
-          apiLevel: { type: "number" }
+          apiLevel: { type: "number" },
+          reachable: { type: "boolean" },
+          everConnected: { type: "boolean" },
+          connectCount: { type: "number" },
+          connectedAgoMs: { type: "number" },
+          unboundAgoMs: { type: "number" },
+          reconnectedRecently: { type: "boolean" },
+          unbindReason: { type: "string" },
+          diagnosis: { type: "string" },
+          hint: { type: "string" }
         }
       },
-      render: (_a, v) => renderResult(v)
+      render(_a, v) {
+        v = renderValue(v);
+        if (!v.ok && !v.reachable) return renderResult(v);
+        const lines = [
+          "无障碍服务：" + (v.running ? "运行中 ✅" : "未在运行 ❌"),
+          "  诊断: " + (v.diagnosis || "?"),
+          "  连接次数: " + (v.connectCount || 0) + (v.connectedAgoMs >= 0 ? "（最近一次 " + Math.round(v.connectedAgoMs / 1000) + " 秒前）" : "")
+        ];
+        if (v.unbindReason) lines.push("  最近断开: " + v.unbindReason);
+        if (v.package) lines.push("  前台应用: " + v.package + " · 节点 " + (v.nodeCount || 0));
+        if (v.hint) lines.push("", "建议: " + v.hint);
+        return [{ type: "text", text: lines.join("\n") }];
+      }
     },
     async execute(args, exec) {
       const raw = await a11yRequest("/status", undefined, 4000);
       const v = parseResult(raw);
-      if (!v.ok) return { ok: false, error: v.error || GUIDE_TEXT };
+      if (!v.ok) {
+        // v1.22（P0-3）：服务不可达时**不再**一口咬定"用户没开" —— 三种可能都列出来。
+        //   真机复盘：无障碍"闪断"（被系统回收/重启中）与"用户关闭"的报错文案完全一样，
+        //   模型据此误判"用户关掉了无障碍"。这里如实区分"拿不到状态"这件事本身。
+        return {
+          ok: false,
+          reachable: false,
+          error: "无障碍服务不可达（本地端口没有应答）",
+          diagnosis: "服务进程当前没在运行。可能是：① 用户从未开启过无障碍；② 服务刚被系统回收/正在重连（闪断）；③ 系统限制后台导致服务被停。",
+          hint: "先确认系统设置 → 无障碍里「DeepSeek Harness 屏幕助手」是否是**开启**状态："
+            + "若已开启却不可达，多半是②③ —— 等几秒重试 android_a11y_status；"
+            + "若确实没开，请引导用户开启后再试。不要直接断言「用户关掉了无障碍」。"
+        };
+      }
+      const everConnected = v.everConnected === true || (v.connectCount || 0) > 0;
+      const ago = typeof v.connectedAgoMs === "number" ? v.connectedAgoMs : -1;
+      const unboundAgo = typeof v.unboundAgoMs === "number" ? v.unboundAgoMs : -1;
+      const running = v.running === true;
+      const reconnectedRecently = v.reconnectedRecently === true;
+      let diagnosis;
+      let hint = "";
+      if (running && reconnectedRecently) {
+        diagnosis = "运行中，但**刚刚重连过**（" + Math.round(ago / 1000) + " 秒前）—— 说明它此前断开过：这是「闪断」！";
+        hint = "闪断通常是系统内存吃紧或服务被回收的前兆：接下来优先用区域截图（android_see 的 select/region）"
+          + "与 android_screen 读控件树，避免连续全屏截图；若紧接着出现点击/输入成片失败，先停下让内存回收。";
+      } else if (running) {
+        diagnosis = "运行中（已稳定运行 " + (ago >= 0 ? Math.round(ago / 1000) + " 秒" : "一段时间") + "）";
+      } else if (!everConnected) {
+        diagnosis = "从未连接成功过 —— 用户很可能还没开启无障碍服务";
+        hint = "引导用户：系统设置 → 无障碍 →（已下载的服务/服务）→ 开启「DeepSeek Harness 屏幕助手」。";
+      } else {
+        diagnosis = "曾经连上过但现在未运行" + (unboundAgo >= 0 ? "（" + Math.round(unboundAgo / 1000) + " 秒前断开）" : "")
+          + " —— 属于「刚断开/被回收」，不是「从没开过」";
+        hint = "先在系统设置里确认无障碍开关是否仍为开启：若仍开着，说明服务被系统回收了，打开一次 App 或重新开关一次即可恢复。";
+      }
       return {
         ok: true,
-        running: v.running === true,
+        reachable: true,
+        running,
         package: v.package || "",
         nodeCount: typeof v.nodeCount === "number" ? v.nodeCount : 0,
         canScreenshot: v.canScreenshot === true,
-        apiLevel: typeof v.apiLevel === "number" ? v.apiLevel : 0
+        apiLevel: typeof v.apiLevel === "number" ? v.apiLevel : 0,
+        everConnected,
+        connectCount: typeof v.connectCount === "number" ? v.connectCount : 0,
+        connectedAgoMs: ago,
+        unboundAgoMs: unboundAgo,
+        reconnectedRecently,
+        ...(v.unbindReason ? { unbindReason: String(v.unbindReason) } : {}),
+        diagnosis,
+        ...(hint ? { hint } : {})
       };
     }
   }));
@@ -1214,6 +1325,339 @@ function apply(ctx) {
   // 放在无障碍插件里是有意的——dsh-tool-android 在无特权时整体不注册，
   // 能力探测若放在那里就会"无特权时恰好消失"，正是最需要它的时候没有。
   // ==========================================================================
+  // v1.22（P1）：把「聚焦 → 写文本 → 提交 → 读回自证」做成**一个原子工具**（真机 Agent 复盘 §4）
+  ctx.tools.register(defineTool({
+    name: "android_focus_type",
+    description:
+      "把「聚焦输入框 → 写入文本 →（可选）提交 → 读回自证」做成**一次调用**。" +
+      "为什么需要它：实测在 Chromium/WebView 里，单独用 android_type 会 ACTION_SET_TEXT 返回 false、" +
+      "android_paste_text 的内容容易落进输入法候选条、而输入法的「确定」只是收起键盘并不导航。" +
+      "本工具内部顺序回退：① 无障碍直接写 → ② 写 App 剪贴板再粘贴；提交走 ACTION_IME_ENTER（Android 11+）；" +
+      "每一步都读回控件树自证，并在 steps/verified 里如实说明哪一步生效、哪一步没生效。" +
+      "**要打开网址请优先用 android_open_url**（比在浏览器里打字可靠得多）。",
+    parameters: {
+      text: { type: "string", required: true, description: "要写入的文本（中文 / emoji 均可）" },
+      select: { type: "string", description: "目标输入框的文字或提示（按文字找控件并点击聚焦，推荐）" },
+      fx: { type: "number", description: "或直接给分数坐标 x（0~1）" },
+      fy: { type: "number", description: "或直接给分数坐标 y（0~1）" },
+      submit: { type: "boolean", description: "写完后是否提交（触发输入法的「前往 / 发送」），默认 false" },
+      timeout_ms: { type: "number", description: "提交后等待界面变化的最长时间（默认 4000）" }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          ok: { type: "boolean", required: true },
+          error: { type: "string" },
+          wrote: { type: "boolean" },
+          path: { type: "string" },
+          verified: { type: "boolean" },
+          submitted: { type: "boolean" },
+          changed: { type: "boolean" },
+          steps: { type: "string" },
+          hint: { type: "string" }
+        }
+      },
+      render(_a, v) {
+        v = renderValue(v);
+        if (!v.ok && !v.wrote) return renderResult(v);
+        const lines = [
+          (v.wrote ? "已写入 ✅" : "未写入 ❌") + (v.path ? "（路径 " + v.path + "）" : "")
+            + (v.wrote ? "· 读回" + (v.verified ? "确认可见 ✅" : "未看到文本 ⚠") : ""),
+          "步骤: " + (v.steps || "")
+        ];
+        if (v.submitted) lines.push("提交: 已发出 ACTION_IME_ENTER · 界面" + (v.changed ? "有变化 ✅" : "未观察到变化 ⚠"));
+        if (v.hint) lines.push("", "建议: " + v.hint);
+        return [{ type: "text", text: lines.join("\n") }];
+      }
+    },
+    async execute(args) {
+      const text = args.text === undefined ? "" : String(args.text);
+      if (!text) return { ok: false, error: "android_focus_type 需要 text 参数" };
+      const steps = [];
+      const before = await dumpNodes();
+      // 1) 聚焦
+      if (args.select !== undefined && String(args.select).length > 0) {
+        const sel = String(args.select);
+        const t = parseResult(await a11yRequest("/tap", { text: sel }, 8000));
+        if (t.found === false) {
+          // 回退：无障碍的文字匹配**区分大小写**（实测 "Search Settings" 匹配不到 "Search settings"）
+          //   → 用 /dump 做一次忽略大小写的查找，取到坐标直接点。
+          const d = await dumpNodes();
+          const needle = sel.toLowerCase();
+          const hit = d ? (d.nodes || []).find((n) =>
+            (((n.text || "") + " " + (n.desc || "")).toLowerCase().indexOf(needle) >= 0)) : null;
+          if (!hit) {
+            return {
+              ok: false,
+              error: "按文字没找到可点击的输入框：「" + sel + "」",
+              steps: steps.join(" → "),
+              hint: "先用 android_screen 看控件文字（注意匹配区分大小写），或改用 fx/fy 指定位置。"
+            };
+          }
+          const cx = Math.round((hit.x || 0) + (hit.w || 0) / 2);
+          const cy = Math.round((hit.y || 0) + (hit.h || 0) / 2);
+          await a11yRequest("/tap", { x: String(cx), y: String(cy) }, 8000);
+          steps.push("聚焦=忽略大小写命中「" + (hit.text || hit.desc || "") + "」并点其坐标");
+        } else {
+          steps.push("聚焦=点击「" + sel + "」");
+        }
+      } else if (args.fx !== undefined && args.fy !== undefined) {
+        const t = parseResult(await a11yRequest("/tap", { fx: String(Number(args.fx)), fy: String(Number(args.fy)) }, 8000));
+        steps.push("聚焦=点击 fx/fy" + (t.found === false ? "（未命中控件，已按坐标注入）" : ""));
+      } else {
+        return { ok: false, error: "需要 select（推荐）或 fx+fy 指定输入框" };
+      }
+      noteInputEvent();
+      await new Promise((r) => setTimeout(r, 350));
+      // 2) 写文本：无障碍直写 → 剪贴板粘贴
+      let path = "";
+      let wrote = false;
+      const direct = parseResult(await a11yRequest("/input", { text }, 10000));
+      if (direct.ok !== false) {
+        wrote = true; path = "a11y-setText"; steps.push("写入=无障碍直写");
+      } else {
+        steps.push("写入=无障碍直写失败（" + (direct.error || "?") + "）");
+        const clip = await appPost("/clipboard",
+          { token: process.env.APP_LOCAL_TOKEN || "", action: "write", text }, 8000);
+        if (clip && clip.ok !== false) {
+          const pasted = parseResult(await a11yRequest("/input", { mode: "paste" }, 10000));
+          if (pasted.ok !== false) {
+            wrote = true; path = "clipboard-paste"; steps.push("写入=剪贴板粘贴");
+          } else {
+            steps.push("写入=剪贴板粘贴失败（" + (pasted.error || "?") + "）");
+          }
+        } else {
+          steps.push("写入=剪贴板写入失败（" + ((clip && clip.error) || "?") + "）");
+        }
+      }
+      await new Promise((r) => setTimeout(r, 300));
+      // 3) 读回自证（WebView 自绘输入框读不到内容，如实标注）
+      const after = await dumpNodes();
+      let verified = false;
+      try {
+        const ns = (after && after.nodes) || [];
+        verified = ns.some((n) => typeof n.text === "string" && n.text.indexOf(text) >= 0);
+      } catch (e) { verified = false; }
+      steps.push("读回=" + (verified ? "已看到文本" : "没看到文本"));
+      // 3b) v1.22：直写报"成功"但没落地（WebView/自绘输入框很常见）→ 自动再走一次剪贴板粘贴并复验。
+      //   实测（系统设置搜索框）：a11y 直写返回 ok，但控件树里仍是原提示文字 —— 不读回就完全看不出来。
+      if (!verified) {
+        const clip2 = await appPost("/clipboard",
+          { token: process.env.APP_LOCAL_TOKEN || "", action: "write", text }, 8000);
+        if (clip2 && clip2.ok !== false) {
+          const pasted2 = parseResult(await a11yRequest("/input", { mode: "paste" }, 10000));
+          if (pasted2.ok !== false) {
+            path = path ? path + "+clipboard-paste" : "clipboard-paste";
+            steps.push("回退=剪贴板粘贴");
+            await new Promise((r) => setTimeout(r, 300));
+            const again = await dumpNodes();
+            verified = !!(again && (again.nodes || []).some((n) =>
+              typeof n.text === "string" && n.text.indexOf(text) >= 0));
+            steps.push("复验=" + (verified ? "已看到文本" : "仍未看到文本"));
+          } else {
+            steps.push("回退=剪贴板粘贴失败（" + (pasted2.error || "?") + "）");
+          }
+        }
+      }
+      // 4) 提交 + 等变化
+      let submitted = false;
+      let changed = false;
+      if (args.submit === true) {
+        const s = parseResult(await a11yRequest("/ime-enter", undefined, 6000));
+        submitted = s.ok !== false;
+        steps.push("提交=" + (submitted ? "已发 ACTION_IME_ENTER" : ("失败（" + (s.error || "?") + "）")));
+        const timeout = Math.max(500, Math.min(15000, Number(args.timeout_ms) || 4000));
+        const t0 = Date.now();
+        const fpBefore = treeFingerprint(after);
+        while (Date.now() - t0 < timeout) {
+          await new Promise((r) => setTimeout(r, 400));
+          const now = await dumpNodes();
+          if (now && treeFingerprint(now) !== fpBefore) { changed = true; break; }
+        }
+        steps.push("提交后界面" + (changed ? "有变化" : "未观察到变化"));
+      }
+      const hints = [];
+      if (wrote && !verified) {
+        hints.push("写入了但读回没看到文本：可能是 WebView 自绘输入框（无障碍读不到内容）。"
+          + "可用 android_see(select=/region=) 截一次输入区域人工确认，或直接 submit 后再读一次页面。");
+      }
+      if (args.submit === true && submitted && !changed) {
+        hints.push("已发出提交但没观察到界面变化：可能提交未生效，或页面变化很慢。"
+          + "建议再用 android_screen / android_see 确认一次当前页面；若是地址栏场景，改用 android_open_url。");
+      }
+      return {
+        ok: wrote && (args.submit !== true || submitted),
+        wrote,
+        path,
+        verified,
+        submitted,
+        changed,
+        steps: steps.join(" → "),
+        ...(before === null ? { hint: "（注意：读不到控件树，本工具的自证能力受限）" } : {}),
+        ...(hints.length ? { hint: hints.join(" ") } : {})
+      };
+    }
+  }));
+
+  // v1.22（P1）：等某段文字出现 —— 替代「sleep + 反复截图」
+  ctx.tools.register(defineTool({
+    name: "android_find_text",
+    description:
+      "在控件树里查找某段文字，并**可以等它出现**（轮询，不产生任何截图）。" +
+      "点完之后等下一页 / 等按钮可点 / 等提示出现，都用它，比固定 sleep 或反复 android_see 既快又省内存。",
+    parameters: {
+      text: { type: "string", required: true, description: "要找的文字（包含匹配）" },
+      timeout_ms: { type: "number", description: "最多等多久（默认 5000；给 0 表示只查一次）" },
+      interval_ms: { type: "number", description: "轮询间隔（默认 500）" }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          ok: { type: "boolean", required: true },
+          error: { type: "string" },
+          found: { type: "boolean" },
+          waitedMs: { type: "number" },
+          nodeCount: { type: "number" },
+          matchText: { type: "string" },
+          matchX: { type: "number" },
+          matchY: { type: "number" },
+          matchW: { type: "number" },
+          matchH: { type: "number" },
+          clickable: { type: "boolean" },
+          hint: { type: "string" }
+        }
+      },
+      render(_a, v) {
+        v = renderValue(v);
+        if (!v.ok && v.found !== false) return renderResult(v);
+        if (!v.found) {
+          return [{ type: "text", text: "未找到「" + (v.error || "") + "」（等了 " + (v.waitedMs || 0) + "ms，当前控件 "
+            + (v.nodeCount || 0) + " 个）" + (v.hint ? "\n建议: " + v.hint : "") }];
+        }
+        return [{ type: "text", text: "找到「" + v.matchText + "」@(" + v.matchX + "," + v.matchY + ")"
+          + (v.clickable ? " · 可点击（可直接 android_tap）" : "") + "（等了 " + (v.waitedMs || 0) + "ms）" }];
+      }
+    },
+    async execute(args) {
+      const needle = args.text === undefined ? "" : String(args.text);
+      if (!needle) return { ok: false, error: "android_find_text 需要 text 参数" };
+      const timeout = Math.max(0, Math.min(60000, args.timeout_ms === undefined ? 5000 : Number(args.timeout_ms)));
+      const interval = Math.max(200, Math.min(3000, Number(args.interval_ms) || 500));
+      const t0 = Date.now();
+      let last = null;
+      for (;;) {
+        const v = await dumpNodes();
+        if (v) {
+          last = v;
+          const hit = (v.nodes || []).find((n) => (typeof n.text === "string" && n.text.indexOf(needle) >= 0)
+            || (typeof n.desc === "string" && n.desc.indexOf(needle) >= 0));
+          if (hit) {
+            return {
+              ok: true,
+              found: true,
+              waitedMs: Date.now() - t0,
+              nodeCount: (v.nodes || []).length,
+              matchText: (hit.text || hit.desc || ""),
+              matchX: hit.x || 0, matchY: hit.y || 0, matchW: hit.w || 0, matchH: hit.h || 0,
+              clickable: hit.clickable === true
+            };
+          }
+        }
+        if (Date.now() - t0 >= timeout) break;
+        await new Promise((r) => setTimeout(r, interval));
+      }
+      return {
+        ok: true,
+        found: false,
+        error: needle,
+        waitedMs: Date.now() - t0,
+        nodeCount: last ? (last.nodes || []).length : 0,
+        hint: last === null
+          ? "读不到控件树：无障碍服务可能没开或刚闪断，先用 android_a11y_status 看状态。"
+          : "该文字没出现。可先用 android_screen 看看实际文案（可能是图标/图片，无障碍读不到文字）。"
+      };
+    }
+  }));
+
+  // v1.22（P1）：等界面稳定（控件树指纹）—— 比截图比哈希省内存（不产生位图）
+  ctx.tools.register(defineTool({
+    name: "android_wait_stable",
+    description:
+      "等界面稳定：轮询**控件树指纹**，直到连续两次相同（或超时）。用于「等页面加载完再截图/点击」。" +
+      "比「不停地截图比哈希」省内存（不产生任何位图），也不会触发系统的内存回收。",
+    parameters: {
+      timeout_ms: { type: "number", description: "最多等多久（默认 6000）" },
+      interval_ms: { type: "number", description: "轮询间隔（默认 500）" },
+      stable_times: { type: "number", description: "连续几次相同算稳定（默认 2）" }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          ok: { type: "boolean", required: true },
+          error: { type: "string" },
+          stable: { type: "boolean" },
+          waitedMs: { type: "number" },
+          samples: { type: "number" },
+          nodeCount: { type: "number" },
+          fingerprint: { type: "string" },
+          hint: { type: "string" }
+        }
+      },
+      render(_a, v) {
+        v = renderValue(v);
+        if (!v.ok && v.stable !== false) return renderResult(v);
+        return [{ type: "text", text: (v.stable ? "界面已稳定 ✅" : "超时仍未稳定 ⚠")
+          + "（等了 " + (v.waitedMs || 0) + "ms，采样 " + (v.samples || 0) + " 次，控件 " + (v.nodeCount || 0)
+          + " 个）" + (v.hint ? "\n建议: " + v.hint : "") }];
+      }
+    },
+    async execute(args) {
+      const timeout = Math.max(500, Math.min(60000, Number(args.timeout_ms) || 6000));
+      const interval = Math.max(200, Math.min(3000, Number(args.interval_ms) || 500));
+      const need = Math.max(2, Math.min(10, Number(args.stable_times) || 2));
+      const t0 = Date.now();
+      let prev = "";
+      let same = 0;
+      let samples = 0;
+      let nodes = 0;
+      while (Date.now() - t0 < timeout) {
+        const v = await dumpNodes();
+        samples++;
+        if (v) {
+          nodes = (v.nodes || []).length;
+          const fp = treeFingerprint(v);
+          if (fp === prev) {
+            same++;
+            if (same >= need - 1) {
+              return { ok: true, stable: true, waitedMs: Date.now() - t0, samples, nodeCount: nodes, fingerprint: fp };
+            }
+          } else {
+            same = 0;
+            prev = fp;
+          }
+        }
+        await new Promise((r) => setTimeout(r, interval));
+      }
+      return {
+        ok: true,
+        stable: false,
+        waitedMs: Date.now() - t0,
+        samples,
+        nodeCount: nodes,
+        fingerprint: prev,
+        hint: nodes === 0
+          ? "全程读不到控件树：无障碍可能没开或刚闪断（先用 android_a11y_status）；也可能是纯图形界面（游戏/视频）。"
+          : "界面一直在变（动画/视频/加载中）。此时截图的时机不可控，建议直接操作或缩小区域截图。"
+      };
+    }
+  }));
+
   // v1.22：内存体检（真机 Agent 复盘要求的前置守卫项）
   ctx.tools.register(defineTool({
     name: "android_mem_status",

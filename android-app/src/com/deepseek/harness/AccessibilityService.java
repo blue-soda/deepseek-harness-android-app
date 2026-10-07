@@ -59,6 +59,19 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
     /** 当前活跃窗口的包名。 */
     public static volatile String activePackage = "";
 
+    // v1.22 生命周期时间线（真机 Agent 复盘 P0-3）：
+    //   以前「用户没开无障碍」与「服务刚被系统杀掉、正在重连」在插件侧返回的文案完全一样，
+    //   模型会把"闪断"误判成"用户关掉了无障碍"（复盘里就真发生了）。
+    //   这里记录连接/断开时刻与次数，由 /status 暴露：
+    //     · isRunning=false 且 connectCount==0        → 从没连上过（用户没开）
+    //     · isRunning=false 且 lastUnbindAt 很近       → 刚断开（被杀/被关/闪断中）
+    //     · isRunning=true  且 connectedAgoMs 很小     → 刚重连（闪断恢复 —— **危险信号**：
+    //        复盘里两次事故前的共同征兆就是无障碍先反复闪断，随后点击/输入成片失败）
+    public static volatile long lastConnectedAt = 0L;
+    public static volatile long lastUnbindAt = 0L;
+    public static volatile int connectCount = 0;
+    public static volatile String lastUnbindReason = "";
+
     private static final int MAX_NODES = 250;
     private static final int MAX_DEPTH = 40;
     private static final int MAX_TEXT_LEN = 120;
@@ -97,6 +110,10 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
     @Override
     public void onServiceConnected() {
         isRunning = true;
+        // v1.22：记录连接时刻与次数（用于区分"从没开过"与"刚重连/闪断"）
+        lastConnectedAt = System.currentTimeMillis();
+        connectCount = connectCount + 1;
+        lastUnbindReason = "";
         Log.i(TAG, "accessibility service connected");
         // 端口必须由包名决定，不能信 dsh_prefs 里的 a11y_port：该 pref 跨版本持久化，升级后旧包
         // 写下的 3181 仍会被读到 → 正式版与 Lite 的无障碍服务都往 3181 绑，后连的那个 bind 失败
@@ -132,6 +149,9 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
     @Override
     public boolean onUnbind(android.content.Intent intent) {
         isRunning = false;
+        // v1.22：记录断开时刻（"刚断开"与"从没开过"要能分开）
+        lastUnbindAt = System.currentTimeMillis();
+        lastUnbindReason = "onUnbind（系统解绑：用户关闭无障碍 / 服务被回收）";
         releaseAllFingers();
         stopServer();
         return super.onUnbind(intent);
@@ -303,6 +323,8 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
         if (base.equals("/touch-release")) return handleTouchRelease();
         if (base.equals("/touch-status")) return handleTouchStatus();
         if (base.equals("/gesture")) return handleGesture(body);
+        // v1.22（P1）：触发输入法的「前往 / 发送」（EditorAction），供 android_focus_type 的提交步骤使用
+        if (base.equals("/ime-enter")) return handleImeEnter();
         return jsonError("未知路由: " + base);
     }
 
@@ -879,10 +901,120 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
             o.put("nodeCount", root == null ? 0 : countNodes(root));
             o.put("apiLevel", Build.VERSION.SDK_INT);
             o.put("canScreenshot", Build.VERSION.SDK_INT >= 30);
+            // v1.22（P0-3）：生命周期时间线 —— 让调用方能区分"用户没开"与"刚被系统杀了/闪断"
+            long now = System.currentTimeMillis();
+            o.put("connectCount", connectCount);
+            o.put("connectedAt", lastConnectedAt);
+            o.put("unboundAt", lastUnbindAt);
+            o.put("unbindReason", lastUnbindReason);
+            o.put("connectedAgoMs", lastConnectedAt > 0 ? (now - lastConnectedAt) : -1);
+            o.put("unboundAgoMs", lastUnbindAt > 0 ? (now - lastUnbindAt) : -1);
+            o.put("everConnected", connectCount > 0);
+            // 刚重连（<60s）视为"闪断恢复"信号：真机复盘里它是后续大面积失败的先兆
+            o.put("reconnectedRecently", lastConnectedAt > 0 && (now - lastConnectedAt) < 60000);
             return o.toString();
         } catch (Throwable t) {
             return jsonError("status error: " + t.getMessage());
         }
+    }
+
+    /**
+     * v1.22（P1）：触发输入法的「前往 / 发送」（EditorAction）。
+     * 专治复盘 §4：「点输入法的『确定』只是收起键盘，不导航」。
+     * 手段：在**聚焦的输入节点**上执行 ACTION_IME_ENTER（API 30+，常量编译期内联，安全性 OK）。
+     * 找不到聚焦节点时回退到遍历第一个可编辑且可聚焦的节点；都没有则如实报错。
+     * 说明：本接口只负责"发提交"，**不负责确认提交生效** —— 由 android_focus_type 再读一次界面自证。
+     */
+    private String handleImeEnter() {
+        try {
+            if (Build.VERSION.SDK_INT < 30) {
+                return jsonError("ACTION_IME_ENTER 需要 Android 11+（当前 API " + Build.VERSION.SDK_INT
+                        + "）；可退化为点击页面上的提交按钮，或改用 android_input(keyevent) 发回车（需特权）");
+            }
+            AccessibilityNodeInfo target = null;
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root != null) {
+                target = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+                if (target == null) {
+                    final AccessibilityNodeInfo[] found = {null};
+                    walk(root, new NodeVisitor() {
+                        @Override
+                        public void visit(AccessibilityNodeInfo node, int depth) {
+                            if (found[0] == null && node.isEditable() && node.isFocused()) found[0] = node;
+                        }
+                    }, 0);
+                    target = found[0];
+                }
+            }
+            if (target == null) {
+                return jsonError("找不到聚焦的输入节点：请先点击输入框（android_tap / android_focus_type 会先做这一步）");
+            }
+            // v1.22：API 30 的 ACTION_IME_ENTER 只有 AccessibilityAction 对象、没有等价的 int 常量，
+            // 而且本项目编译用的 android.jar 里也取不到它 → 改用反射拿 id（编译期无依赖，运行期按 API 判断）。
+            int imeEnterId = imeEnterActionId();
+            if (imeEnterId <= 0) {
+                return jsonError("本机 API " + Build.VERSION.SDK_INT
+                        + " 不支持 ACTION_IME_ENTER（需要 Android 11+）；可退化为点击页面上的「前往/搜索/发送」按钮");
+            }
+            boolean ok = target.performAction(imeEnterId);
+            JSONObject o = new JSONObject();
+            o.put("ok", ok);
+            o.put("method", "ACTION_IME_ENTER");
+            if (!ok) {
+                // 回退：点界面上那个「前往/搜索/发送」按钮（IME 动作按钮在无障碍树里就是个普通可点击节点）
+                AccessibilityNodeInfo btn = findImeActionButton();
+                if (btn != null) {
+                    boolean clicked = btn.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                    btn.recycle();
+                    o.put("ok", clicked);
+                    o.put("method", clicked ? "ime-action-button" : "none");
+                    if (!clicked) o.put("error", "ACTION_IME_ENTER 被拒绝，且点击「前往/发送」按钮也失败");
+                } else {
+                    o.put("error", "ACTION_IME_ENTER 被拒绝（该输入框可能不支持 EditorAction，也没找到「前往/搜索/发送」按钮）");
+                }
+            }
+            return o.toString();
+        } catch (Throwable t) {
+            return jsonError("ime-enter error: " + t.getMessage());
+        }
+    }
+
+    /** API 30+ 才有 ACTION_IME_ENTER；反射取 id（取不到返回 -1）。 */
+    private int imeEnterActionId() {
+        if (Build.VERSION.SDK_INT < 30) return -1;
+        try {
+            java.lang.reflect.Field f = AccessibilityNodeInfo.AccessibilityAction.class
+                    .getField("ACTION_IME_ENTER");
+            Object action = f.get(null);
+            if (action == null) return -1;
+            Object id = action.getClass().getMethod("getId").invoke(action);
+            return id instanceof Integer ? ((Integer) id).intValue() : -1;
+        } catch (Throwable t) {
+            Log.w(TAG, "imeEnterActionId failed", t);
+            return -1;
+        }
+    }
+
+    /** 兜底：在活动窗口里找「前往 / 搜索 / 发送 / Go」这类 IME 动作按钮。 */
+    private AccessibilityNodeInfo findImeActionButton() {
+        final String[] labels = {"前往", "搜索", "发送", "完成", "转到", "Go", "Search", "Send", "Done", "Enter"};
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) return null;
+        final AccessibilityNodeInfo[] hit = {null};
+        walk(root, new NodeVisitor() {
+            @Override
+            public void visit(AccessibilityNodeInfo node, int depth) {
+                if (hit[0] != null || node == null) return;
+                if (!node.isClickable()) return;
+                CharSequence t = node.getText();
+                CharSequence d = node.getContentDescription();
+                String s = (t != null ? t.toString() : "") + " " + (d != null ? d.toString() : "");
+                for (String lab : labels) {
+                    if (s.contains(lab)) { hit[0] = node; return; }
+                }
+            }
+        }, 0);
+        return hit[0];
     }
 
     private int countNodes(AccessibilityNodeInfo root) {
