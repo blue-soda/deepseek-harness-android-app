@@ -6960,24 +6960,10 @@ public class MainActivity extends Activity {
         slp.leftMargin = dp(8);
         sub.addView(conEnStop, slp);
         card.addView(sub, cTop(cGap(8)));
-        // 详情（默认收起；已就绪时可点开）
+        // 详情块不再挂到状态块上（v1.21 用户反馈：展开后只有一行"布局标记/插件与补丁面"，
+        // 与「运行环境」弹窗里的信息、按钮完全重复，属于无效入口）→ 入口与文案一并去掉。
         conDetailBox = conExtractDetail();
-        card.addView(conDetailBox);
-
-        // v1.21（用户报障）：状态块的副标题写着「点这一行看详情」，但这一块**从来没绑过点击** ——
-        // 点了没反应（上游同版本也一样）。这里补齐：点状态块本身或其两行文字 = 展开/收起详情，
-        // 与「运行环境」弹窗里的「看详情」按钮完全同一行为（子按钮各自消费点击，不受影响）。
-        View.OnClickListener detailToggle = new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                consoleDetailOpen = !consoleDetailOpen;
-                renderConsole();
-            }
-        };
-        card.setOnClickListener(detailToggle);
-        conExState.setOnClickListener(detailToggle);
-        conEnState.setOnClickListener(detailToggle);
-        conEnMeta.setOnClickListener(detailToggle);
-        conExMeta.setOnClickListener(detailToggle);
+        conDetailBox.setVisibility(View.GONE);
 
         // ── 会话（把原来藏在「内核自检」页里的两个入口提到首页） ──
         items.put("group.sessions", cGrpTitle(t("title.grpSessions", "会话")));
@@ -7048,9 +7034,11 @@ public class MainActivity extends Activity {
 
     /** v1.19.7：新版主控台里「分组标题 → 它管着哪些行」（整组被隐藏时标题一并收掉）。 */
     private static final String[][] SIMPLE_GROUPS = {
-        {"group.sessions", "sessionadmin", "sessionheal"},
         {"group.system", "env", "browser", "perm", "plugins", "log", "theme"},
         {"group.diagnose", "selfcheck"},
+        // v1.21（用户要求）：会话两行移到最后 —— 它们不是日常高频操作，
+        // 原来排在最上面会挡住「启动引擎 / 权限 / 日志」这些常用入口。
+        {"group.sessions", "sessionadmin", "sessionheal"},
     };
 
     /**
@@ -7250,15 +7238,8 @@ public class MainActivity extends Activity {
         });
         box.addView(verify, cTop(cGap(8)));
 
-        Button detail = cButton(t("btn.extract.detail", "看详情"), false);
-        detail.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                closeDialogOverlay();
-                consoleDetailOpen = true;
-                renderConsole();
-            }
-        });
-        box.addView(detail, cTop(cGap(8)));
+        // v1.21（用户反馈）：原来这里还有个「看详情」按钮 —— 它只是把状态块里那张
+        // "布局标记 / 插件与补丁面"的小卡片展开，内容与校验结论重复，属于无效入口，已移除。
         conDialogView(t("title.grpEnv", "运行环境"), box, "关闭", null, null);
     }
 
@@ -9412,7 +9393,9 @@ public class MainActivity extends Activity {
             String pi = payloadIntegrity;
             if (pi != null) s += pi.startsWith("DRIFT") ? " · ⚠ 完整性异常" : " · 完整性 OK";
             else if (consoleDetailOpen) s += " · 正在核对完整性…";
-            return s + (consoleDetailOpen ? "" : " · 点这一行看详情");
+            // v1.21（用户要求）：这里不再追加"· 点这一行看详情" ——
+            // 状态块已经没有点击（详情入口已删除），这句话只会误导。
+            return s;
         }
         return t("desc.extract", "需要解压运行环境与内核（约 2.5 万个文件 / 约 220 MB）；解压完成后才能启动引擎。");
     }
@@ -10732,6 +10715,19 @@ public class MainActivity extends Activity {
         tg.setSingleLine(true);
         tg.setGravity(Gravity.CENTER);
         conTogglePaint(tg);
+        // v1.21（用户反馈）：浏览器没在跑时，点这个开关会"亮一下又弹回已关闭" ——
+        // 因为本地先做了乐观切换，而原生侧回的是 no-browser，重绘后状态自然回到关闭。
+        // 这里直接**禁用并给出下一步**：要么点下面的「打开测试页」，要么让 AI 用浏览器工具开一个网页。
+        if (!conBrowserRunning) {
+            tg.setEnabled(false);
+            tg.setAlpha(0.45f);
+            tg.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    conToast(t("hint.browserNotOpen", "浏览器还没打开：先点下面「打开测试页」，或让 AI 用浏览器工具打开一个网页"));
+                }
+            });
+            return tg;
+        }
         tg.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 if (conBrowserBusy) { conToast(t("status.browserBusy", "查询中…")); return; }
@@ -10803,6 +10799,22 @@ public class MainActivity extends Activity {
             }
         }
         col.addView(tbox, cTop(cGap(8)));
+
+        // v1.21（用户反馈）：浏览器只能由 AI 的浏览器工具打开，用户在控制台上**没有办法**
+        // 把它从"未运行"变成"正在运行"（于是「同屏查看」永远点不动）。这里补一个入口：
+        // 未运行时给一枚「打开测试页」，直接用原生 open op 打开一个页面，页面一起来就能同屏查看。
+        if (!conBrowserRunning) {
+            Button openTest = cButton(t("btn.browser.openTest", "打开测试页"), true);
+            openTest.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    conBrowserRun("open", "{\"url\":\"https://example.com\"}");
+                }
+            });
+            col.addView(openTest, cTop(cGap(14)));
+            col.addView(cNote(t("desc.browserOpenTest",
+                    "浏览器平时由 AI 的浏览器工具按需打开（它有自己的进程，不用时会回收）。"
+                    + "这枚按钮只是方便你验证同屏查看与页签功能。")), cTop(cGap(6)));
+        }
 
         LinearLayout acts = new LinearLayout(this);
         acts.setOrientation(LinearLayout.HORIZONTAL);
