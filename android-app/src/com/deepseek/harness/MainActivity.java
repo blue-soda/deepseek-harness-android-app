@@ -137,6 +137,12 @@ public class MainActivity extends Activity {
         // 必须加白名单：否则同内核版本下 dshroot-add 只写"缺失文件"，上一版留下的纯 JS 替身
         // （同名 index.js / package.json）不会被覆盖 → 终端仍然没有真 PTY。
         "dshroot/lib/node_modules/node-pty/",
+        // v1.21 启动性能补丁：把两处"只在用到时才需要"的重依赖从静态导入改成按需加载
+        //   · dsh-tool-web：turndown + @mixmark-io/domino（52 文件/533 KB）→ web_fetch 里并行预热
+        //   · libreoffice-kit：fontkit + brotli（804 KB）→ 只做 resolve 存在性检查，真用在 Worker 里
+        // 实测省下 ~2.95 s 的模块加载阶段（1519→1426 次加载）。必须加白名单，否则老设备不会更新这两个文件。
+        "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tool-web/lib/index.js",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/libreoffice-kit/lib/index.js",
         // v1.3.x 核心 UI 改动（侧栏改造/插件按钮）必须随 APK 覆盖：
         // 否则旧版升级用户的外部 dshroot 保留旧 client.js → 页面仍是旧 UI（无竖屏适配）
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-ui-layout/lib/client.js",

@@ -15,6 +15,7 @@ const t0 = Date.now();
 process.env.DSH_TIMER_T0 = String(t0);
 
 const LOG = process.env.DSH_TIMER_LOG || '/data/local/tmp/boot-hooks.log';
+const RESOLVE_LOG = process.env.DSH_TIMER_RESOLVE_LOG || '/data/local/tmp/boot-resolve.log';
 const SUMMARY = process.env.DSH_TIMER_SUMMARY || '/data/local/tmp/boot-summary.json';
 const marks = [{ name: 'preload-imported', t: 0 }];
 let seq = 0;
@@ -28,6 +29,17 @@ let mode = 'none';
 try {
   if (typeof registerHooks === 'function') {
     registerHooks({
+      // 新增打点①：模块**解析**（找 package.json / realpath / 条件导出），
+      // 这部分不产生 load 事件，之前完全看不见；CPU profile 显示它约占 2.5 s。
+      resolve(specifier, context, nextResolve) {
+        const t = process.hrtime.bigint();
+        const r = nextResolve(specifier, context);
+        const ms = Number(process.hrtime.bigint() - t) / 1e6;
+        try {
+          appendFileSync(RESOLVE_LOG, `${Date.now()}\t${ms.toFixed(2)}\t${specifier}\t${r && r.url}\n`);
+        } catch { /* 忽略 */ }
+        return r;
+      },
       load(url, context, nextLoad) {
         const t = process.hrtime.bigint();
         const r = nextLoad(url, context);           // 同步

@@ -179,6 +179,35 @@ def report_profile(path: str) -> None:
         print(f"    {ms:>8.0f} ms  {pkg:<34}{fn[:38]}")
 
 
+def report_resolve(path: str) -> None:
+    """模块解析（resolve）计时：找 package.json / realpath / 条件导出 —— 不产生 load 事件，之前看不见。"""
+    rows = []
+    for line in open(path, "r", encoding="utf-8", errors="replace"):
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) < 4:
+            continue
+        try:
+            rows.append((int(parts[0]), float(parts[1]), parts[2], parts[3]))
+        except ValueError:
+            continue
+    if not rows:
+        print(f"\n== {os.path.basename(path)}: 空 ==")
+        return
+    total = sum(r[1] for r in rows)
+    ds = sorted(r[1] for r in rows)
+    p95 = ds[int(len(ds) * 0.95)] if ds else 0
+    print(f"\n== 模块解析计时：{os.path.basename(path)} ==")
+    print(f"  解析次数 {len(rows)}  合计 {total:.0f} ms  均值 {total/len(rows):.2f} ms  p95 {p95:.1f} ms  最大 {ds[-1]:.1f} ms")
+    agg = defaultdict(lambda: [0.0, 0])
+    for _t, ms, spec, _url in rows:
+        key = pkg_of(spec) if not spec.startswith(".") and not spec.startswith("/") else "(相对路径)"
+        agg[key][0] += ms
+        agg[key][1] += 1
+    print("  按被解析的包聚合（Top 12）：")
+    for k, (ms, n) in sorted(agg.items(), key=lambda kv: -kv[1][0])[:12]:
+        print(f"    {ms:>8.1f} ms  {n:>4} 次  {k}")
+
+
 def main() -> int:
     # 支持多种模式的文件名：boot-hooks.log / boot-hooks-plain.log / boot-hooks-hooks.log …
     hooks_files = []
@@ -188,6 +217,10 @@ def main() -> int:
     for h in hooks_files:
         print(f"\n######## {os.path.basename(h)} ########")
         report_hooks(load_hooks(h))
+    # resolve 日志（模块解析计时）
+    for f in sorted(os.listdir(PROF)):
+        if f.startswith("boot-resolve") and f.endswith(".log"):
+            report_resolve(os.path.join(PROF, f))
     for f in sorted(os.listdir(PROF)):
         if f.startswith("boot-summary") and f.endswith(".json"):
             try:

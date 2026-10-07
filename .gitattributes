@@ -1,0 +1,47 @@
+# 行尾策略：本项目有大量"要被原样送到 Android 设备上执行/加载"的文件，
+# CRLF 会真实地把它们弄坏（已踩过两次）：
+#   ① tools/emu-guestlibs.sh 被转成 CRLF → mksh 报 "syntax error: unexpected 'newline'"；
+#   ② dsh-patches/overlay/ 是**字节级快照**（apply.sh 直接 tar 覆盖回 dshroot），
+#      CRLF 会让 overlay 与内核树不再一致（tools/overlay-drift.sh 会报"已加载但不同"）。
+# 所以：能执行的文本一律 LF；Windows 专用脚本保留 CRLF；二进制显式 binary。
+
+# 默认：仓库内存 LF，检出也是 LF（避免 core.autocrlf=true 把工作区改成 CRLF）
+* text=auto eol=lf
+
+# 需要"字节级一致"的补丁快照：不做任何转换
+dsh-patches/overlay/** -text
+dsh-patches/overlay-*/** -text
+
+# 设备/主机上要执行的脚本与源码
+*.sh   text eol=lf
+*.mjs  text eol=lf
+*.cjs  text eol=lf
+*.js   text eol=lf
+*.ts   text eol=lf
+*.py   text eol=lf
+*.java text eol=lf
+*.xml  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+
+# Windows 专用（cmd/PowerShell 对 CRLF 更友好；不参与 Android 侧执行）
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 二进制（禁止任何转换）
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.webp binary
+*.apk  binary
+*.jar  binary
+*.dex  binary
+*.node binary
+*.so   binary
+*.zip  binary
+*.tgz  binary

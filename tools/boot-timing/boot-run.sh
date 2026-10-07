@@ -19,10 +19,11 @@ export DSH_HOME=$P/dshhome
 export SHELL=$P/bin/bash
 export DSH_BASH_PATH=$P/bin/bash
 export DSH_TIMER_LOG=/data/local/tmp/boot-hooks-$MODE.log
+export DSH_TIMER_RESOLVE_LOG=/data/local/tmp/boot-resolve-$MODE.log
 export DSH_TIMER_SUMMARY=/data/local/tmp/boot-summary-$MODE.json
 
-rm -f "$DSH_TIMER_LOG" "$DSH_TIMER_SUMMARY" /data/local/tmp/boot-engine-$MODE.log
-rm -rf /data/local/tmp/prof; mkdir -p /data/local/tmp/prof
+rm -f "$DSH_TIMER_LOG" "$DSH_TIMER_RESOLVE_LOG" "$DSH_TIMER_SUMMARY" /data/local/tmp/boot-engine-$MODE.log
+rm -rf /data/local/tmp/prof /data/local/tmp/trace.json; mkdir -p /data/local/tmp/prof
 
 ARGS=""
 case "$MODE" in
@@ -32,6 +33,9 @@ case "$MODE" in
   # 而裸跑时我们是 SIGTERM 直接杀；preload 里的 SIGTERM 处理器会 process.exit(0) 走正常退出，
   # profile 才会写出来（实测：不带 preload 的 prof 模式 profile 是空的）。
   profhooks) ARGS="--cpu-prof --cpu-prof-dir=/data/local/tmp/prof --import /data/local/tmp/boot-preload.mjs" ;;
+  # 新增打点②：--trace-sync-io —— 主线程上任何**同步** I/O/系统调用都会打印栈。
+  # 用来抓"伪装成 CPU 空档"的同步等待（例如插件启动时 spawnSync / readFileSync 外部命令）。
+  sync)  ARGS="--trace-sync-io" ;;
 esac
 
 # 秒级时间戳（toybox 的 date 不支持 %N，别用纳秒）
