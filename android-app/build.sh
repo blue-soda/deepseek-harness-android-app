@@ -694,6 +694,41 @@ cp "$H/.dsh/profiles/web/package.json" "$P/staging/dshhome/profiles/web/"
 cp "$H/.dsh/profiles/web/pnpm-workspace.yaml" "$P/staging/dshhome/profiles/web/"
 cp "$H/.dsh/settings.yaml" "$P/staging/dshhome/" 2>/dev/null   || cp "$H/.dsh/settings.yaml.imported" "$P/staging/dshhome/settings.yaml"   || { echo "!! 找不到 .dsh/settings.yaml（也没有 settings.yaml.imported），中止"; exit 1; }
 
+# v1.24：内核 dsh 的 dependencies 必须列出**每一个**随包的 dsh-tool-* 插件。
+# 少一行，DSH 加载器就会报
+#   `tool-x (@deepseek-ai/dsh-tool-x): failed to import` → 该插件的工具一个都注册不上。
+# 真机自测踩到的正是这个：dsh-tool-browser 文件在树里、cordis.patch.yml 里也点名了，
+# 但内核 package.json 的 dependencies 没列它 → 10 个 browser_* 工具从未出现在工具列表里。
+# 这份清单历史上是**手工维护**的（没有任何脚本写入），所以在这里按 plugins/ 目录自动对齐。
+# 注：只用 grep/sed 实现 —— 本脚本是 set -e，且宿主机不保证有 python/node。
+_PKG="$P/staging/dshroot/lib/node_modules/@deepseek-ai/dsh/package.json"
+if [ -f "$_PKG" ] && [ -d "$P/../plugins" ]; then
+  _missing=""
+  for _d in "$P"/../plugins/dsh-tool-*; do
+    [ -d "$_d" ] || continue
+    _n=$(basename "$_d")
+    grep -q "\"@deepseek-ai/$_n\"" "$_PKG" || _missing="$_missing $_n"
+  done
+  if [ -n "$_missing" ]; then
+    # 锚定 "dependencies": { 这一行（**不要**锚 dsh-tool-* 字样：内核 package.json 在别的区块里也有同名引用，
+    # 插到那里会破坏 JSON —— 上面那版 sed 就是这么坏的）。缩进 = dependencies 行缩进 + 2 空格。
+    _dep_ind=$(grep -m1 -E '^[[:space:]]*"dependencies"[[:space:]]*:' "$_PKG" | sed -E 's/^([[:space:]]*).*/\1/')
+    _ind="$_dep_ind  "
+    _ins=""
+    for _n in $_missing; do
+      _ins="$_ins$_ind\"@deepseek-ai/$_n\": \"0.1.0\",
+"
+    done
+    awk -v ins="$_ins" '
+      { print }
+      !d && /^[[:space:]]*"dependencies"[[:space:]]*:[[:space:]]*\{/ { printf "%s", ins; d = 1 }
+    ' "$_PKG" > "$_PKG.tmp" && mv "$_PKG.tmp" "$_PKG"
+    echo "  内核依赖清单补入:$_missing"
+  else
+    echo "  内核依赖清单已含全部随包插件"
+  fi
+fi
+
 # 安全检查：payload 里绝不能出现 API Key 或凭证文件
 if grep -rqE "sk-[A-Za-z0-9]{20,}" "$P/staging" 2>/dev/null; then
   echo "!! 检测到 API Key 混入 payload，中止"; exit 1
