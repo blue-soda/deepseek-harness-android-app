@@ -173,11 +173,13 @@ function remoteStatusLines(target) {
     const capabilities = new Set(diagnostics.capabilities);
     const connection = status.online
         ? 'online'
-        : status.reconnecting
-            ? 'reconnecting'
-            : status.accountRequired
-                ? 'authorization required'
-                : 'offline';
+        : status.starting
+            ? 'starting'
+            : status.reconnecting
+                ? 'reconnecting'
+                : status.accountRequired
+                    ? 'authorization required'
+                    : 'offline';
     return [
         `Server: ${config.serverUrl ?? 'not configured'}`,
         'Host control: enabled',

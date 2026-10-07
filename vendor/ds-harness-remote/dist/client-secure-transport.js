@@ -100,7 +100,8 @@ export class ClientSecureTransport {
     getStats() { return this.inner.getStats(); }
     requireNoise() {
         if (this.noise === undefined || !this.noise.complete || this.closed) {
-            throw new Error('The authenticated Noise channel is not connected.');
+            // A stable code: the gateway switch has to tell a peer that is gone from one that refused.
+            throw Object.assign(new Error('The authenticated Noise channel is not connected.'), { code: 'TRANSPORT_CLOSED' });
         }
         return this.noise;
     }

@@ -21,6 +21,8 @@ export interface HostRemoteStatus {
     configured: boolean;
     online: boolean;
     reconnecting: boolean;
+    /** True until start() has wired the Server connection, so the UI can tell it from offline. */
+    starting: boolean;
     lastActiveAt?: number;
     error?: string;
     account?: string;
@@ -55,6 +57,14 @@ export declare class HostPluginRuntime {
      * device identity, unlike clearing the authorization.
      */
     private paused;
+    /**
+     * Whether start() has finished wiring the Server connection.
+     *
+     * The Codex domain is optional business that waits on an external binary, so it runs in the
+     * background; without this flag a Host that is merely still starting would report itself as
+     * offline and look broken to the user and to other clients.
+     */
+    private starting;
     private harnessVersion?;
     private closed;
     private readonly codex;

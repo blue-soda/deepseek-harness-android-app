@@ -3,6 +3,7 @@ import type { CodexAppFrameData, CodexAppStreamClosedData } from '@dsh-remote/pr
 import { RemoteClientCore } from '@dsh-remote/client-core';
 import { type RtcPeerConnectionFactory } from '@dsh-remote/webrtc';
 import { type HarnessMode } from './api-proxy-switch.js';
+import { ClientTargetStore } from './client-target-store.js';
 import type { ResolvedConfig } from './config.js';
 import { type HostWebServerLike } from './control-route.js';
 import type { IdentityStore } from './identity-store.js';
@@ -101,6 +102,19 @@ export interface HostAuthorizationControl {
     codexOpenStream?(input: unknown, publish: (event: 'codex.app.frame' | 'codex.app.stream.closed', data: CodexAppFrameData | CodexAppStreamClosedData) => Promise<void>, signal?: AbortSignal): Promise<unknown>;
     codexCloseStream?(input: unknown): Promise<unknown>;
 }
+/**
+ * Whether a proof of life failed to reach the peer.
+ *
+ * The check asks for an answer, not for success, so the two outcomes are told apart by where the
+ * error came from. An answer arrives as an error carrying the peer's own code (METHOD_NOT_FOUND,
+ * FEATURE_NOT_SUPPORTED, ...). A local failure is either one of the core's own codes above or a raw
+ * transport error with no code at all - a send that failed on a socket this process has not noticed
+ * is closed. Counting that second kind as liveness would make the whole check useless exactly when
+ * it matters.
+ * @param error - the error the check rejected with.
+ * @returns true when no answer arrived, so the transport must be treated as lost.
+ */
+export declare function livenessProbeLost(error: unknown): boolean;
 export declare class ClientModeRuntime {
     private readonly config;
     private readonly identities;
@@ -108,6 +122,7 @@ export declare class ClientModeRuntime {
     private readonly logger;
     private readonly host?;
     private readonly rtcFactoryProvider;
+    private readonly targetStore?;
     private preview?;
     private identity?;
     private connected?;
@@ -128,14 +143,58 @@ export declare class ClientModeRuntime {
      */
     private remoteReconnectRun;
     private pendingWorkspaceSelection?;
+    /**
+     * Transport a running fast reconnect is replacing.
+     *
+     * The rebuild opens its own control connection and the Server closes the older one for the same
+     * device, so that close belongs to our own replacement. Reading it as a lost peer is what made the
+     * fast level escalate itself into the fallback before it could ever succeed.
+     */
+    private supersededClient?;
+    /**
+     * True while a fast reconnect is rebuilding the link.
+     *
+     * The probe must not judge the link in the middle of its own replacement: the Server closes the
+     * older connection for the device, so a check that ran then would read our replacement's side effect
+     * as a second miss and escalate the level that is busy recovering. The rebuild's own outcome decides
+     * first; only once it has settled does the cadence resume judging.
+     */
+    private fastRebuildInFlight;
+    /**
+     * The last workspace the user opened for a Host.
+     *
+     * Kept so a reconnect can republish it: re-selecting the workspace is what makes the native UI
+     * re-read its session list, and without it a list poisoned by the outage stays wrong even after
+     * the link is back.
+     */
+    private lastWorkspaceSelection?;
     private codexVirtual?;
     private readonly proxySwitch?;
     private readonly gatewaySwitch;
     private readonly codexStreams;
     private connectionProgress?;
     private connectionProgressRun;
+    /**
+     * Host a boot is trying to restore, reported to the UI while the retry loop runs.
+     *
+     * Nothing is connected yet, so without this the window would show the local shell while the
+     * user is still looking at the remote workspace they left.
+     */
+    /**
+     * Recovery in progress, and which kind.
+     *
+     * `restore` is a start that is reconnecting to the recorded target, `fast` keeps the session on
+     * screen while its link is rebuilt, and `fallback` is the last resort that returns the user to
+     * the local shell. The UI shows all three, so a reconnect is never invisible, and the retry loop
+     * stops as soon as the user asks for local.
+     */
+    private reconnecting?;
+    /** Periodic proof of life for the live remote session; absent while nothing is connected. */
+    private livenessTimer?;
+    private livenessInFlight;
+    private livenessFailures;
     private closed;
-    constructor(config: ResolvedConfig, identities: IdentityStore, server: ClientServerApi, apiProxy: ApiProxy | undefined, typertGateway: TypertGatewayLike, logger: SafeLogger, host?: HostAuthorizationControl | undefined, rtcFactoryProvider?: (options?: WeriftFactoryOptions) => Promise<RtcPeerConnectionFactory | undefined>);
+    constructor(config: ResolvedConfig, identities: IdentityStore, server: ClientServerApi, apiProxy: ApiProxy | undefined, typertGateway: TypertGatewayLike, logger: SafeLogger, host?: HostAuthorizationControl | undefined, rtcFactoryProvider?: (options?: WeriftFactoryOptions) => Promise<RtcPeerConnectionFactory | undefined>, targetStore?: ClientTargetStore | undefined);
     start(): Promise<void>;
     /**
      * Whether this installation already holds stored Server credentials for its
@@ -183,6 +242,64 @@ export declare class ClientModeRuntime {
     setHostAuthorization(enabled: boolean): Promise<unknown>;
     setMode(mode: HarnessMode, targetDeviceId?: string, signal?: AbortSignal): Promise<Record<string, unknown>>;
     /**
+     * Prove the live remote link still answers, and act on the result.
+     *
+     * Only a missing answer counts as loss: the peer's own error (a refusal, an unknown method) came
+     * back over the same link and therefore proves it is there.
+     *
+     * The two recovery levels differ in what the user keeps. The first miss rebuilds the link in
+     * place, so the session, its workspace selection and the remote carriers all stay; the second
+     * gives up and returns to the local shell.
+     */
+    private verifyRemoteLiveness;
+    /**
+     * Rebuild the link while the session stays on screen.
+     *
+     * This is what separates the two recovery levels: nothing is handed back to the local shell, so a
+     * link that recovers does not cost the user the view they were working in.
+     * @param targetDeviceId - the Host to rebuild the link to.
+     */
+    private enterFastReconnect;
+    /**
+     * Build a new transport for the session already on screen.
+     *
+     * The carriers hold the previous client, so they are rebound to the new one before the old client
+     * is closed; leaving it open would keep pointing remote calls at a dead transport.
+     * @param targetDeviceId - the Host to reconnect to.
+     * @returns true when a new session is in place.
+     */
+    private reestablish;
+    private rememberWorkspaceSelection;
+    /**
+     * Republish the workspace selection so the native UI re-reads its remote session list.
+     *
+     * The client half consumes status.workspaceSelection and reconnects that workspace; that refresh is
+     * what replaces a list the outage had filled with local answers.
+     * @param targetDeviceId - the Host the reconnect finished against.
+     */
+    private restoreWorkspaceSelection;
+    private finishReconnect;
+    /**
+     * Check the live session now, outside the cadence.
+     *
+     * Used when the page becomes visible again, which is when a suspended client is most likely to be
+     * holding a link that already ended.
+     * @returns the status after the check.
+     */
+    verifyRemoteConnection(): Promise<Record<string, unknown>>;
+    private armLivenessWatch;
+    private stopLivenessWatch;
+    /**
+     * Shared cleanup for a session whose transport is gone.
+     *
+     * A close event and an exhausted liveness check must leave exactly the same state behind, so both
+     * paths run this. The session is gone for good here, which is why the phase becomes 'fallback' and
+     * the retry loop keeps the UI saying that it is reconnecting.
+     * @param client - the client that was connected.
+     * @param targetDeviceId - the Host it was bound to.
+     */
+    private handleRemoteTransportLost;
+    /**
      * Re-establish a remote session whose transport closed.
      *
      * The UI keeps rendering the remote session after the transport is gone, so
@@ -193,6 +310,25 @@ export declare class ClientModeRuntime {
      * @param targetDeviceId - the Host the dropped session was bound to.
      */
     private reconnectRemoteSession;
+    /**
+     * Persist the target a later boot may have to restore.
+     *
+     * A failure here must not fail a connect: the only cost is that a killed process comes back to
+     * the local shell, which is where it would have been without this record.
+     * @param target - the target to record.
+     */
+    private rememberTarget;
+    /**
+     * Reconnect to the target this device was last using, with the usual backoff.
+     *
+     * A resumed app can miss the transport close entirely - Android may reclaim the process - so
+     * nothing would start the retry loop and the user would face a local shell behind a remote
+     * workspace view. Restoring the recorded target gives that case the same loop a dropped
+     * transport gets. A target recorded for another Server is left alone: it is not reachable
+     * through the configured one.
+     * @returns true when a retry loop was started.
+     */
+    restoreLastTarget(): Promise<boolean>;
     listRemoteDirectory(targetDeviceId: string, path?: string, signal?: AbortSignal): Promise<RemoteDirectoryListing>;
     listRemoteWorkspaces(targetDeviceId: string, signal?: AbortSignal): Promise<RemoteWorkspaceView[]>;
     openRemoteWorkspace(targetDeviceId: string, path: string, signal?: AbortSignal): Promise<Record<string, unknown>>;

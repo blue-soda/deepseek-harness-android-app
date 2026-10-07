@@ -1,5 +1,26 @@
 const REMOTE_COMMAND_METHODS = ['execute', 'list'];
 const LOCAL_ONLY_NAMESPACES = new Set(['dynamicCordisRunner']);
+/**
+ * Namespaces the local shell keeps answering even when the peer is gone.
+ *
+ * A remote-mode window asks for its settings bootstrap, its plugin registry stream and its account
+ * read before any remote work happens, and only the local shell can answer those - that is why the
+ * fallback exists at all. Everything else is remote data, and answering data locally during an
+ * outage is what makes the native UI cache a local answer as if it came from the remote workspace:
+ * a session list served that way stays wrong even after the link returns.
+ */
+const LOCAL_FALLBACK_NAMESPACES = new Set(['$events', 'settings', 'credentials', 'dynamicCordisRunner']);
+/** Codes that mean the peer is not there right now, as opposed to answering with a refusal. */
+const PEER_GONE_CODES = new Set([
+    'TRANSPORT_CLOSED',
+    'CLIENT_CLOSED',
+    'RPC_TIMEOUT',
+    'CONNECTION_FAILED',
+    'CONNECTION_REPLACED',
+    'NOT_CONNECTED',
+    'UNAVAILABLE',
+    'internal',
+]);
 const ALL_REMOTE_COMMANDS = { execute: true, list: true };
 /** Keeps the official Gateway object stable while its selected Host changes. */
 export class TypertGatewaySwitch {
@@ -163,7 +184,7 @@ export class TypertGatewaySwitch {
             // Serve locally when the peer does not implement the endpoint, or when it went
             // away mid-call; a business error still propagates.
             return this.remoteTarget.invoke(request).catch(error => {
-                if (!isUnansweredByPeer(error))
+                if (!localFallbackAllowed(endpointOf(request), error))
                     throw error;
                 console.warn(`[dsh-remote] serving ${endpointOf(request)} locally: the peer did not answer it`, error);
                 return this.localInvoke(request);
@@ -194,7 +215,7 @@ export class TypertGatewaySwitch {
      */
     withLocalFallback(endpoint, remote, local) {
         return remote().catch(error => {
-            if (!isUnansweredByPeer(error))
+            if (!localFallbackAllowed(endpoint, error))
                 throw error;
             console.warn(`[dsh-remote] serving ${endpoint} locally: the peer did not answer it`, error);
             return local();
@@ -275,9 +296,34 @@ function requestFromCarrier(endpoint, payload, signal) {
 function endpointOf(request) {
     return `${request.namespace}/${request.method}`;
 }
-function isLocalOnlyEndpoint(endpoint) {
+function namespaceOf(endpoint) {
     const separator = endpoint.indexOf('/');
-    return separator > 0 && LOCAL_ONLY_NAMESPACES.has(endpoint.slice(0, separator));
+    return separator > 0 ? endpoint.slice(0, separator) : undefined;
+}
+function isLocalOnlyEndpoint(endpoint) {
+    const namespace = namespaceOf(endpoint);
+    return namespace !== undefined && LOCAL_ONLY_NAMESPACES.has(namespace);
+}
+/**
+ * Whether the local shell may answer a call the peer could not.
+ *
+ * A refusal means the peer does not implement the endpoint, and the local shell is the right answer
+ * for the bootstrap calls a window needs. A peer that is *gone* is different: serving its data
+ * locally hands the UI a plausible wrong answer, so only the bootstrap namespaces may answer then.
+ * @param endpoint - endpoint being routed.
+ * @param error - rejection from the remote carrier.
+ * @returns whether the local shell should answer instead.
+ */
+function localFallbackAllowed(endpoint, error) {
+    if (!isUnansweredByPeer(error))
+        return false;
+    if (!isRecord(error))
+        return true;
+    const code = typeof error.code === 'string' ? error.code : '';
+    if (!PEER_GONE_CODES.has(code))
+        return true;
+    const namespace = namespaceOf(endpoint);
+    return namespace !== undefined && LOCAL_FALLBACK_NAMESPACES.has(namespace);
 }
 function isRemoteCommandMethod(method) {
     return REMOTE_COMMAND_METHODS.includes(method);
@@ -307,6 +353,12 @@ const UNANSWERED_BY_PEER_CODES = new Set([
     'CONNECTION_REPLACED',
     'NOT_CONNECTED',
     'UNAVAILABLE',
+    // The client's own transport codes: the peer cannot answer a call it never received, so these are
+    // "unanswered" rather than a refusal - and PEER_GONE_CODES above is what decides whether the local
+    // shell may answer for it.
+    'TRANSPORT_CLOSED',
+    'CLIENT_CLOSED',
+    'RPC_TIMEOUT',
     'internal',
 ]);
 function isRecord(value) {

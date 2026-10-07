@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { accessSync, constants, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, isAbsolute, join, posix, relative, resolve } from 'node:path';
 import { deriveCodexCwdWorkspaces } from '@dsh-remote/client-core';
 import { RpcError } from '../safe-error.js';
 import { CodexAppServerClient, CodexAppServerError, } from './app-server.js';
@@ -12,6 +12,16 @@ import { codexPermissionPresetFromResponse } from './permissions.js';
 import { paginateCodexNativeHistory, projectCodexNativeHistory } from './virtual-harness.js';
 const APPROVAL_TTL_MS = 5 * 60_000;
 const DEFAULT_RESTART_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
+/**
+ * How long the whole App Server launch may take.
+ *
+ * `launchAppServer` tries several binary candidates and each attempt can spend a full request
+ * timeout waiting for a binary that will never answer, so a missing or broken install used to
+ * cost that timeout several times over. One budget for all candidates keeps the domain's own
+ * status honest ('unavailable' in seconds, not tens of seconds) while the existing restart
+ * backoff keeps trying in the background.
+ */
+const CODEX_START_BUDGET_MS = 5_000;
 const CODEX_PAGE_LIMIT = 100;
 const MAX_CODEX_PAGES = 32;
 const CODEX_HISTORY_PAGE_LIMIT = 25;
@@ -55,7 +65,7 @@ export class CodexRemoteDomain {
             return;
         try {
             this.state = 'starting';
-            await this.launchAppServer();
+            await this.launchWithinBudget();
         }
         catch (error) {
             this.available = false;
@@ -305,6 +315,34 @@ export class CodexRemoteDomain {
         this.unsubscribeUnavailable = undefined;
         await this.appServer?.close();
         this.appServer = undefined;
+    }
+    /**
+     * Launch the App Server within {@link CODEX_START_BUDGET_MS}.
+     *
+     * The losing side of the race keeps running until the disposal in start()'s catch stops it, so
+     * it needs its own handler: an unhandled rejection here would surface as a process-level error
+     * for what is only an optional feature being unavailable.
+     * @returns nothing once a candidate is ready.
+     */
+    async launchWithinBudget() {
+        let timer;
+        const attempt = this.launchAppServer();
+        attempt.catch(() => undefined);
+        try {
+            await Promise.race([
+                attempt,
+                new Promise((_resolve, reject) => {
+                    timer = setTimeout(() => {
+                        reject(new RpcError('CODEX_START_TIMEOUT', `Codex App Server did not start within ${CODEX_START_BUDGET_MS}ms.`));
+                    }, CODEX_START_BUDGET_MS);
+                    timer.unref?.();
+                }),
+            ]);
+        }
+        finally {
+            if (timer !== undefined)
+                clearTimeout(timer);
+        }
     }
     async launchAppServer() {
         let lastError;
@@ -951,17 +989,20 @@ export function codexBinaryCandidates(configured, hostPlatform = process.platfor
         return [...bundledWindowsCodex(userHome), configured];
     if (hostPlatform !== 'darwin')
         return [configured];
+    // The platform is a parameter, not necessarily this host: joining with the host flavour would
+    // return Windows separators for a macOS home and make the darwin branch unreachable from a test
+    // or tool running elsewhere.
     const bundledCandidates = [
         '/Applications/ChatGPT.app',
-        join(userHome, 'Applications', 'ChatGPT.app'),
+        posix.join(userHome, 'Applications', 'ChatGPT.app'),
     ].flatMap(chatGptApp => {
-        const codexCli = join(chatGptApp, 'Contents', 'Resources', 'codex-cli');
+        const codexCli = posix.join(chatGptApp, 'Contents', 'Resources', 'codex-cli');
         try {
-            const manifest = JSON.parse(readFileSync(join(codexCli, 'codex-package.json'), 'utf8'));
+            const manifest = JSON.parse(readFileSync(posix.join(codexCli, 'codex-package.json'), 'utf8'));
             if (!isRecord(manifest) || typeof manifest.entrypoint !== 'string' || manifest.entrypoint.length === 0) {
                 return [];
             }
-            const candidate = join(codexCli, manifest.entrypoint);
+            const candidate = posix.join(codexCli, manifest.entrypoint);
             if (!existsSync(candidate))
                 return [];
             accessSync(candidate, constants.X_OK);
@@ -974,7 +1015,7 @@ export function codexBinaryCandidates(configured, hostPlatform = process.platfor
     return [...new Set([
             ...bundledCandidates,
             '/Applications/ChatGPT.app/Contents/Resources/codex',
-            join(userHome, 'Applications', 'ChatGPT.app', 'Contents', 'Resources', 'codex'),
+            posix.join(userHome, 'Applications', 'ChatGPT.app', 'Contents', 'Resources', 'codex'),
             configured,
         ])];
 }

@@ -1,6 +1,7 @@
 import { RemoteClientError } from '@dsh-remote/client-core';
 import { HARNESS_API_TRANSFER_CHUNK_BYTES, MAX_HARNESS_API_TRANSFER_BYTES, } from '@dsh-remote/protocol';
 import { uuidV7 } from './ids.js';
+import { hydrateRpcAttachments } from './rpc-binary-attachments.js';
 import { normalizeLegacySessionGatewayValue, } from './session-format-compat.js';
 const DIRECT_REMOTE_CALL_BYTES = 2 * 1024 * 1024;
 const WELCOME_NOTICE_NAMESPACE = 'ui-settings-general';
@@ -42,7 +43,7 @@ export class RemoteTypertGateway {
                 response = await this.callTransferred(encoded, signal);
             }
         }
-        const result = parseRpcResult(response);
+        const result = parseRpcResult(hydrateRpcAttachments(response));
         const settingsResult = this.normalizeLegacyWelcomeSettings(endpoint, payload, result);
         if (settingsResult !== undefined)
             return settingsResult;
@@ -96,9 +97,10 @@ export class RemoteTypertGateway {
     async *iterate(streamId, endpoint, queue, unsubscribe, unsubscribeClose, signal, onAbort) {
         try {
             for await (const value of queue) {
+                const hydrated = hydrateRpcAttachments(value);
                 yield this.compatibility === 'legacy-to-v3'
-                    ? normalizeLegacySessionGatewayValue(endpoint, value)
-                    : value;
+                    ? normalizeLegacySessionGatewayValue(endpoint, hydrated)
+                    : hydrated;
             }
         }
         finally {

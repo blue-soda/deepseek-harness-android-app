@@ -1933,6 +1933,7 @@ Minimum version required to store current data is: ` + bestVersion + `.
     noRemoteWorkspaces: "No remote workspaces yet. Use + to add one.",
     activeRemote: "{name}",
     exitRemote: "Exit",
+    stopReconnecting: "Stop reconnecting",
     addRemoteWorkspace: "Add remote workspace",
     addCodexWorkspace: "Add CodeX workspace",
     noCodexWorkspaces: "No CodeX workspaces yet.",
@@ -2188,6 +2189,7 @@ Minimum version required to store current data is: ` + bestVersion + `.
     noRemoteWorkspaces: "\u8FD9\u53F0\u4E3B\u673A\u8FD8\u6CA1\u6709\u5DE5\u4F5C\u533A\uFF0C\u70B9\u51FB + \u6DFB\u52A0\u3002",
     activeRemote: "{name}",
     exitRemote: "\u9000\u51FA",
+    stopReconnecting: "\u505C\u6B62\u91CD\u8FDE",
     addRemoteWorkspace: "\u6DFB\u52A0\u8FDC\u7A0B\u5DE5\u4F5C\u533A",
     addCodexWorkspace: "\u6DFB\u52A0 CodeX \u5DE5\u4F5C\u533A",
     noCodexWorkspaces: "\u8FD8\u6CA1\u6709 CodeX \u5DE5\u4F5C\u533A\u3002",
@@ -3018,6 +3020,14 @@ Minimum version required to store current data is: ` + bestVersion + `.
           props.control("status").then(setStatus).catch(() => {
           });
         }, []), React.useEffect(() => {
+          let verify = () => {
+            document.visibilityState === "visible" && props.control("client.connection.verify").then(setStatus).catch(() => {
+            });
+          };
+          return document.addEventListener("visibilitychange", verify), window.addEventListener("focus", verify), () => {
+            document.removeEventListener("visibilitychange", verify), window.removeEventListener("focus", verify);
+          };
+        }, []), React.useEffect(() => {
           status?.serverUrl !== void 0 && loginServerUrl === DEFAULT_REMOTE_SERVER_URL && setLoginServerUrl(status.serverUrl);
         }, [status?.serverUrl]), React.useEffect(() => {
           let remoteActive = status?.mode === "remote";
@@ -3337,7 +3347,11 @@ Minimum version required to store current data is: ` + bestVersion + `.
               },
               React.createElement("rect", { x: 3, y: 4, width: 18, height: 13, rx: 2 }),
               React.createElement("path", { d: "M8 21h8M12 17v4" })
-            ), props.wide ? React.createElement("span", { className: "dshRemoteSidebarLabel" }, remoteLabel) : null),
+            ), props.wide ? React.createElement(
+              "span",
+              { className: "dshRemoteSidebarLabel" },
+              remoteLabel
+            ) : null),
             (status?.mode === "remote" || status?.fellBackToLocal === !0) && props.wide ? React.createElement("button", {
               type: "button",
               className: "dshRemoteExitLink",
@@ -3883,8 +3897,8 @@ Minimum version required to store current data is: ` + bestVersion + `.
             event.key === "Escape" && setRouteOpen(!1);
           };
           return document.addEventListener("keydown", closeOnEscape), () => document.removeEventListener("keydown", closeOnEscape);
-        }, [routeOpen]), status?.mode !== "remote") return null;
-        let transport = status.network?.webRtc?.mode ?? status.transport ?? "Disconnected", networkLabel = t(transport === "P2P" ? "remoteNetworkP2p" : transport === "TURN" ? "remoteNetworkTurn" : transport === "Relay" ? "remoteNetworkRelay" : transport === "LAN" ? "remoteNetworkLan" : "remoteNetworkOffline"), networkOnline = status.connected === !0 && transport !== "Disconnected", routeVia = t(transport === "P2P" ? "connectionRouteP2p" : transport === "TURN" ? "connectionRouteTurn" : transport === "Relay" ? "connectionRouteRelay" : "connectionRouteLan"), routeViaDetail = t(transport === "P2P" ? "connectionRouteP2pDetail" : transport === "TURN" ? "connectionRouteTurnDetail" : transport === "Relay" ? "connectionRouteRelayDetail" : "connectionRouteLanDetail"), network = status.network, webRtc = network?.webRtc, controlStateLabel = network?.controlChannelState === "connecting" ? t("controlStateConnecting") : network?.controlChannelState === "open" ? t("controlStateOpen") : network?.controlChannelState === "closing" ? t("controlStateClosing") : t("controlStateClosed"), detailValue = (value) => value === void 0 || value === "" ? t("notProvided") : String(value), candidateLabel = (value) => value === "host" ? t("candidateHost") : value === "srflx" ? t("candidateSrflx") : value === "prflx" ? t("candidatePrflx") : value === "relay" ? t("candidateRelay") : detailValue(value), fact = (label, value, mono = !1) => React.createElement(
+        }, [routeOpen]), status?.mode !== "remote" && status?.reconnecting === void 0) return null;
+        let transport = status.network?.webRtc?.mode ?? status.transport ?? "Disconnected", networkLabel = t(transport === "P2P" ? "remoteNetworkP2p" : transport === "TURN" ? "remoteNetworkTurn" : transport === "Relay" ? "remoteNetworkRelay" : transport === "LAN" ? "remoteNetworkLan" : "remoteNetworkOffline"), networkOnline = status.connected === !0 && transport !== "Disconnected", reconnecting = status.reconnecting !== void 0, routeVia = t(transport === "P2P" ? "connectionRouteP2p" : transport === "TURN" ? "connectionRouteTurn" : transport === "Relay" ? "connectionRouteRelay" : "connectionRouteLan"), routeViaDetail = t(transport === "P2P" ? "connectionRouteP2pDetail" : transport === "TURN" ? "connectionRouteTurnDetail" : transport === "Relay" ? "connectionRouteRelayDetail" : "connectionRouteLanDetail"), network = status.network, webRtc = network?.webRtc, controlStateLabel = network?.controlChannelState === "connecting" ? t("controlStateConnecting") : network?.controlChannelState === "open" ? t("controlStateOpen") : network?.controlChannelState === "closing" ? t("controlStateClosing") : t("controlStateClosed"), detailValue = (value) => value === void 0 || value === "" ? t("notProvided") : String(value), candidateLabel = (value) => value === "host" ? t("candidateHost") : value === "srflx" ? t("candidateSrflx") : value === "prflx" ? t("candidatePrflx") : value === "relay" ? t("candidateRelay") : detailValue(value), fact = (label, value, mono = !1) => React.createElement(
           "div",
           null,
           React.createElement("dt", null, label),
@@ -3903,17 +3917,32 @@ Minimum version required to store current data is: ` + bestVersion + `.
             "aria-hidden": !0
           }, React.createElement("rect", { x: 3, y: 4, width: 18, height: 13, rx: 2 }), React.createElement("path", { d: "M8 21h8M12 17v4" })),
           React.createElement("span", { className: "dshRemoteModePrefix" }, t("remoteModePrefix")),
-          React.createElement("span", { className: "dshRemoteSessionTarget" }, status.target?.name ?? t("host")),
+          React.createElement(
+            "span",
+            { className: "dshRemoteSessionTarget" },
+            // While reconnecting the carriers may already describe the local shell, so its name must not
+            // stand in for the target: name the Host the reconnect is about, or its short id.
+            status.reconnecting === void 0 ? status.target?.name ?? t("host") : status.reconnecting.targetName ?? shortDeviceId(status.reconnecting.targetDeviceId)
+          ),
           React.createElement("button", {
             type: "button",
-            className: `dshRemoteNetwork${networkOnline ? " isOnline" : " isOffline"}`,
-            title: networkLabel,
-            disabled: !networkOnline,
-            "aria-haspopup": "dialog",
-            "aria-expanded": routeOpen,
-            onClick: () => setRouteOpen((value) => !value)
-          }, React.createElement("i", { "aria-hidden": !0 }), networkLabel),
-          networkOnline ? React.createElement("span", { className: "dshRemoteEncrypted" }, t("remoteLinkEncrypted")) : null,
+            className: `dshRemoteNetwork${reconnecting ? " isReconnecting" : networkOnline ? " isOnline" : " isOffline"}`,
+            title: reconnecting ? t("stopReconnecting") : networkLabel,
+            // Cancelling has to stay clickable: a reconnecting session is offline by definition.
+            disabled: reconnecting ? !1 : !networkOnline,
+            "aria-haspopup": reconnecting ? void 0 : "dialog",
+            "aria-expanded": reconnecting ? void 0 : routeOpen,
+            "aria-label": reconnecting ? t("stopReconnecting") : void 0,
+            onClick: () => {
+              if (!reconnecting) {
+                setRouteOpen((value) => !value);
+                return;
+              }
+              setRouteOpen(!1), props.control("mode.set", { mode: "local" }).catch(() => {
+              });
+            }
+          }, React.createElement("i", { "aria-hidden": !0 }), reconnecting ? t("reconnecting") : networkLabel),
+          networkOnline && !reconnecting ? React.createElement("span", { className: "dshRemoteEncrypted" }, t("remoteLinkEncrypted")) : null,
           routeOpen ? React.createElement("div", {
             className: "dshRemoteRouteBackdrop",
             role: "presentation",
@@ -4048,7 +4077,7 @@ Minimum version required to store current data is: ` + bestVersion + `.
           ".dshRemoteModeButton:is(button):hover{background:var(--dsw-alias-interactive-bg-hover)}",
           ".dshRemoteSidebarEntry{box-sizing:border-box;position:relative;min-width:0;display:block;overflow:hidden}.dshRemoteSidebarEntry .dshRemoteModeButton{box-sizing:border-box;width:100%;min-width:0}.dshRemoteSidebarEntry.isWide{width:calc(100% + 8px);height:34px;margin:4px -4px}.dshRemoteSidebarEntry.isWide .dshRemoteModeButton{height:34px;min-height:34px;padding:6px 48px 6px 10px;border-radius:12px}.dshRemoteSidebarEntry.isRail{width:36px;height:54px}.dshRemoteSidebarEntry.isRail .dshRemoteModeButton{width:36px;height:36px;min-height:36px;justify-content:center;gap:0;margin:8px 0 10px;padding:0;border-radius:50%}.dshRemoteSidebarEntry.isActive .dshRemoteModeButton{color:var(--dsw-alias-label-secondary);background:transparent}.dshRemoteSidebarLabel{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dshRemoteExitLink{position:absolute;top:50%;right:10px;transform:translateY(-50%);white-space:nowrap;border:0;background:transparent;color:var(--dsw-alias-label-secondary);padding:0;font:inherit;font-size:12px;line-height:20px;cursor:pointer}.dshRemoteExitLink:hover{color:var(--dsw-alias-label-primary);text-decoration:underline}.dshRemoteExitLink:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px;border-radius:2px}.dshRemoteExitLink:disabled{opacity:.45;cursor:default;text-decoration:none}",
           ".dshRemoteComputerIcon{box-sizing:border-box;width:18px;height:18px;flex:0 0 18px;color:var(--dsw-alias-label-secondary)}",
-          '.dshRemoteSessionHeader{position:fixed;z-index:25;top:12px;left:50%;transform:translateX(-50%);max-width:calc(100vw - 360px);height:28px;display:inline-flex;align-items:center;gap:7px;color:var(--dsw-alias-label-secondary);font-size:12px;white-space:nowrap;overflow:hidden}.dshRemoteSessionHeader>svg{width:15px;height:15px;flex:0 0 auto}.dshRemoteModePrefix{flex:0 0 auto}.dshRemoteSessionTarget{flex:0 1 auto;min-width:0;max-width:260px;overflow:hidden;text-overflow:ellipsis}.dshRemoteNetwork{flex:0 0 auto;border:0;background:transparent;color:inherit;font:inherit;padding:3px 2px;display:inline-flex;align-items:center;gap:5px;cursor:pointer}.dshRemoteNetwork:hover:not(:disabled){color:var(--dsw-alias-label-primary);text-decoration:underline}.dshRemoteNetwork:disabled{cursor:default}.dshRemoteNetwork>i{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-label-tertiary)}.dshRemoteNetwork.isOnline>i{background:var(--dsw-alias-state-success-primary)}.dshRemoteNetwork.isOffline{color:var(--dsw-alias-state-error-primary)}.dshRemoteNetwork.isOffline>i{background:currentColor}.dshRemoteEncrypted{flex:0 0 auto;color:var(--dsw-alias-label-tertiary)}.dshRemoteNetwork:focus-visible,.dshRemoteRoutePanel>header button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}.dshRemoteRouteBackdrop{position:fixed;inset:0;z-index:26}.dshRemoteRoutePanel{box-sizing:border-box;position:absolute;top:48px;right:28px;width:min(680px,calc(100vw - 32px));max-height:calc(100vh - 72px);overflow:auto;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:12px;padding:16px;white-space:normal}.dshRemoteRoutePanel>header{position:sticky;top:-16px;z-index:1;display:flex;align-items:center;justify-content:space-between;margin:-16px -16px 0;padding:16px;background:var(--dsw-alias-bg-layer-1)}.dshRemoteRoutePanel>header strong{font-size:14px}.dshRemoteRoutePanel>header button{width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:inherit;font-size:20px;cursor:pointer}.dshRemoteRoutePanel>header button:hover{background:var(--dsw-alias-interactive-bg-hover)}.dshRemoteRoutePanel ol{display:flex;align-items:stretch;margin:12px 0 0;padding:0 0 16px;border-bottom:1px solid var(--dsw-alias-border-l2);list-style:none}.dshRemoteRoutePanel li{position:relative;min-width:0;flex:1;display:flex;flex-direction:column;gap:4px;padding-right:20px}.dshRemoteRoutePanel li:not(:last-child)::after{content:"\u2192";position:absolute;right:7px;top:21px;color:var(--dsw-alias-label-tertiary)}.dshRemoteRoutePanel li small{color:var(--dsw-alias-label-tertiary)}.dshRemoteRoutePanel li strong,.dshRemoteRoutePanel li span{overflow:hidden;text-overflow:ellipsis}.dshRemoteRoutePanel li strong{font-size:13px}.dshRemoteRoutePanel li span{color:var(--dsw-alias-label-secondary);font-size:11px}.dshRemoteRouteSection{padding-top:16px}.dshRemoteRouteSection h3{margin:0 0 10px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary)}.dshRemoteRouteSection dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px;margin:0}.dshRemoteRouteSection dl>div{min-width:0;display:grid;grid-template-columns:minmax(104px,auto) minmax(0,1fr);gap:10px;padding:7px 0;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:12px;line-height:1.45}.dshRemoteRouteSection dt{color:var(--dsw-alias-label-tertiary)}.dshRemoteRouteSection dd{min-width:0;margin:0;text-align:right;overflow-wrap:anywhere}.dshRemoteRouteSection dd.isMono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px}.dshRemoteRoutePanel>p{margin:16px 0 0;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5}@media(max-width:620px){.dshRemoteSessionHeader{top:8px;max-width:calc(100vw - 112px)}.dshRemoteSessionHeader>svg{display:none}.dshRemoteSessionTarget{max-width:130px}.dshRemoteEncrypted{display:none}.dshRemoteRoutePanel{top:42px;right:12px;max-height:calc(100vh - 56px)}.dshRemoteRoutePanel ol{flex-direction:column;gap:18px}.dshRemoteRoutePanel li:not(:last-child)::after{content:"\u2193";top:auto;right:auto;bottom:-16px;left:3px}.dshRemoteRouteSection dl{grid-template-columns:1fr}.dshRemoteRouteSection dl>div{grid-template-columns:1fr;gap:2px}.dshRemoteRouteSection dd{text-align:left}}',
+          '.dshRemoteNetwork.isReconnecting{color:#f0a020;border-color:rgba(240,160,32,.55);cursor:pointer}.dshRemoteSessionHeader{position:fixed;z-index:25;top:12px;left:50%;transform:translateX(-50%);max-width:calc(100vw - 360px);height:28px;display:inline-flex;align-items:center;gap:7px;color:var(--dsw-alias-label-secondary);font-size:12px;white-space:nowrap;overflow:hidden}.dshRemoteSessionHeader>svg{width:15px;height:15px;flex:0 0 auto}.dshRemoteModePrefix{flex:0 0 auto}.dshRemoteSessionTarget{flex:0 1 auto;min-width:0;max-width:260px;overflow:hidden;text-overflow:ellipsis}.dshRemoteNetwork{flex:0 0 auto;border:0;background:transparent;color:inherit;font:inherit;padding:3px 2px;display:inline-flex;align-items:center;gap:5px;cursor:pointer}.dshRemoteNetwork:hover:not(:disabled){color:var(--dsw-alias-label-primary);text-decoration:underline}.dshRemoteNetwork:disabled{cursor:default}.dshRemoteNetwork>i{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-label-tertiary)}.dshRemoteNetwork.isOnline>i{background:var(--dsw-alias-state-success-primary)}.dshRemoteNetwork.isOffline{color:var(--dsw-alias-state-error-primary)}.dshRemoteNetwork.isOffline>i{background:currentColor}.dshRemoteEncrypted{flex:0 0 auto;color:var(--dsw-alias-label-tertiary)}.dshRemoteNetwork:focus-visible,.dshRemoteRoutePanel>header button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}.dshRemoteRouteBackdrop{position:fixed;inset:0;z-index:26}.dshRemoteRoutePanel{box-sizing:border-box;position:absolute;top:48px;right:28px;width:min(680px,calc(100vw - 32px));max-height:calc(100vh - 72px);overflow:auto;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:12px;padding:16px;white-space:normal}.dshRemoteRoutePanel>header{position:sticky;top:-16px;z-index:1;display:flex;align-items:center;justify-content:space-between;margin:-16px -16px 0;padding:16px;background:var(--dsw-alias-bg-layer-1)}.dshRemoteRoutePanel>header strong{font-size:14px}.dshRemoteRoutePanel>header button{width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:inherit;font-size:20px;cursor:pointer}.dshRemoteRoutePanel>header button:hover{background:var(--dsw-alias-interactive-bg-hover)}.dshRemoteRoutePanel ol{display:flex;align-items:stretch;margin:12px 0 0;padding:0 0 16px;border-bottom:1px solid var(--dsw-alias-border-l2);list-style:none}.dshRemoteRoutePanel li{position:relative;min-width:0;flex:1;display:flex;flex-direction:column;gap:4px;padding-right:20px}.dshRemoteRoutePanel li:not(:last-child)::after{content:"\u2192";position:absolute;right:7px;top:21px;color:var(--dsw-alias-label-tertiary)}.dshRemoteRoutePanel li small{color:var(--dsw-alias-label-tertiary)}.dshRemoteRoutePanel li strong,.dshRemoteRoutePanel li span{overflow:hidden;text-overflow:ellipsis}.dshRemoteRoutePanel li strong{font-size:13px}.dshRemoteRoutePanel li span{color:var(--dsw-alias-label-secondary);font-size:11px}.dshRemoteRouteSection{padding-top:16px}.dshRemoteRouteSection h3{margin:0 0 10px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary)}.dshRemoteRouteSection dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px;margin:0}.dshRemoteRouteSection dl>div{min-width:0;display:grid;grid-template-columns:minmax(104px,auto) minmax(0,1fr);gap:10px;padding:7px 0;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:12px;line-height:1.45}.dshRemoteRouteSection dt{color:var(--dsw-alias-label-tertiary)}.dshRemoteRouteSection dd{min-width:0;margin:0;text-align:right;overflow-wrap:anywhere}.dshRemoteRouteSection dd.isMono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px}.dshRemoteRoutePanel>p{margin:16px 0 0;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5}@media(max-width:620px){.dshRemoteSessionHeader{top:8px;max-width:calc(100vw - 112px)}.dshRemoteSessionHeader>svg{display:none}.dshRemoteSessionTarget{max-width:130px}.dshRemoteEncrypted{display:none}.dshRemoteRoutePanel{top:42px;right:12px;max-height:calc(100vh - 56px)}.dshRemoteRoutePanel ol{flex-direction:column;gap:18px}.dshRemoteRoutePanel li:not(:last-child)::after{content:"\u2193";top:auto;right:auto;bottom:-16px;left:3px}.dshRemoteRouteSection dl{grid-template-columns:1fr}.dshRemoteRouteSection dl>div{grid-template-columns:1fr;gap:2px}.dshRemoteRouteSection dd{text-align:left}}',
           ".dshRemoteSessionHeader{left:auto;right:148px;transform:none;max-width:calc(100vw - 420px)}@media(max-width:760px){.dshRemoteSessionHeader{left:auto;right:88px;transform:none;max-width:calc(100vw - 104px);padding:3px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}.dshRemoteModePrefix,.dshRemoteEncrypted{display:none}.dshRemoteSessionTarget{max-width:min(30vw,150px)}}",
           ".dshRemoteModeButton:focus-visible,.dshRemotePage button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}",
           ".dshRemotePage{width:min(720px,100%);max-height:min(760px,calc(100vh - 40px));display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:14px;overflow:hidden;animation:dshRemotePageIn .18s cubic-bezier(.25,1,.5,1)}",
@@ -4134,7 +4163,26 @@ Minimum version required to store current data is: ` + bestVersion + `.
             console.warn("ds-harness-remote: status event stream unavailable, polling status instead:", reason);
           }
         });
-        ctx.effect(() => () => statusFeed.close(), "ds-harness-remote: status stream"), ctx.effect(() => {
+        ctx.effect(() => () => statusFeed.close(), "ds-harness-remote: status stream");
+        let firstSnapshot = !0, wasRemoteView = !1, wasFallenBack = !1, wasReconnecting = !1, lastFallbackReloadAt = 0, lastRecoveryReloadAt = 0, unsubscribeReconnectRefresh = statusFeed.subscribe(() => {
+          let current = statusFeed.getSnapshot();
+          if (current === void 0) return;
+          if (firstSnapshot) {
+            firstSnapshot = !1, wasRemoteView = current.mode === "remote", wasFallenBack = current.fellBackToLocal === !0, wasReconnecting = current.reconnecting !== void 0;
+            return;
+          }
+          let sawRemoteViewBefore = wasRemoteView;
+          if (current.mode === "remote" && (wasRemoteView = !0), current.fellBackToLocal === !0 ? wasFallenBack || (wasFallenBack = !0, wasRemoteView && Date.now() - lastFallbackReloadAt > 2e4 && (lastFallbackReloadAt = Date.now(), window.location.reload())) : wasFallenBack = !1, current.reconnecting !== void 0) {
+            wasReconnecting = !0;
+            return;
+          }
+          wasReconnecting && (wasReconnecting = !1, current.connected === !0 && (ctx.sessions.refresh().catch(() => {
+          }), !sawRemoteViewBefore && Date.now() - lastRecoveryReloadAt > 5e3 && (lastRecoveryReloadAt = Date.now(), window.location.reload())));
+        });
+        ctx.effect(
+          () => () => unsubscribeReconnectRefresh(),
+          "ds-harness-remote: refresh the Session list after a reconnect"
+        ), ctx.effect(() => {
           let disposed = !1, unsubscribeWorkspaces, unsubscribeSessions, selection, opening = !1, reconcile = () => {
             if (disposed || opening || selection === void 0) return;
             let pending = selection, workspaceSnapshot = ctx.workspaces.list.getSnapshot();
@@ -4142,7 +4190,7 @@ Minimum version required to store current data is: ` + bestVersion + `.
             let sessionSnapshot = ctx.sessions.list.getSnapshot();
             if (pending.backend === "codex" && pending.sessionId !== void 0 && sessionSnapshot.phase !== "ready") return;
             opening = !0, unsubscribeWorkspaces?.(), unsubscribeSessions?.(), unsubscribeWorkspaces = void 0, unsubscribeSessions = void 0, (pending.backend === "codex" && pending.sessionId !== void 0 && sessionSnapshot.ids.includes(pending.sessionId) ? Promise.resolve(pending.sessionId) : ctx.uiWorkspace.connectWorkspace(pending.workspaceId)).then(async (sessionId) => {
-              disposed || (ctx.sessions.open(sessionId), window.sessionStorage.removeItem(pendingWorkspaceSelectionKey), await control("workspace.selection.consume", pending).catch(() => {
+              disposed || (ctx.sessions.open(sessionId), await control("workspace.selection.consume", pending).catch(() => {
               }));
             }).catch((reason) => {
               disposed || console.warn("remote workspace selection failed:", reason);

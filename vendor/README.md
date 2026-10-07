@@ -43,7 +43,7 @@ DSH 只有看到它在 bundles 里才会组合进插件树。
 
 | 插件 | 版本 | 来源 | 说明 |
 |---|---|---|---|
-| `ds-harness-remote` | 0.4.27 | `github:blue-soda/ds-harness-remote` | 端到端加密的远程访问（桌面/网页/安卓互连）。自带 `dist/index.js` + `dist/client.github.js`；运行时依赖 `qrcode`/`werift`/`ws`/`zod` 等一并内置（源文件约 22MB，APK 实测 +11MB）。 |
+| `ds-harness-remote` | 0.4.30 | npm `@blue-soda/dsh-remote`（同源仓库 `github:blue-soda/ds-harness-remote`）| 端到端加密的远程访问（桌面/网页/安卓互连）。自带 `dist/index.js` + `dist/client.github.js`；运行时依赖 `qrcode`/`werift`/`ws`/`zod` 一并内置，`@deepseek-ai/schemastery` 由内核树嵌套路径提供、不内置。 |
 
 ## 更新步骤（人工）
 
@@ -67,6 +67,14 @@ mkdir -p /tmp/npm && tar -xzf /tmp/dsh-remote.tgz -C /tmp/npm     # 解出 packa
 > `46d689e` 更新；换布局后已在模拟器验证插件能正常加载
 > （引擎日志出现 `[dsh-remote] host identity ready …`，且无 `failed to import`）。
 > 以后更新直接照上面方式 A 拉 npm tgz、整包替换（`node_modules/` 保留即可，依赖清单没变）。
+
+> 2026-10-07 更新到 **0.4.30**：发布后登记表（packument）已可见，但 registry 的 tarball 仍在
+> CDN 传播（`GET …/dsh-remote-0.4.30.tgz` 返回 404，`npm pack` 同样 E404），因此本次是从
+> **同源的本地构建**整包替换的：`C:\Workspace\ds-harness-remote`（`main@2adf491`，工作区干净）
+> 的 `packages/plugin`（version 0.4.30，`dist/` 已构建）→ 按 npm `files` 清单
+> （`dist/ bin/ locale/ cordis.patch.yml dsh-plugin.json public.d.ts README.md LICENSE package.json`）
+> 拷进 `vendor/ds-harness-remote/`，`node_modules/` 原样保留（依赖清单未变）。
+> tarball 可用后可按方式 A 再拉一次做字节级比对。
 
 ### 方式 B：GitHub 渠道（默认，含未发布提交）
 

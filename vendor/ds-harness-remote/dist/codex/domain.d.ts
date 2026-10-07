@@ -49,6 +49,15 @@ export declare class CodexRemoteDomain {
     }>;
     detachPeer(connectionId: string): Promise<void>;
     close(): Promise<void>;
+    /**
+     * Launch the App Server within {@link CODEX_START_BUDGET_MS}.
+     *
+     * The losing side of the race keeps running until the disposal in start()'s catch stops it, so
+     * it needs its own handler: an unhandled rejection here would surface as a process-level error
+     * for what is only an optional feature being unavailable.
+     * @returns nothing once a candidate is ready.
+     */
+    private launchWithinBudget;
     private launchAppServer;
     private launchAppServerCandidate;
     private handleAppServerUnavailable;
