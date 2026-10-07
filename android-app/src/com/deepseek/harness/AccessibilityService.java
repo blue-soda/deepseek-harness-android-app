@@ -268,10 +268,17 @@ public class AccessibilityService extends android.accessibilityservice.Accessibi
                         }
                     }
                     String respBody;
-                    try {
-                        respBody = route(path, body);
-                    } catch (Throwable t) {
-                        respBody = jsonError("内部错误: " + t.getMessage());
+                    // v1.18.0：本地服务统一鉴权。127.0.0.1 对设备上所有应用开放，不是访问控制；
+                    // 这块能力（读屏 / 截屏 / 注入手势 / 写剪贴板）本应由用户在系统设置里显式授予。
+                    if (!LocalAuth.ok(LocalAuth.token(AccessibilityService.this), headStr, path)) {
+                        Log.w(TAG, "a11y 请求被拒（令牌缺失或错误）：" + path);
+                        respBody = LocalAuth.denied();
+                    } else {
+                        try {
+                            respBody = route(path, body);
+                        } catch (Throwable t) {
+                            respBody = jsonError("内部错误: " + t.getMessage());
+                        }
                     }
                     BufferedWriter w = new BufferedWriter(new OutputStreamWriter(s.getOutputStream(), "UTF-8"));
                     w.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "

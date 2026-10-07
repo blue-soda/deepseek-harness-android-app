@@ -122,6 +122,27 @@ python3 -c "import zipfile;z=zipfile.ZipFile('mytheme.zip','w');[z.write(f) for 
 | `log` | 日志（查看/分享/清空） | ✅ |
 | `update` | 检查更新 | ✅ |
 | `theme` | 主题页 | ❌ **不可**（它是导入主题的入口，删了就换不回来了） |
+| `selfcheck` | 内核自检（清单式一致性证明 · 自愈账本） | ❌ **不可**（自修复的唯一入口，隐藏了就没法跑自检） |
+| `browser` | AI 浏览器（同屏查看 · 页签列表 · 关闭浏览器） | ✅ （关掉只是少了同屏入口，不影响自救） |
+| `env` | 运行环境（重新解压 / 校验文件的常驻入口） | ❌ **不可**（v1.19.7 起进 KEEP_CARDS：修坏树的一键入口） |
+| `sessionadmin` | 会话管理行（**新版骨架**专有） | ✅ |
+| `sessionheal` | 会话修复行（**新版骨架**专有） | ✅ |
+| `group.sessions` | 「会话」分组小标题（**新版骨架**专有） | ✅ |
+| `group.system` | 「系统」分组小标题（**新版骨架**专有） | ✅ |
+| `group.diagnose` | 「诊断」分组小标题（**新版骨架**专有） | ✅ |
+
+### v1.19.7 · **新版骨架也吃主题布局**（`order` / `hidden` / `actions` 全适配）
+v1.19.6 起主控台缺省走**新版骨架**，但它是硬编码的 ⇒ 主题的
+`layout.order`（排序）、`layout.hidden`（隐藏卡片）、`actions`（自定义按钮）**在新版下静默失效**。
+v1.19.7 起全部接上：
+
+- **条目化**：新版骨架的每一行都有 id（上表），`order` / `hidden` 对它们与对 classic 卡片**同一套语义**；
+- **分组标题自动收**：某一组里的行全被隐藏时，标题自己也不再出现；
+- **`actions` 在新版下会渲染**（以前只有 classic 有）；
+- **表头与页脚固定**、不参与排序（与 classic 一致）；
+- `extract` 在新版里是**主操作块**（环境+引擎+主按钮+详情），受保护、不可隐藏
+  （`hidden` 里写 `extract` 或 `engine` 都会被忽略）；
+- 只想用旧卡片平铺？写 `"layout": {"style": "classic"}`。
 
 **文案键表（`text` 里能用的键；没给的键用 App 内置中文）**
 
@@ -150,7 +171,7 @@ python3 -c "import zipfile;z=zipfile.ZipFile('mytheme.zip','w');[z.write(f) for 
 | `btn.log.view` / `.share` / `.clear` | `查看` / `分享` / `清空` | 日志行按钮 |
 | `card.update` | `检查更新` | 检查更新行 |
 | `status.ready` / `.serving` / `.starting` | `就绪` / `本地服务已就绪` / `正在启动引擎…` | 底部状态行（三态） |
-| `desc.footer` | `换内核版本 / 覆盖安装后需要重新解压；平时只用「启动引擎」。` | 底部说明 |
+| `desc.footer` | `换内核版本 / 覆盖安装后需要重新解压；平时只用到「启动引擎」。` | 底部说明 |
 | `card.actions` | `自定义按钮` | 自定义按钮卡片标题（配了 actions 才有这张卡） |
 | `desc.actions` | `来自主题配置；带红框的按钮执行前会先让你确认。` | 同上，副标题 |
 | `card.theme` | `主题` | 主控台的「主题」导航行（**不可隐藏**） |
@@ -167,6 +188,135 @@ python3 -c "import zipfile;z=zipfile.ZipFile('mytheme.zip','w');[z.write(f) for 
 | `desc.themeSpec` | （一句说明） | 同上说明 |
 | `btn.theme.openSpec` / `.copyCheck` | `打开规范` / `复制自检命令` | 第③块两个按钮 |
 | `title.themeActions` | `可执行动作（本版不会执行）` | 第④块标题（仅当配置里有 shell/http/intent/prompt 动作时出现） |
+| `title.grpSessions` / `.grpSystem` / `.grpDiagnose` | `会话` / `系统` / `诊断` | 主控台（精简版）的三个分组小标题（v1.19.5 起） |
+| `card.sessionadmin` | `会话管理` | 会话管理入口行标题（v1.19.4 起） |
+| `desc.sessionadmin` | `删除不需要的会话 · 先进回收站，可恢复` | 同上，副标题 |
+| `card.sessionheal` | `会话修复` | 会话修复入口行标题 |
+| `desc.sessionheal` | `坏图毒死的会话：只降级那一条消息` | 同上，副标题 |
+| `btn.rescue` | `救援` | 精简版页脚的救援按钮（打开安全模式/导出/导入） |
+| ~~`btn.console.classic`~~ | ~~`完整版`~~ | **已下线（v1.19.6）**：主控台只有新版一套；右上角那个"切回旧卡片版"的按钮已移除，旧版改由 `layout.style:"classic"` 切换 |
+| `btn.shellTheme` | `界面主题` | 页脚的界面主题按钮 / 导航行 |
+| **v1.19.6 · 主控台** | | |
+| `title.grpEnv` | `运行环境` | 主控台「系统」组的**常驻**入口行（解压 / 重新解压 / 校验文件） |
+| `btn.extract.verify` | `校验文件` | 「运行环境」弹窗里的校验按钮 |
+| `btn.extract.detail` | `看详情` | 「运行环境」弹窗里的详情按钮 |
+| **v1.19.6 · 权限页** | | |
+| `desc.permPage` | `点任意一行去授权 / 管理。root 与 Shizuku 二选一即可（root 优先）。` | 权限页顶部说明 |
+| `title.grpPermBasic` | `基本权限` | 权限页分组小标题 |
+| `title.grpPermPriv` | `特权通道（二选一）` | 权限页分组小标题 |
+| `title.grpPermMore` | `其它` | 权限页分组小标题 |
+| `status.perm.granted` / `.noroot` / `.denied` | `已授权` / `本机无 root` / `未授权` | 权限行右列的短状态（整行可点） |
+| **v1.19.6 · 插件页** | | |
+| `desc.pluginsPage` | `关掉的插件不加载：工具不进 AI 的工具表，也少占上下文。改动在重启引擎后生效。` | 插件页顶部说明 |
+| `title.grpPlugList` | `插件列表` | 插件页分组小标题（后面自动接「· 已启用 N / M」） |
+| `btn.plugins.restart` | `重启引擎生效` | 插件页底部主按钮 |
+| **v1.19.6 · 日志页** | | |
+| `desc.logPage` | `「查看」直接看末尾 200 行；「分享」调用系统分享……` | 日志页顶部说明 |
+| `title.grpLogFile` | `日志文件` | 日志页分组小标题 |
+| `desc.logClear` | `只清日志，不影响正在运行的引擎；之后的新日志会继续写入` | 「清空日志」行副标题 |
+| `btn.log.clearShort` | `清空` | 「清空日志」行右列 |
+| `title.grpLogCare` | `维护` | 日志页「维护」分组小标题 |
+| **v1.19.6 · 主题页** | | |
+| `title.grpThemeIo` | `导入 / 导出` | 主题页分组小标题 |
+| `desc.themeExport` | `把当前主题打成 zip（含 console.json 与图片），导出后可直接分享` | 「导出主题包」行副标题 |
+| `desc.themeImport` | `从 zip 装一份主题；现有配置会先备份，可反悔` | 「导入主题包」行副标题 |
+| `btn.theme.backups` | `我保存过的主题` | 恢复旧配置的入口行标题（后面自动接「（N）」） |
+| `desc.themeBackups` | `恢复默认 / 导入之前的旧配置都收在这里，点一下直接恢复` | 同上副标题 |
+| `desc.themeSpecShort` | `THEME-PACK-SPEC.md · 含卡片 / 积木 / 动作三张 id 表` | 「打开规范」行副标题 |
+| `desc.themeDir` | `console.json、背景图与规范都放在这里` | 「打开主题目录」行副标题 |
+| `desc.themeDiag` | `看解析结果、回退项与布局页数` | 「诊断」行副标题 |
+| `title.grpThemeCare` | `维护` | 主题页「维护」分组小标题 |
+| `desc.themeReset` | `把 console.json 改名留底（不删）；之后可从「我保存过的主题」恢复` | 「恢复默认主题」行副标题 |
+| `btn.theme.resetShort` | `恢复` | 「恢复默认主题」行右列（红字） |
+| **v1.19.6 · 内核自检页** | | |
+| `title.grpSelfCheckActions` | `动作` | 自检页「动作」分组小标题 |
+| `btn.selfcheck.quick` | `快速自检` | 自检页主按钮（只比大小，秒级） |
+| `btn.selfcheck.full` | `全量校验` | 自检页次按钮（逐个 sha256，约 200s） |
+| `btn.selfcheck.ledger` | `看账本` | 自检页次按钮 |
+| `btn.selfcheck.snapshot` | `配置快照` | 自检页次按钮（唯一会写盘的动作，走红框确认） |
+| **v1.19.6 · 会话管理页** | | |
+| `desc.sessionadminPage` | `这里可以删掉不需要的会话。删除是「先移到回收站」—— 随时能恢复；真…` | 会话管理页顶部说明 |
+| `title.grpSessionList` | `会话列表` | 会话管理页分组小标题 |
+| `status.lastOp` | `上次操作` | 「上次操作」结论卡标题（会话管理 / 回收站共用） |
+| `status.done` | `完成` | 结论卡右列短状态（绿） |
+| `status.failed` | `失败` | 结论卡右列短状态（红） |
+| `status.readFailed` | `读取失败` | 列表 / 回收站读取失败时的行标题 |
+| `status.sessionNone` | `一条会话都没有` | 一条会话都没有时的行标题 |
+| `desc.sessionNone` | `在 Web 界面里发一条消息，这里就会出现它` | 同上行副标题 |
+| `desc.sessionadminIdle` | `还没有读取过列表。点下面的「读取会话列表」开始 —— 只读。` | 还没读取过列表时的说明段 |
+| `btn.session.load` | `读取会话列表` | 操作区主按钮（首次进入） |
+| `btn.session.reload` | `重新读取` | 操作区主按钮（已有数据） |
+| `btn.session.more` | `显示更多` | 「显示更多」按钮（后面自动接「（还有 N 条）」） |
+| `btn.session.delete` | `删除` | 会话行右列（红字 + ›，整行可点；点了是确认框，不会直接删） |
+| `desc.sessionadminWarn` | `边界（写死在代码里）：① 删除 = 移到 <dshHome>/ses…` | 会话管理页页尾「边界」说明 |
+| **v1.19.6 · 回收站页** | | |
+| `card.sessiontrash` | `回收站` | 回收站页返回行标题；也是主控台里那个带条数的入口按钮 |
+| `desc.sessiontrashPage` | `删掉的会话先放在这里（在 sessions/ 之外，内核看不到它们）…` | 回收站页顶部说明 |
+| `title.grpTrashList` | `回收站里的会话` | 回收站页分组小标题 |
+| `status.trashEmpty` | `回收站是空的` | 回收站为空时的行标题 |
+| `desc.trashEmptyHint` | `删掉的会话会先出现在这里` | 同上行副标题 |
+| `desc.sessiontrashIdle` | `还没有读取过回收站。点下面的「读取回收站」。` | 还没读取过回收站时的说明段 |
+| `btn.session.loadTrash` | `读取回收站` | 操作区主按钮 |
+| `btn.session.backAdmin` | `回会话管理` | 操作区次按钮 |
+| `btn.session.restore` | `恢复` | 回收站行右列（实心主操作，走确认框） |
+| `btn.session.purge` | `彻底删除` | 回收站行右列（红字，走红框确认，不可恢复） |
+| `title.grpTrashCare` | `维护` | 回收站「维护」分组小标题 |
+| `btn.session.purgeAll` | `清空回收站` | 清空回收站行标题（后面自动接「（N 条 · 体积）」） |
+| `desc.sessionPurgeAll` | `把回收站里的会话一次性真正删掉，删完找不回来` | 同上行副标题 |
+| `btn.session.purgeAllShort` | `清空` | 同上行右列（红字 + ›，点击即红框确认） |
+| `desc.sessiontrashWarn` | `「彻底删除」会真的从磁盘删掉，不可恢复 —— 所以它只在这里提供，且…` | 回收站页页尾说明 |
+| **v1.19.6 · 会话修复页** | | |
+| `desc.sessionhealPage` | `坏附件（比如内容已经损坏的图片）一旦写进会话历史，之后每次发消息都会…` | 会话修复页顶部说明 |
+| `status.lastHeal` | `上次修复` | 「上次修复」结论卡标题 |
+| `status.noChange` | `无改动` | 结论卡右列短状态（没有需要修的地方） |
+| `desc.sessionhealIdle` | `还没有扫描过。点下面的「扫描会话」开始 —— 扫描全程只读。` | 还没扫描过时的说明段 |
+| `status.scanFailed` | `扫描失败` | 扫描失败时的行标题 |
+| `title.grpSessionBad` | `扫描结果` | 扫描失败时的分组小标题 |
+| `title.grpSessionBadList` | `有问题的会话` | 有问题的会话列表分组小标题 |
+| `desc.noBadSession` | `所有会话的附件引用都能对上实体文件、内容也完整 —— 不需要修什么。` | 结论卡副标题（一条坏的都没有） |
+| `desc.sessionBadHint` | `点一条查看它坏在哪、再决定要不要修（只会动你点的这一条）：` | 结论卡副标题（有坏的，提示点一条看详情） |
+| `desc.sessionNormalOther` | `条会话没有发现问题（未在下面列出）。` | 列表下方补一句（前面自动接「另有 N 」） |
+| `btn.session.scan` | `扫描会话` | 页脚主按钮（首次） |
+| `btn.session.rescan` | `重新扫描` | 页脚主按钮（已扫描过） |
+| `desc.sessionhealWarn` | `边界（写死在代码里）：① 只处理你点选的那一条，没有「批量修复」这种…` | 会话修复页页尾「边界」说明 |
+| **v1.19.6 · 内核自检页（续）** | | |
+| `title.grpLedger` | `自愈账本` | 自检页「自愈账本」分组小标题 |
+| `card.ledger` | `自愈账本` | 账本卡片行标题 |
+| `desc.ledger` | `每次自检与修复追加一条 JSON，AI 可以直接读它向你解释修过什么` | 账本卡片行副标题（后面自动接账本摘要） |
+| `desc.ledgerDir` | `目录：` | 账本卡片下方路径说明（后面自动接目录） |
+| `title.grpHealProposal` | `AI 修复提案` | 自检页「AI 修复提案」分组小标题 |
+| `desc.healProposal` | `AI 读自检结果与账本后，可以把判断与建议写成 /sdcard/` | 提案区顶部说明 |
+| `status.noProposal` | `当前没有提案文件` | 没有提案文件时的行标题 |
+| `desc.noProposal` | `AI 写出提案后，这里会出现它、并列出它想做什么` | 同上行副标题 |
+| `desc.healFingerprint` | `源指纹：` | 提案行里「源指纹」的前缀 |
+| `desc.healNoFingerprint` | `（提案未提供 → 会跳过过期检查）` | 提案没给源指纹时的提示 |
+| `btn.heal.run` | `执行（需确认）` | 提案行右列按钮（走确认框） |
+| `btn.heal.notRunnable` | `不可执行` | 动作不在白名单时的按钮（红字，点了不执行） |
+| `desc.healProposalWarn` | `⚠ 执行会改动内核树（只碰内核自己的 @deepseek-ai 命名…` | 提案区页尾警告 |
+| `desc.selfcheckWarn` | `边界（写死在代码里）：① 自检「只读」，不删不改；② 「缺失/内容不…` | 自检页页尾「边界」说明 |
+| **v1.19.6 · AI 浏览器页（阶段 C）** | | |
+| `card.browser` | `AI 浏览器` | 主控台「系统」组那一行的标题；浏览器页返回行；卡片版标题 |
+| `desc.browser` | `看 AI 正在哪一页 · 同屏查看（画面可直接操作，拖顶部小条搬窗）` | 主控台那一行的副标题 |
+| `desc.browserPage` | `AI 浏览器跑在独立进程里：页面崩了不会带走控制台和引擎。这里能看它…` | 浏览器页顶部说明 |
+| `title.grpBrowserState` | `浏览器状态` | 浏览器页「浏览器状态」分组小标题 |
+| `title.grpBrowserTabs` | `页签` | 浏览器页「页签」分组小标题 |
+| `status.browserIdle` | `未运行` | 状态行 / 右列短状态（没有活的浏览器） |
+| `status.browserRunning` | `运行中` | 状态行 / 右列短状态（有活的浏览器） |
+| `status.browserBusy` | `查询中…` | 上一次 op 还没回来时的状态行 + 提示 |
+| `status.browserUnreachable` | `读不到状态` | 读不到状态时的右列短状态（红/次要色） |
+| `status.browserPanelOn` | `同屏中` | 状态行后缀（同屏正在显示） |
+| `status.browserPanelOff` | `同屏关` | 状态行后缀（同屏没显示） |
+| `status.browserNoTab` | `还没有页签` | 一个页签都没有时的行标题 |
+| `status.browserActive` | `当前` | 页签行的右列短状态（当前活动页签） |
+| `btn.browser.panel` | `同屏查看` | 「同屏查看」开关行标题（开关本体写死「已启用/已关闭」） |
+| `btn.browser.reload` | `刷新` | 页脚次按钮（重新查一次状态与页签） |
+| `btn.browser.close` | `关闭浏览器` | 页脚主按钮 + 确认框标题/确认按钮 |
+| `desc.browserPanel` | `把画面显示成一块浮窗 · 拖顶部小条移动、点小条关掉 · 画面可直接操作` | 「同屏查看」行的副标题 |
+| `desc.browserNoTab` | `让 AI 打开一个网页后，这里会列出它的页签` | 「还没有页签」行的副标题 |
+| `desc.browserClose` | `关掉全部页签并回收浏览器进程（不影响引擎）` | 关闭确认框正文 |
+| `desc.browserWarn` | `边界（写死在代码里）：① 同屏画面可以直接操作（点画面＝点网页），拖顶部小条搬窗、点小条关掉；② 不改窗口尺寸…` | 浏览器页页尾「边界」说明 |
+| `status.browserPluginOff` | `插件已关闭` | 浏览器页「插件已关闭」提示行标题（整行可点 → 插件页） |
+| `desc.browserPluginOff` | `AI 现在用不了浏览器工具 · 去「插件」页打开 dsh-tool-…` | 同上行副标题 |
 
 **布局字段速查（`layout`）**
 

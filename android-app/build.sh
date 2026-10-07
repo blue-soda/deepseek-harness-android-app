@@ -41,6 +41,16 @@ else
 fi
 
 echo "== 0/7 组装 payload =="
+# v1.19.0 硬闸门：payload 里的 JSON/YAML 绝不能带 UTF-8 BOM ——
+# node 的 JSON.parse 会因为 BOM 直接抛 SyntaxError，表现为"引擎起不来"（真机实锤过一次）。
+BOMHIT=$(find "$H/dshroot" "$H/.dsh" \( -name '*.json' -o -name '*.yml' -o -name '*.yaml' \) -type f 2>/dev/null \
+  | xargs -r grep -l $'^\xEF\xBB\xBF' 2>/dev/null | head -5)
+if [ -n "$BOMHIT" ]; then
+  echo "!! 以下文件带 UTF-8 BOM，会让引擎解析失败（请用无 BOM 的 UTF-8 重写）："
+  echo "$BOMHIT"
+  exit 1
+fi
+echo "  BOM 闸门：payload 内 JSON/YAML 无 BOM ✓"
 # 移动端适配注入（mobile.css，不覆盖原生 index.html，DSH 更新后也自动重新注入）
 sh "$P/../mobile-patch/inject.sh"
 
@@ -168,7 +178,7 @@ if [ -n "$DSH_X64_BARE_LIBS" ]; then
   #   而 payload 同步是"已存在文件不覆盖"，换 APK 也修不回来（只能卸载重装）。
   #   给真机构建时**不要**设置 DSH_X64_BARE_LIBS：
   #     · tools/build-apk.sh 默认不设（只有 --emulator 才设）
-  #     · .cache/build-local.sh 是本地**模拟器**入口，它设了 → 真机请用 .cache/build-arm64.sh
+  #     · tools/build/build-local.sh 是本地**模拟器**入口，它设了 → 真机请用 tools/build/build-arm64.sh
   echo "⚠⚠ 正在使用模拟器(x86_64)适配构建：DSH_X64_BARE_LIBS=$DSH_X64_BARE_LIBS" >&2
   echo "⚠⚠ 这个 APK 不要装到真机 arm64（node 的 OpenSSL 会 dlopen 失败并直接崩溃）" >&2
   for _l in libz.so libssl.so libcrypto.so; do
@@ -261,6 +271,58 @@ else
   echo "  !! 未找到 dsh/package.json，内核版本标记留空（App 将保守全量补齐）"
   : > "$P/assets/dshroot_kernel_version.txt"
 fi
+
+# ── 内核树清单（自修复功能 ①「清单式一致性证明」的随包数据）─────────────────────────
+# 为什么必须有：项目历史反复出现"引擎起不来 → 只能清数据"，而每次都要人工猜是哪棵树/哪个文件坏了。
+# 有了这份清单，App 的自检页能给出**具体哪个文件缺失/内容不符**，而不是"感觉坏了"。
+# 位置：assets/kernel-manifest.tsv（未压缩文本，APK 内会被 deflate；App 侧流式读，无需 gzip 解码）。
+# 时机：必须在这里 —— dshroot 已经完整拷进 staging、且 REVISION 标记已写，清单要覆盖最终形态。
+# ⚠ 用**构建机自己的 node**，不是 staging 里那个（那是 arm64、给手机用的，PC 上跑不了，
+#   而且 cp -L 后没有执行位 —— 第一版就是这么静默跳过、包出来了却没有清单）。
+MANIFEST_GEN="$P/tools/manifest-gen.mjs"
+[ -f "$MANIFEST_GEN" ] || { echo "!! 缺 tools/manifest-gen.mjs（应在 android-app/tools/ 下），中止构建"; exit 1; }
+HOST_NODE="$(command -v node 2>/dev/null || true)"
+if [ -n "$HOST_NODE" ]; then
+  # 直接传 /d/... 形式的路径：Git Bash(MSYS) 会自动转成 Windows 形式给 node.exe（实测可行）；
+  # 不要加 MSYS2_ARG_CONV_EXCL —— 那会得到 D:\d\dsh\... 这种被毁掉的路径。
+  "$HOST_NODE" "$MANIFEST_GEN" "$P/staging/dshroot" "$P/assets/kernel-manifest.tsv" \
+    || { echo "!! 内核树清单生成失败，中止构建"; exit 1; }
+  [ -f "$P/assets/kernel-manifest.tsv" ] || { echo "!! 清单文件没生成出来，中止构建"; exit 1; }
+  MLINES=$(wc -l < "$P/assets/kernel-manifest.tsv")
+  [ "$MLINES" -ge 1000 ] || { echo "!! 内核树清单只有 $MLINES 行，明显不完整，中止构建"; exit 1; }
+  echo "  内核树清单闸门：$MLINES 行 ✓（$(stat -c%s "$P/assets/kernel-manifest.tsv") 字节）"
+else
+  echo "  !! 构建机上找不到 node，无法生成内核树清单 —— 这条包的自检页会显示「本包不带清单」"
+  echo "     （不是致命错误，但自修复功能 ①「清单式一致性证明」在这个包里不可用）"
+fi
+
+# ── 随包脚本：会话级自愈（自修复功能 ③「只降级坏附件那一条消息」）的执行工具 ────────────────
+# 为什么必须有：坏附件（文件头合法但 IDAT 损坏的 PNG 等）一旦作为 tool_result 进历史，
+# **每次请求都复现**，用户只能放弃整条会话（v1.15.1 记录过两条）。App 侧把它复制到私有目录后
+# 交给 payload 自带的 node 执行（assets 不是真实路径，node 读不了）。
+# 硬闸门：缺文件 / 明显截断 / 丢了关键函数 → 中止构建，避免"包出去了、修复功能却静默不可用"。
+HEAL_SCRIPT="$P/tools/session-heal.mjs"
+[ -f "$HEAL_SCRIPT" ] || { echo "!! 缺 tools/session-heal.mjs（会话级自愈的执行工具），中止构建"; exit 1; }
+cp "$HEAL_SCRIPT" "$P/assets/session-heal.mjs" || { echo "!! 拷贝 session-heal.mjs 到 assets 失败，中止构建"; exit 1; }
+HLINES=$(wc -l < "$P/assets/session-heal.mjs")
+[ "$HLINES" -ge 100 ] || { echo "!! session-heal.mjs 只有 $HLINES 行，明显不完整，中止构建"; exit 1; }
+grep -q 'function healSession' "$P/assets/session-heal.mjs" || { echo "!! session-heal.mjs 缺少 healSession 实现，中止构建"; exit 1; }
+grep -q 'zstdCompressSync' "$P/assets/session-heal.mjs" || { echo "!! session-heal.mjs 缺少帧重压缩能力，中止构建"; exit 1; }
+grep -q 'ATTACHMENT_CORRUPT' "$P/assets/session-heal.mjs" || { echo "!! session-heal.mjs 缺少坏附件分类，中止构建"; exit 1; }
+echo "  会话自愈脚本闸门：$HLINES 行 ✓（assets/session-heal.mjs）"
+
+# ── 随包脚本：会话管理（列表 / 删除到回收站 / 恢复 / 彻底删除）─────────────────────────────
+# 用户 2026-10-04：App 里原来**没有删除会话的入口**，话题只能一直堆着。删的时候先移进回收站
+# （<dshHome>/sessions-deleted，在 sessions 之外），真删只在回收站里做。
+ADMIN_SCRIPT="$P/tools/session-admin.mjs"
+[ -f "$ADMIN_SCRIPT" ] || { echo "!! 缺 tools/session-admin.mjs（会话管理），中止构建"; exit 1; }
+cp "$ADMIN_SCRIPT" "$P/assets/session-admin.mjs" || { echo "!! 拷贝 session-admin.mjs 到 assets 失败，中止构建"; exit 1; }
+ALINES=$(wc -l < "$P/assets/session-admin.mjs")
+[ "$ALINES" -ge 100 ] || { echo "!! session-admin.mjs 只有 $ALINES 行，明显不完整，中止构建"; exit 1; }
+grep -q 'function listSessions' "$P/assets/session-admin.mjs" || { echo "!! session-admin.mjs 缺少 listSessions，中止构建"; exit 1; }
+grep -q 'sessions-deleted' "$P/assets/session-admin.mjs" || { echo "!! session-admin.mjs 缺少回收站逻辑，中止构建"; exit 1; }
+echo "  会话管理脚本闸门：$ALINES 行 ✓（assets/session-admin.mjs）"
+
 
 # ── payload/bin/bash ───────────────────────────────────────────────────────────
 # v1.20：**优先用真 bash**（由 tools/fetch-bash.py 取到 $H/bash/bin/bash）。
@@ -572,6 +634,10 @@ if ls "$VSC_SRC"/*.java >/dev/null 2>&1; then
       # 用 jar 把 classes.dex 打成 jar（app_process 认含 dex 的 jar）
       ( cd "$P/out/vsc-dex" && "$JAVA/jar" cf "$P/assets/vscreen_shizuku.jar" classes.dex )
       echo "  vscreen_shizuku.jar: $(stat -c%s "$P/assets/vscreen_shizuku.jar") bytes"
+      # v1.18.0：随包分发 jar 的 SHA-256 —— App 侧据此校验共享存储上的 jar 没被替换
+      # （若缺失，App 会拒绝启动虚拟屏核心，见 VsreenBridgeService.expectedJarSha256）
+      ( cd "$P/assets" && sha256sum vscreen_shizuku.jar | awk '{print $1}' > vscreen_jar_sha256.txt )
+      echo "  vscreen_jar_sha256.txt: $(cat "$P/assets/vscreen_jar_sha256.txt")"
     else
       echo "  !! vscreen dex 生成失败（d8）"
     fi
@@ -582,6 +648,9 @@ if ls "$VSC_SRC"/*.java >/dev/null 2>&1; then
 else
   echo "  (无 vscreen 源码，跳过)"
 fi
+# v1.18.0 硬闸门：jar 与它的 SHA-256 必须同时存在，否则装机后虚拟屏会被拒绝启动
+[ -f "$P/assets/vscreen_shizuku.jar" ] || { echo "!! assets/vscreen_shizuku.jar 缺失，中止构建"; exit 1; }
+[ -f "$P/assets/vscreen_jar_sha256.txt" ] || { echo "!! assets/vscreen_jar_sha256.txt 缺失，中止构建"; exit 1; }
 
 # 移动端适配资源：随 APK 打包，MainActivity 注入 WebView（不依赖服务器 dist）
 cp "$P/../mobile-patch/mobile.css" "$P/assets/mobile.css"

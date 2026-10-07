@@ -19,6 +19,35 @@ const a11yPort = () => parseInt(process.env.APP_A11Y_PORT || "3181", 10);
 const GUIDE_TEXT =
   "无障碍服务未开启或不可用：请在手机系统设置 → 无障碍 →（已下载的服务/服务）→ 开启「DeepSeek Harness 屏幕助手」，然后打开 App 后重试。";
 
+/**
+ * v1.22：能力清单（静态索引表 + 一句用途）。
+ * 为什么需要：真机 Agent 复盘里，他没用到 android_screenshot / android_touch / android_input /
+ * android_usage / android_app / android_swipe 等**本来就有**的工具 —— 这是纯粹的发现性问题。
+ * 诚实说明：本表是静态维护的，可能滞后于实际注册的工具；以工具列表为准，这里只作索引用。
+ */
+const TOOL_GUIDE = [
+  "【无障碍 · 需开启「屏幕助手」，免 root/Shizuku】",
+  "  android_screen 读控件树（最省内存） | android_see 截图给模型看（区域用 select= / region=）",
+  "  android_tap 点击（text/desc/fx,fy，或区域图内的 ix,iy） | android_focus_type 聚焦→输入→提交→读回自证",
+  "  android_find_text 等文字出现 | android_wait_stable 等界面稳定（控件树指纹，不产生截图）",
+  "  android_scroll 滚动 | android_gesture(网页按钮/WebView 点不动时首选) / swipe / hold / touch / touch_status",
+  "  android_type 写文本 | android_paste_text 剪贴板粘贴 | android_back / android_home",
+  "  android_mem_status 内存体检 | android_a11y_status 无障碍状态（能区分「没开」与「闪断」）",
+  "【免特权 · 不需要 root/Shizuku】",
+  "  android_capabilities 本工具（能力总览） | android_apps 列已装应用 | android_launch 启动应用（只走桌面入口）",
+  "  android_open_url 打开网址/深链（**要开网页一律用它**，别在浏览器里打字） | android_screenshot 截图存文件",
+  "  android_overlay 悬浮窗开关 | android_usage 应用使用时长 | android_notify 发通知 | android_clipboard 读写剪贴板",
+  "  android_setting_app 打开某个应用的设置页",
+  "【需特权 · 未授权时这些工具不会出现在工具列表里】",
+  "  android_input 模拟输入（点击/滑动/文本/按键 keyevent） | android_package 装/卸/清数据/授撤权",
+  "  android_app 启动或强制停止（可指定 activity，虚拟屏内启动也用它） | android_setting 读写系统设置",
+  "【浏览器 · 上游 v1.19 新增，可能未启用】",
+  "  browser_open / snapshot / find / click / type / read / nav / scroll / tabs / caps —— 结构化操作网页",
+  "  （跑在独立 :browser 进程；只允许 http/https，且禁止访问本机回环地址）",
+  "【非 Android 插件（DSH 自带）】",
+  "  bash / fs 读写 / web_search / web_fetch / job_* / subagent / workflow / todo_write / present / skill"
+].join("\n");
+
 // ============================================================================
 // v1.18 工具体验改进（A2/A4/A5/A7/A8）
 //   A5 手势防呆、A7 截图去重与时间戳、A8 前台判定提示、A4 中文输入标准动作、A2 能力总览
@@ -167,7 +196,9 @@ function a11yRequest(path, params, timeoutMs) {
       host: "127.0.0.1",
       port: a11yPort(),
       path: path + qs,
-      timeout: timeoutMs || 8000
+      timeout: timeoutMs || 8000,
+      // v1.18.0：App 侧本地服务要校验调用方（127.0.0.1 对本机所有应用开放，不是访问控制）
+      headers: { "X-DSH-Token": process.env.APP_LOCAL_TOKEN || "" }
     }, (res) => {
       let data = "";
       res.setEncoding("utf8");
@@ -189,7 +220,12 @@ function a11yPost(path, body, timeoutMs) {
       port: a11yPort(),
       path,
       method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+        // v1.18.0：本地服务鉴权令牌（App 启动引擎时经 env 注入）
+        "X-DSH-Token": process.env.APP_LOCAL_TOKEN || ""
+      },
       timeout: timeoutMs || 8000
     }, (res) => {
       let data = "";
@@ -218,7 +254,14 @@ function appPost(path, obj, timeoutMs) {
       path,
       method: "POST",
       timeout: timeoutMs || 8000,
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+        // v1.18.0（上游 v1.19.0 合并进来的令牌闸门）：App 侧本地服务校验 **X-DSH-Token 请求头**。
+        // ⚠ 本函数是 v1.22 我新加的（剪贴板回退用），当时只把 token 放在 body 里 —— 合并后 App
+        // 走的是头闸门，body token 不再被认，剪贴板回退会被拒。这里补上头（body 也保留，兼容旧壳）。
+        "X-DSH-Token": process.env.APP_LOCAL_TOKEN || ""
+      }
     }, (res) => {
       let data = "";
       res.setEncoding("utf8");
@@ -236,10 +279,23 @@ function appPost(path, obj, timeoutMs) {
   });
 }
 
-/** 读一次控件树；失败返回 null。 */
+/** 上一次看过的控件树节点键集合（供 android_screen_diff 比较"与上次相比变了什么"）。 */
+let lastDumpKeys = null;
+
+/** 节点身份键：文字 + 描述 + 几何（同一次界面里足以区分）。 */
+function nodeKey(n) {
+  return (n.text || "") + "\u0001" + (n.desc || "") + "\u0001"
+    + (n.x || 0) + "," + (n.y || 0) + "," + (n.w || 0) + "," + (n.h || 0);
+}
+
+/** 读一次控件树；失败返回 null。顺带记录本次节点键集合（供 android_screen_diff 用）。 */
 async function dumpNodes(timeoutMs) {
   const v = parseResult(await a11yRequest("/dump", undefined, timeoutMs || 8000));
-  return v && v.ok ? v : null;
+  if (v && v.ok) {
+    lastDumpKeys = (v.nodes || []).map((n) => nodeKey(n));
+    return v;
+  }
+  return null;
 }
 
 /** 控件树指纹 —— 用于 android_wait_stable（比"截图哈希"省内存得多：不产生任何位图）。 */
@@ -528,7 +584,8 @@ function apply(ctx) {
     description:
       "点击屏幕上的控件。传 text（控件文字，模糊包含匹配，优先可点击项）、desc（内容描述）、x/y（屏幕绝对像素坐标）或 fx/fy（0~1 分数坐标）。" +
       "优先用 fx/fy 分数坐标（相对屏幕比例）：截图会被模型查看器缩放，用绝对像素容易点偏，分数坐标免疫缩放。" +
-      "至少给一个；同时给了 text 与坐标时按 text 查找优先，找不到再按坐标点。需要已开启无障碍服务。",
+      "至少给一个；同时给了 text 与坐标时按 text 查找优先，找不到再按坐标点。需要已开启无障碍服务。" +
+      "**WebView / 网页按钮 / 自绘界面里无障碍点击常被忽略（返回成功但界面没变）：这类目标直接用 fx/fy 坐标，或改用 android_gesture 的 tap 笔。**",
     parameters: {
       text: { type: "string", description: "控件文字（模糊包含匹配）" },
       desc: { type: "string", description: "控件内容描述（模糊包含匹配）" },
@@ -537,7 +594,9 @@ function apply(ctx) {
       fx: { type: "number", description: "分数 x 坐标（0~1，相对屏幕宽度比例；推荐，避免截图缩放误差）" },
       fy: { type: "number", description: "分数 y 坐标（0~1，相对屏幕高度比例；推荐，避免截图缩放误差）" },
       ix: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 x 像素（工具会自动换算回屏幕坐标，免手算）" },
-      iy: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 y 像素" }
+      iy: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 y 像素" },
+      expect_text: { type: "string", description: "**可选但强烈建议**：点击后应出现的文字。给了它，工具会在点完后轮询控件树确认它真的出现了，并回 verified=true/false —— 专治「操作成功但没生效」（WebView 里尤其常见）" },
+      expect_timeout_ms: { type: "number", description: "expect_text 最多等多久（默认 4000）" }
     },
     output: {
       schema: {
@@ -548,6 +607,8 @@ function apply(ctx) {
           error: { type: "string" },
           found: { type: "boolean" },
           method: { type: "string" },
+          verified: { type: "boolean" },
+          expected: { type: "string" },
           warning: { type: "string" },
           hint: { type: "string" }
         }
@@ -574,16 +635,42 @@ function apply(ctx) {
       const raw = await a11yRequest("/tap", params, 8000);
       const v = parseResult(raw);
       if (!v.ok) return { ok: false, error: v.error || GUIDE_TEXT };
+      // v1.22（复盘 P1）：可选「期望校验」—— 点完轮询控件树，确认 expect_text 真的出现了。
+      //   复盘里"操作成功但什么都没发生"是最高频的坑（尤其 WebView），这里把它变成可判定的返回值。
+      let verified;
+      let verifyHint = "";
+      const expect = args.expect_text === undefined ? "" : String(args.expect_text);
+      if (expect) {
+        const timeout = Math.max(200, Math.min(15000, Number(args.expect_timeout_ms) || 4000));
+        const t0 = Date.now();
+        verified = false;
+        for (;;) {
+          const d = await dumpNodes();
+          if (d && (d.nodes || []).some((n) =>
+            (typeof n.text === "string" && n.text.indexOf(expect) >= 0)
+            || (typeof n.desc === "string" && n.desc.indexOf(expect) >= 0))) { verified = true; break; }
+          if (Date.now() - t0 >= timeout) break;
+          await new Promise((r) => setTimeout(r, 350));
+        }
+        if (!verified) {
+          verifyHint = "点击后等了 " + Math.round((Date.now() - t0)) + "ms 仍没看到「" + expect + "」："
+            + "这一下**很可能没生效**（WebView/网页按钮常忽略无障碍 ACTION_CLICK）。"
+            + "可试：改用坐标点击（fx/fy）或 android_gesture 的 tap 笔；或先 android_screen_diff 看界面到底变没变。";
+        }
+      }
       return {
-        ok: v.found !== false,
+        // 给了 expect_text 时，ok 表示"点了**且**生效了"，不再只看"点了"（复盘的核心诉求）
+        ok: v.found !== false && (!expect || verified === true),
         found: v.found === true,
         method: typeof v.method === "string" ? v.method : "",
+        ...(expect ? { verified: verified === true, expected: expect } : {}),
         ...(warning ? { warning } : {}),
         // v1.19（真机对话实测）：WebView/网页按钮上无障碍 ACTION_CLICK 常被忽略（返回成功但界面无变化）。
         // 如实提示替代路径，别让模型把"点了没反应"当成自己坐标算错。
-        ...(v.found === true && v.method === "node-text" && !warning
+        ...(v.found === true && v.method === "node-text" && !warning && !verifyHint
           ? { hint: "若界面没有变化：WebView/网页按钮经常忽略无障碍 ACTION_CLICK。改用坐标点击（fx/fy）或 android_gesture 的 tap 笔通常有效。" }
           : {}),
+        ...(verifyHint ? { hint: verifyHint } : {}),
         ...(v.found === false && v.error ? { error: v.error } : {})
       };
     }
@@ -1174,6 +1261,7 @@ function apply(ctx) {
     name: "android_gesture",
     description:
       "一次执行一组多指手势（底层多笔时间轴，全部同时注入，真多指）。strokes 数组按顺序在时间轴上执行，支持：\n" +
+      "**网页按钮 / WebView / 自绘界面点不动时的首选**（实测无障碍 ACTION_CLICK 常被忽略，而手势注入有效；只要一个点就用 tap 笔）。\n" +
       "- down: 按下并保持 {kind:'down', finger, x/y 或 fx/fy}\n" +
       "- move: 按住的手指滑到新位置 {kind:'move', finger, x/y 或 fx/fy}\n" +
       "- up: 抬起 {kind:'up', finger}\n" +
@@ -1651,6 +1739,166 @@ function apply(ctx) {
     }
   }));
 
+  // v1.22（P1）：与「上次看过的界面」做差异 —— 用来确认"刚才那一下到底生效没有"，**不产生截图**
+  ctx.tools.register(defineTool({
+    name: "android_screen_diff",
+    description:
+      "对比「与上一次读取控件树相比，界面变了什么」：回新增 / 消失的节点与计数；没变则明确回「无变化」。" +
+      "适用场景：点击 / 输入之后确认是否真的生效（复盘里「操作成功但没生效」是最高频的坑）。" +
+      "**不产生任何截图**（纯控件树比较），比「再截一张图自己看」既省内存也省 token。" +
+      "比较基准是**最近一次**读过控件树的操作（android_screen / android_find_text / android_wait_stable / 本工具等）。",
+    parameters: {
+      limit: { type: "number", description: "最多各列出多少条新增/消失（默认 20）" }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          ok: { type: "boolean", required: true },
+          error: { type: "string" },
+          changed: { type: "boolean" },
+          addedCount: { type: "number" },
+          removedCount: { type: "number" },
+          addedText: { type: "string" },
+          removedText: { type: "string" },
+          nodeCount: { type: "number" },
+          hint: { type: "string" }
+        }
+      },
+      render(_a, v) {
+        v = renderValue(v);
+        if (!v.ok) return renderResult(v);
+        if (!v.changed) return [{ type: "text", text: "界面无变化（控件 " + (v.nodeCount || 0) + " 个）。" }];
+        const lines = ["界面有变化：新增 " + (v.addedCount || 0) + " / 消失 " + (v.removedCount || 0)
+          + "（当前控件 " + (v.nodeCount || 0) + " 个）"];
+        if (v.addedText) lines.push("  + " + v.addedText);
+        if (v.removedText) lines.push("  - " + v.removedText);
+        if (v.hint) lines.push("", "提示: " + v.hint);
+        return [{ type: "text", text: lines.join("\n") }];
+      }
+    },
+    async execute(args) {
+      const before = lastDumpKeys;                 // 先取基准（dumpNodes 会覆盖它）
+      const now = await dumpNodes();
+      if (!now) {
+        return { ok: false, error: "读不到控件树：无障碍可能没开或刚闪断（先用 android_a11y_status 看状态）" };
+      }
+      const curKeys = (now.nodes || []).map((n) => nodeKey(n));
+      const curSet = new Set(curKeys);
+      const prevSet = new Set(before || []);
+      const limit = Math.max(1, Math.min(100, Number(args.limit) || 20));
+      const label = (k) => {
+        const parts = k.split("\u0001");
+        const s = (parts[0] || parts[1] || "(无文字)").replace(/\s+/g, " ").trim();
+        return s.length > 50 ? s.slice(0, 50) + "…" : s;
+      };
+      const addedAll = before === null ? [] : curKeys.filter((k) => !prevSet.has(k));
+      const removedAll = before === null ? [] : (before || []).filter((k) => !curSet.has(k));
+      const changed = before === null ? true : (addedAll.length > 0 || removedAll.length > 0);
+      return {
+        ok: true,
+        changed,
+        addedCount: addedAll.length,
+        removedCount: removedAll.length,
+        addedText: addedAll.slice(0, limit).map(label).join(" | "),
+        removedText: removedAll.slice(0, limit).map(label).join(" | "),
+        nodeCount: curKeys.length,
+        ...(before === null ? { hint: "这是本次会话第一次读取控件树，没有基准可比；之后再用本工具就能看出变化。" } : {})
+      };
+    }
+  }));
+
+  // v1.22（P1）：滚动直到某段文字出现（替代「scroll + screen」反复手试）
+  ctx.tools.register(defineTool({
+    name: "android_scroll_to",
+    description:
+      "反复滚动屏幕直到某段文字出现（可指定方向与最大次数）。用于长列表 / 长页面里找目标。" +
+      "每滚一次读一次控件树（**不截图**），找到就回 found=true 及其位置；滚满次数仍没有就如实回 found=false。" +
+      "比「自己 scroll 几次 + 每次 android_see 看一眼」又快又省内存。",
+    parameters: {
+      text: { type: "string", required: true, description: "要找的文字（包含匹配）" },
+      direction: { type: "string", description: "down（默认，向下翻）/ up / left / right" },
+      max_scrolls: { type: "number", description: "最多滚几次（默认 10，上限 50）" }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          ok: { type: "boolean", required: true },
+          error: { type: "string" },
+          found: { type: "boolean" },
+          scrolls: { type: "number" },
+          waitedMs: { type: "number" },
+          matchText: { type: "string" },
+          matchX: { type: "number" },
+          matchY: { type: "number" },
+          clickable: { type: "boolean" },
+          hint: { type: "string" }
+        }
+      },
+      render(_a, v) {
+        v = renderValue(v);
+        if (!v.ok && v.found !== false) return renderResult(v);
+        if (!v.found) {
+          return [{ type: "text", text: "滚了 " + (v.scrolls || 0) + " 次仍未找到「" + (v.error || "") + "」"
+            + (v.hint ? "\n建议: " + v.hint : "") }];
+        }
+        return [{ type: "text", text: "滚 " + (v.scrolls || 0) + " 次后找到「" + v.matchText + "」@(" + v.matchX + "," + v.matchY + ")"
+          + (v.clickable ? " · 可点击" : "") }];
+      }
+    },
+    async execute(args) {
+      const needle = args.text === undefined ? "" : String(args.text);
+      if (!needle) return { ok: false, error: "android_scroll_to 需要 text 参数" };
+      const dirRaw = String(args.direction || "down").toLowerCase();
+      const dir = ["up", "down", "left", "right"].includes(dirRaw) ? dirRaw : "down";
+      const maxScrolls = Math.max(1, Math.min(50, Number(args.max_scrolls) || 10));
+      const t0 = Date.now();
+      let scrolls = 0;
+      let lastNodes = 0;
+      const look = async () => {
+        const d = await dumpNodes();
+        if (!d) return null;
+        lastNodes = (d.nodes || []).length;
+        return (d.nodes || []).find((n) =>
+          (typeof n.text === "string" && n.text.indexOf(needle) >= 0)
+          || (typeof n.desc === "string" && n.desc.indexOf(needle) >= 0)) || null;
+      };
+      let hit = await look();
+      while (!hit && scrolls < maxScrolls) {
+        await a11yRequest("/scroll", { direction: dir }, 8000);
+        scrolls++;
+        await new Promise((r) => setTimeout(r, 450));
+        hit = await look();
+      }
+      if (!hit) {
+        return {
+          ok: true,
+          found: false,
+          error: needle,
+          scrolls,
+          waitedMs: Date.now() - t0,
+          hint: lastNodes === 0
+            ? "全程读不到控件树：无障碍可能没开或刚闪断（先用 android_a11y_status 看状态）。"
+            : "滚了 " + scrolls + " 次仍未出现该文字：可能不在可滚动区域里，或它是图片/图标（无障碍读不到文字）。"
+              + "可加大 max_scrolls，或先用 android_screen 看看列表里实际文案。"
+        };
+      }
+      return {
+        ok: true,
+        found: true,
+        scrolls,
+        waitedMs: Date.now() - t0,
+        matchText: (hit.text || hit.desc || ""),
+        matchX: hit.x || 0,
+        matchY: hit.y || 0,
+        clickable: hit.clickable === true
+      };
+    }
+  }));
+
   // v1.22：内存体检（真机 Agent 复盘要求的前置守卫项）
   ctx.tools.register(defineTool({
     name: "android_mem_status",
@@ -1742,6 +1990,7 @@ function apply(ctx) {
           memAvailMb: { type: "number" },
           memLevel: { type: "string" },
           recentFullShots: { type: "number" },
+          toolGuide: { type: "string" },
           hint: { type: "string" }
         }
       },
@@ -1762,6 +2011,7 @@ function apply(ctx) {
             + "（最近一分钟全屏截图 " + (v.recentFullShots || 0) + " 张）"
         ];
         if (v.hint) lines.push("", "建议: " + v.hint);
+        if (v.toolGuide) lines.push("", "可用工具清单（供选择，避免反复试错）:", v.toolGuide);
         return [{ type: "text", text: lines.join("\n") }];
       }
     },
@@ -1829,6 +2079,7 @@ function apply(ctx) {
           fullShotTimes = fullShotTimes.filter((t) => now - t < 60000);
           return fullShotTimes.length;
         })(),
+        toolGuide: TOOL_GUIDE,
         ...(hints.length ? { hint: hints.join(" ") } : {})
       };
     }

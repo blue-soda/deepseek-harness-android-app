@@ -80,7 +80,14 @@ function appRequest(path, params) {
       ? "?" + Object.entries(params).map(([k, v]) =>
           encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&")
       : "";
-    const req = httpGet({ host: "127.0.0.1", port: appPort(), path: path + qs, timeout: 8000 }, (res) => {
+    const req = httpGet({
+      host: "127.0.0.1",
+      port: appPort(),
+      path: path + qs,
+      timeout: 8000,
+      // v1.18.0：App 侧本地服务要校验调用方
+      headers: { "X-DSH-Token": process.env.APP_LOCAL_TOKEN || "" }
+    }, (res) => {
       let data = "";
       res.setEncoding("utf8");
       res.on("data", (c) => { data += c; if (data.length > 65536) req.destroy(); });
@@ -113,7 +120,9 @@ function appPost(path, obj, timeoutMs) {
       timeout: timeoutMs || 8000,
       headers: {
         "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(payload)
+        "Content-Length": Buffer.byteLength(payload),
+        // v1.18.0：本地服务鉴权令牌
+        "X-DSH-Token": process.env.APP_LOCAL_TOKEN || ""
       }
     }, (res) => {
       let data = "";
@@ -133,6 +142,59 @@ function appPost(path, obj, timeoutMs) {
     req.write(payload);
     req.end();
   });
+}
+
+/**
+ * v1.22：**免特权**地执行一个本地命令并回收输出（以本应用自己的 uid）。
+ * 现有 shizukuCmd / suCmd / privCmd 都走特权通道；读日志这类"自身权限就够"的场合用这个。
+ * 失败一律如实回 error，不静默返回空字符串（复盘教训：别让调用方把"没输出"当成"没日志"）。
+ */
+function runLocal(argv, timeoutMs) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(argv[0], argv.slice(1), {
+        env: sanitizeEnv(process.env),
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+    } catch (e) {
+      return resolve({ ok: false, stdout: "", stderr: "", error: "无法执行 " + argv[0] + "：" + e.message });
+    }
+    let out = "";
+    let err = "";
+    let done = false;
+    const finish = (ok, error) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ ok, stdout: out, stderr: err, error: error || "" });
+    };
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch (e) {}
+      finish(false, "执行超时（" + (timeoutMs || 15000) + "ms）");
+    }, timeoutMs || 15000);
+    child.stdout.on("data", (c) => {
+      out += c;
+      if (out.length > 300000) { try { child.kill(); } catch (e) {} }
+    });
+    child.stderr.on("data", (c) => {
+      err += c;
+      if (err.length > 40000) err = err.slice(0, 40000);
+    });
+    child.on("error", (e) => finish(false, "执行失败：" + e.message));
+    child.on("close", (code) => finish(code === 0, code === 0 ? "" : ("退出码 " + code + (err ? "：" + err.slice(0, 300) : ""))));
+  });
+}
+
+/** payload 里真 bash 的路径（用于绕过 app uid 直接 exec /system/bin 的限制）。取不到返回 ""。 */
+function payloadBashPath() {
+  try {
+    const exe = String(process.execPath || "").replace(/\\/g, "/");   // …/payload/runtime/bin/node
+    const idx = exe.lastIndexOf("/runtime/");
+    if (idx < 0) return "";
+    const p = exe.slice(0, idx) + "/bin/bash";
+    return existsSync(p) ? p : "";
+  } catch (e) { return ""; }
 }
 
 /** 异步执行一条 Shizuku shell 命令。 */
@@ -450,7 +512,7 @@ function apply(ctx) {
       "默认按「可启动优先、名称」排序；返回里 total 是匹配总数、count 是本次返回条数，被截断时用 filter 或 limit 收窄。" +
       "要打开某个应用用 android_launch。",
     parameters: {
-      filter: { type: "string", description: "按包名或显示名做不区分大小写的关键字过滤" },
+      filter: { type: "string", description: "按包名或显示名做不区分大小写的关键字过滤（只匹配这两者：搜 wechat 找不到「微信」，得用包名 com.tencent.mm）" },
       third_party_only: { type: "boolean", description: "true 只列第三方应用（排除系统应用）" },
       launchable_only: { type: "boolean", description: "true 只列有桌面入口、能被启动的应用" },
       limit: { type: "number", description: "最多返回条目数（默认 200，上限 1000）" }
@@ -594,6 +656,219 @@ function apply(ctx) {
         ok: true,
         url: r.url || String(args.url),
         ...(r.package ? { package: String(r.package) } : {})
+      };
+    }
+  }));
+
+  // v1.22（复盘）：通用 Intent 发起器 —— 打开网页只是其中一种。
+  // 与 android_open_url 的区别：可指定 action / type / extras（例如测试"某 App 能不能被深链唤起"）。
+  ctx.tools.register(defineTool({
+    name: "android_open_intent",
+    description:
+      "发起一个通用 Intent（免特权）：action（默认 view）+ url/data + package（指定由谁处理）+ type + extras。" +
+      "用途：打开网页（等价 android_open_url）、唤起深链（weixin://、alipays://…）、测试某 App 是否响应某 Intent。" +
+      "返回 ok 只表示 Intent 已发出；要确认界面真的换了，接着用 android_screen / android_see。",
+    parameters: {
+      action: { type: "string", description: "Intent action，如 android.intent.action.VIEW / SEND / DIAL（默认 VIEW）" },
+      url: { type: "string", description: "data URI，如 https://… / weixin:// / tel:10086" },
+      package: { type: "string", description: "可选：指定交给哪个应用处理" },
+      type: { type: "string", description: "可选：MIME type，如 text/plain" },
+      extras: { type: "string", description: "可选：JSON 对象字符串，如 {\"key\":\"value\"}（值支持字符串/整数/布尔）" },
+      wait_ms: { type: "number", description: "可选：发出后等待毫秒再返回（默认 0）" }
+    },
+    output: {
+      schema: resultSchema({
+        url: { type: "string" },
+        action: { type: "string" },
+        package: { type: "string" },
+        hint: { type: "string" }
+      }),
+      render: (_a, value) => {
+        if (!value.ok) return renderResult(value);
+        return [{ type: "text", text: "已发起 Intent：" + (value.action || "VIEW") + " "
+          + (value.url || "") + (value.package ? "（交给 " + value.package + "）" : "") }];
+      }
+    },
+    async execute(args) {
+      if (!args.url && !args.action) return { ok: false, error: "android_open_intent 至少需要 url 或 action" };
+      const body = { token: process.env.APP_LOCAL_TOKEN || "" };
+      if (args.url) body.url = String(args.url);
+      if (args.action) body.action = String(args.action);
+      if (args.package) body.package = String(args.package);
+      if (args.type) body.type = String(args.type);
+      if (args.extras) {
+        try { JSON.parse(String(args.extras)); body.extras = JSON.parse(String(args.extras)); }
+        catch (e) { return { ok: false, error: "extras 不是合法 JSON：" + e.message }; }
+      }
+      const r = await appPost("/openurl", body, 20000);
+      if (!r.ok) return { ok: false, error: r.error || "Intent 发起失败" };
+      const waitMs = Math.max(0, Math.min(8000, Number(args.wait_ms) || 0));
+      if (waitMs) await new Promise((res) => setTimeout(res, waitMs));
+      return {
+        ok: true,
+        ...(r.url ? { url: String(r.url) } : {}),
+        ...(r.action ? { action: String(r.action) } : {}),
+        ...(r.resolved ? { package: String(r.resolved) } : {})
+      };
+    }
+  }));
+
+  // v1.22（复盘 §5）：免特权查看 / 解包已安装应用的 APK —— 逆向侦查入口（纪律：只读）
+  ctx.tools.register(defineTool({
+    name: "android_apk_info",
+    description:
+      "查看一个已安装应用的 APK：路径 / 大小 / 应用名，或列出包内条目（action=list）。**免特权**。" +
+      "用途：逆向侦查（找 JS bundle、接口表、资源、manifest）。" +
+      "复盘里那位 agent 是手搓 `pm path` + `unzip` 才拿到这些 —— 现在一步到位，且不依赖设备有没有 unzip。" +
+      "⚠ 纪律：只读。它读的是**别人的**安装包（Android 上这是正常性质），但不要用它去改别人的应用。",
+    parameters: {
+      package: { type: "string", required: true, description: "包名（用 android_apps 查）" },
+      list: { type: "boolean", description: "true = 附带包内条目清单（默认 false 只回路径/大小）" },
+      limit: { type: "number", description: "list 时最多列多少条（默认 2000）" }
+    },
+    output: {
+      schema: resultSchema({
+        apk: { type: "string" },
+        sizeBytes: { type: "number" },
+        label: { type: "string" },
+        total: { type: "number" },
+        truncated: { type: "boolean" },
+        entriesText: { type: "string" },
+        hint: { type: "string" }
+      }),
+      render: (_a, value) => {
+        if (!value.ok) return renderResult(value);
+        const head = "APK：" + (value.apk || "") + "（" + Math.round((value.sizeBytes || 0) / 1024) + " KB）"
+          + (value.label ? " · " + value.label : "");
+        if (!value.entriesText) return [{ type: "text", text: head }];
+        return [{ type: "text", text: head + "\n包内条目 " + (value.total || 0) + " 条"
+          + (value.truncated ? "（已截断）" : "") + "：\n" + value.entriesText }];
+      }
+    },
+    async execute(args) {
+      if (!args.package) return { ok: false, error: "android_apk_info 需要 package 参数" };
+      const body = { token: process.env.APP_LOCAL_TOKEN || "", action: args.list === true ? "list" : "path", package: String(args.package) };
+      if (args.limit !== undefined) body.limit = Number(args.limit);
+      const r = await appPost("/apk", body, 60000);
+      if (!r.ok) return { ok: false, error: r.error || "读取 APK 失败" };
+      return {
+        ok: true,
+        apk: r.apk || "",
+        sizeBytes: typeof r.sizeBytes === "number" ? r.sizeBytes : 0,
+        ...(r.label ? { label: String(r.label) } : {}),
+        ...(typeof r.total === "number" ? { total: r.total, truncated: r.truncated === true } : {}),
+        ...(r.entriesText ? { entriesText: String(r.entriesText) } : {}),
+        ...(r.hint ? { hint: String(r.hint) } : {})
+      };
+    }
+  }));
+
+  ctx.tools.register(defineTool({
+    name: "android_apk_extract",
+    description:
+      "从已安装应用的 APK 里**取出文件**（单个 entry，或按 prefix 批量，如 assets/）。**免特权**。" +
+      "默认解到应用私有目录（files/apk-extract），也可用 out_dir 指定其它可写路径。" +
+      "取出 JS bundle / 接口表后用 fs 工具读即可。⚠ 只读别人的包，不要改动任何东西。",
+    parameters: {
+      package: { type: "string", required: true, description: "包名" },
+      entry: { type: "string", description: "包内完整路径（与 prefix 二选一）" },
+      prefix: { type: "string", description: "包内前缀，如 assets/（与 entry 二选一）" },
+      out_dir: { type: "string", description: "可选：输出目录（默认 应用私有 files/apk-extract）" }
+    },
+    output: {
+      schema: resultSchema({
+        outDir: { type: "string" },
+        files: { type: "string" },
+        copied: { type: "number" },
+        bytes: { type: "number" },
+        hint: { type: "string" }
+      }),
+      render: (_a, value) => {
+        if (!value.ok) return renderResult(value);
+        return [{ type: "text", text: "已取出 " + (value.copied || 0) + " 个文件（"
+          + Math.round((value.bytes || 0) / 1024) + " KB）→ " + (value.outDir || "") + "\n" + (value.files || "") }];
+      }
+    },
+    async execute(args) {
+      if (!args.package) return { ok: false, error: "android_apk_extract 需要 package 参数" };
+      if (!args.entry && !args.prefix) return { ok: false, error: "需要 entry（单个）或 prefix（前缀）" };
+      const body = { token: process.env.APP_LOCAL_TOKEN || "", action: "extract", package: String(args.package) };
+      if (args.entry) body.entry = String(args.entry);
+      if (args.prefix) body.prefix = String(args.prefix);
+      if (args.out_dir) body.out_dir = String(args.out_dir);
+      const r = await appPost("/apk", body, 120000);
+      if (!r.ok) {
+        return { ok: false, error: r.error || "解包失败",
+          hint: "先用 android_apk_info(list=true) 看包内条目名，再决定 entry / prefix。" };
+      }
+      return {
+        ok: true,
+        outDir: r.outDir || "",
+        files: Array.isArray(r.files) ? r.files.join("\n") : String(r.files || ""),
+        copied: typeof r.copied === "number" ? r.copied : 0,
+        bytes: typeof r.bytes === "number" ? r.bytes : 0
+      };
+    }
+  }));
+
+  // v1.22（复盘 §5）：读本应用自己的 logcat —— 并如实说明系统边界
+  ctx.tools.register(defineTool({
+    name: "android_logcat",
+    description:
+      "读取日志（`logcat -d`，默认最近 200 行）。**免特权**，但受系统限制：" +
+      "Android 11+ 起应用只能读到**自己**（以及自己启动的子进程）的日志，别家 App 的日志看不到 —— " +
+      "这不是工具坏了，是系统隐私策略。要看引擎/插件日志，本工具的 \"DSH\" 关键字过滤通常就够。" +
+      "更全的日志在控制台「日志」页或 files/dsh-web.log（用 fs 工具读）。",
+    parameters: {
+      lines: { type: "number", description: "最近多少行（默认 200，上限 2000）" },
+      filter: { type: "string", description: "可选关键字过滤（对行做包含匹配）" },
+      tag: { type: "string", description: "可选：按 tag 过滤（等价 logcat -s <tag>）" }
+    },
+    output: {
+      schema: resultSchema({
+        lines: { type: "number" },
+        text: { type: "string" },
+        hint: { type: "string" }
+      }),
+      render: (_a, value) => {
+        if (!value.ok) return renderResult(value);
+        return [{ type: "text", text: "logcat（" + (value.lines || 0) + " 行）:\n" + (value.text || "(空)") }];
+      }
+    },
+    async execute(args) {
+      const n = Math.max(1, Math.min(2000, Number(args.lines) || 200));
+      const argv = ["-d", "-t", String(n), "-v", "brief"];
+      if (args.tag) argv.push("-s", String(args.tag));
+      // 实测（Android 16 模拟器 community 包）：app uid 直接 spawn /system/bin/logcat 报 ENOENT
+      // （SELinux/exec 限制），而 shell 与**我们 payload 里的 bash** 都能跑通 —— 所以加一层 bash 回退。
+      let out = await runLocal(["/system/bin/logcat", ...argv], 15000);
+      if (out.ok !== true) {
+        const bash = payloadBashPath();
+        if (bash) {
+          const quoted = ["logcat"].concat(argv.map((a) => (a.indexOf(" ") >= 0 ? "'" + a.replace(/'/g, "'\\''") + "'" : a))).join(" ");
+          const viaBash = await runLocal([bash, "-c", quoted], 15000);
+          if (viaBash.ok === true) {
+            out = viaBash;
+          } else {
+            out = { ok: false, stdout: "", stderr: viaBash.stderr || "", error: "直接调用失败（" + out.error + "），经 bash 也失败（" + viaBash.error + "）" };
+          }
+        }
+      }
+      if (out.ok !== true) {
+        return { ok: false, error: out.error || "logcat 执行失败",
+          hint: "部分系统缺 /system/bin/logcat 或限制调用；可改用控制台「日志」页，或读 files/dsh-web.log（用 fs 工具）。" };
+      }
+      let text = out.stdout || "";
+      const filter = args.filter === undefined ? "" : String(args.filter);
+      if (filter) {
+        text = text.split("\n").filter((l) => l.indexOf(filter) >= 0).join("\n");
+      }
+      if (text.length > 60000) text = text.slice(text.length - 60000);
+      return {
+        ok: true,
+        lines: text ? text.split("\n").length : 0,
+        text,
+        hint: "只包含本应用自己的日志（Android 11+ 的系统限制，不是工具问题）；要别的 App 的日志需要 root。"
       };
     }
   }));

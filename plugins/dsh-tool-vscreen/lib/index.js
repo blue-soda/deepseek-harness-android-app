@@ -143,7 +143,14 @@ async function readLogTail(maxChars) {
 /** 探测 server 是否在监听。 */
 function serverAlive() {
   return new Promise((resolve) => {
-    const req = httpGet({ host: "127.0.0.1", port: SERVER_PORT, path: "/vscreen/status", timeout: 1500 }, (res) => {
+    const req = httpGet({
+      host: "127.0.0.1",
+      port: SERVER_PORT,
+      path: "/vscreen/status",
+      timeout: 1500,
+      // v1.18.0：8999 桥要校验调用方
+      headers: { "X-DSH-Token": process.env.APP_LOCAL_TOKEN || "" }
+    }, (res) => {
       let d = ""; res.setEncoding("utf8");
       res.on("data", (c) => { d += c; if (d.length > 4096) req.destroy(); });
       res.on("end", () => resolve(true));
@@ -157,7 +164,14 @@ function serverAlive() {
 /** 调 server HTTP API，返回 JSON。 */
 function vsReq(path, timeoutMs) {
   return new Promise((resolve) => {
-    const req = httpGet({ host: "127.0.0.1", port: SERVER_PORT, path, timeout: timeoutMs || 8000 }, (res) => {
+    const req = httpGet({
+      host: "127.0.0.1",
+      port: SERVER_PORT,
+      path,
+      timeout: timeoutMs || 8000,
+      // v1.18.0：8999 桥要校验调用方
+      headers: { "X-DSH-Token": process.env.APP_LOCAL_TOKEN || "" }
+    }, (res) => {
       let d = "";
       res.setEncoding("utf8");
       res.on("data", (c) => { d += c; if (d.length > 1024 * 1024) req.destroy(); });

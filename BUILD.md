@@ -118,6 +118,17 @@ bash tools/build-apk.sh --emulator           # 额外适配 x86_64 模拟器（�
 bash tools/build-apk.sh --help
 ```
 
+> **脚本目录**（都在仓库里，路径由脚本自身位置推导，可在任意克隆 / 工作区里跑）：
+
+| 位置 | 用途 |
+|---|---|
+| `tools/build-apk.sh` | **一键构建**（官方入口，上面这些选项都在这里）|
+| `tools/build/` | 本地构建入口：`build-arm64.sh`（真机）/ `build-local.sh`（模拟器 x86_64）/ `build-all.sh`（依次三变体）|
+| `tools/diag/` | 诊断工具（多数是 `#!/system/bin/sh`，**在设备上跑**）：`check-abi.sh` 交付前 ABI 门（真机包 `x86_64` 必须为 0）· `refresh-overlay-lf.sh` 把 overlay 刷成字节级一致 + 纯 LF · `emu-guestlibs.sh` 给 x86_64 模拟器补 arm64 soname 库 · `find-engine.sh` / `find-engine-env.sh` 找引擎进程与关键 env · `plugin-cli.sh` 以 App 身份跑 DSH CLI · `probe-profile.sh` 复刻 loader 的插件解析视角 · `dump-cfg.sh` / `cfg-stats.sh` 看实际生效的 profile 配置 · `check-shell-env.sh` 看终端默认 shell 来源 · `bench-boot.sh` / `bench-phases.sh` 启动耗时基准 |
+
+> ⚠ `.cache/` 只是**缓存目录**（上游 APK、devhome、本地调试密钥），**不放脚本** ——
+> 构建与诊断一律用上表里的脚本。
+
 > **变体（v1.18）**：包名 / 端口 / 外部目录 / 显示名 / 默认密钥全部由 `android-app/variants.sh`
 > 这一份真源决定，构建期生成 `BuildVariant.java` 并改写 manifest（含 provider authorities），
 > 不需要手改源码。四个变体各自一段独立端口与独立 `/sdcard` 目录，**可同时安装同时运行**。
