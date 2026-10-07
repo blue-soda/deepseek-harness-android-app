@@ -125,7 +125,9 @@ function a11yRequest(path, params, timeoutMs) {
       host: "127.0.0.1",
       port: a11yPort(),
       path: path + qs,
-      timeout: timeoutMs || 8000
+      timeout: timeoutMs || 8000,
+      // v1.18.0：App 侧本地服务要校验调用方（127.0.0.1 对本机所有应用开放，不是访问控制）
+      headers: { "X-DSH-Token": process.env.APP_LOCAL_TOKEN || "" }
     }, (res) => {
       let data = "";
       res.setEncoding("utf8");
@@ -147,7 +149,12 @@ function a11yPost(path, body, timeoutMs) {
       port: a11yPort(),
       path,
       method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+        // v1.18.0：本地服务鉴权令牌（App 启动引擎时经 env 注入）
+        "X-DSH-Token": process.env.APP_LOCAL_TOKEN || ""
+      },
       timeout: timeoutMs || 8000
     }, (res) => {
       let data = "";

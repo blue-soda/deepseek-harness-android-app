@@ -53,7 +53,7 @@ public class Main {
      */
     // ⚠ 改过任何影响对外行为的核心代码（路由 / 参数 / 尺寸归一化等）都必须同时升这个值：
     // 只改代码不升指纹，App 就判不出"跑的是旧 core"，改动会静默失效。
-    static final String BUILD = "vs113-20260916";
+    static final String BUILD = "vs114-20261004";
 
     /**
      * 心跳看门狗（v1.13.12）。App 进程内的桥服务每 ~750ms 就来拉一次 /vscreen/status，
@@ -83,6 +83,7 @@ public class Main {
     private static Context sContext;
     private static int sPort = DEFAULT_PORT;
     private static String sExternalRoot = DEFAULT_EXTERNAL_ROOT;
+    private static String sToken = "";
 
     private static final ConcurrentHashMap<Integer, Session> sSessions = new ConcurrentHashMap<>();
     private static final AtomicInteger sDisplaySeq = new AtomicInteger(0);
@@ -162,6 +163,9 @@ public class Main {
                 }
             } else if ("--dir".equals(a) && i + 1 < args.length) {
                 sExternalRoot = args[++i].trim();
+            } else if ("--token".equals(a) && i + 1 < args.length) {
+                // v1.18.0：8998 是 shell 身份的进程，本机任意应用都能连 127.0.0.1 —— 必须校验令牌
+                sToken = args[++i].trim();
             }
         }
     }
@@ -679,9 +683,10 @@ public class Main {
             if (requestLine == null) {
                 return;
             }
+            StringBuilder headBuf = new StringBuilder();
             String line;
             while ((line = in.readLine()) != null && !line.isEmpty()) {
-                // 忽略请求头
+                headBuf.append(line).append("\r\n");
             }
 
             String path = "";
@@ -692,6 +697,13 @@ public class Main {
                 int q = target.indexOf('?');
                 path = q >= 0 ? target.substring(0, q) : target;
                 query = q >= 0 ? target.substring(q + 1) : "";
+            }
+
+            // v1.18.0：调用方鉴权（令牌由 App 侧的桥启动本进程时用 --token 传入）
+            if (!tokenOk(headBuf.toString(), path)) {
+                log("拒绝未授权请求: " + path, null);
+                respond(sock, "{\"ok\":false,\"error\":\"鉴权失败：缺少或错误的 X-DSH-Token\"}");
+                return;
             }
 
             String body;
@@ -748,6 +760,40 @@ public class Main {
             } catch (Throwable ignored) {
             }
         }
+    }
+
+    // ==================== v1.18.0：鉴权 ====================
+
+    /** 令牌校验：请求头 X-DSH-Token 优先，query token= 兜底；sToken 为空一律拒绝。 */
+    private static boolean tokenOk(String rawHead, String path) {
+        if (sToken == null || sToken.length() < 16) {
+            return false;
+        }
+        String got = "";
+        String[] lines = rawHead.split("\r?\n");
+        for (int i = 0; i < lines.length; i++) {
+            int c = lines[i].indexOf(':');
+            if (c > 0 && lines[i].substring(0, c).trim().equalsIgnoreCase("X-DSH-Token")) {
+                got = lines[i].substring(c + 1).trim();
+                break;
+            }
+        }
+        if (got.isEmpty()) {
+            String q = qStr(path.indexOf('?') >= 0 ? path.substring(path.indexOf('?') + 1) : "", "token");
+            got = q == null ? "" : q;
+        }
+        return sToken.equals(got);
+    }
+
+    private static void respond(Socket sock, String body) throws IOException {
+        byte[] bytes = body.getBytes("UTF-8");
+        OutputStream os = sock.getOutputStream();
+        os.write(("HTTP/1.1 403 Forbidden\r\n"
+                + "Content-Type: application/json; charset=utf-8\r\n"
+                + "Content-Length: " + bytes.length + "\r\n"
+                + "Connection: close\r\n\r\n").getBytes("UTF-8"));
+        os.write(bytes);
+        os.flush();
     }
 
     private static String summarize(String body) {

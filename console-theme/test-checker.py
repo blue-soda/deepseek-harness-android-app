@@ -62,3 +62,17 @@ print(out.strip()[:420], "…")
 print("=" * 72, "\n⑤ 只校验一份 console.json（不打包也能验）")
 r = subprocess.run([PY, CHECK, os.path.join(CT, "console.example.json")], capture_output=True, text=True, encoding="utf-8")
 print(r.stdout.strip()); print(f"  → 退出码 {r.returncode}（期望 0）")
+
+print("=" * 72, "\n⑥ 带 layout.style 的包：校验器**不许自己崩**（v1.19.6 修的真缺陷）")
+# 背景：`note('$.layout.style', '…')` 曾按 err/warn 的签名传两个参数，而 note() 只收一个
+#      → TypeError → Traceback 退出。layout.style 是 v1.19.6 起唯一的风格切换方式，不冷门。
+styled = json.loads(json.dumps(base))
+styled["layout"]["style"] = "classic"
+rc, out = run(mk("styled.zip", styled))
+print(out.strip()[:600])
+crash = ("Traceback" in out) or ("TypeError" in out)
+print(f"  → 退出码 {rc}（期望 0）；崩溃痕迹={'有 ❌' if crash else '无 ✅'}")
+if rc != 0 or crash:
+    print("  ❌ ⑥ 未通过：带 layout.style 的配置必须能正常校验")
+    sys.exit(1)
+print("  ✅ ⑥ 通过")

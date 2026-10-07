@@ -128,6 +128,8 @@ public class MainActivity extends Activity {
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-ptc-runtime-node/",
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-llm-deepseek/",
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tool-accessibility/",
+        // v1.19.0：AI 浏览器插件（必须随 APK 覆盖，否则旧副本挡住更新 → 工具看不到）
+        "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tool-browser/",
         // v1.17.2：目录 fsync 容错补丁（EINVAL/ENOTSUP/EOPNOTSUPP 视为「该目录不支持持久化同步」而跳过）。
         // 必须加白名单——否则同内核版本下 fast 同步不会覆盖它，补丁形同没打
         // → 真机上发图 / read_image / android_see 仍报 `EINVAL: invalid argument, fsync`。
@@ -179,7 +181,7 @@ public class MainActivity extends Activity {
     // 背景：引擎启动会解析 profile 的 patch 文件，一旦 YAML 语法坏掉（用户装的插件把配置写坏是常见路径），
     // 内核会直接拒绝启动（实测：failed to parse overlay ...: YAMLException: duplicated mapping key），
     // 而“修”这件事本身需要引擎跑起来让 AI 去改文件 —— 于是形成死结，只能清数据。
-    // 安全模式的做法：把 profile 的用户层整体旁置 + 恢复出厂文件，**不动用户数据**（会话/凭证/设置全保留）。
+    // 安全模式的做法：把 profile 的用户层整体旁置 + 恢复出厂文件，「不动用户数据」（会话/凭证/设置全保留）。
     private static final String KEY_SAFE_MODE = "safe_mode_active";
     private static final String KEY_BOOT_FAILS = "engine_boot_failures";
     /** 连续启动失败多少次要提醒用户可用安全模式。 */
@@ -196,6 +198,8 @@ public class MainActivity extends Activity {
     // ---- v1.12 控制台（冷启动首页，原生界面）----
     private FrameLayout engineRoot;                // WebView + 启动浮层 + 控制台的共同根容器
     private ScrollView consoleLayer;               // 控制台覆盖层
+    /** 上一次渲染的页号：页号变了就把 ScrollView 归零（换页必须回页首，见 renderConsole）。 */
+    private int conLastRenderedPage = Integer.MIN_VALUE;
 
     // CONSOLE_THEME_PATCH_v1174
     // ---- v1.17.4 控制台主题包（第 1~3 步：资产落地 / 配置地基 / 外观接入）----
@@ -233,8 +237,16 @@ public class MainActivity extends Activity {
     private final Runnable consoleTick = new Runnable() {
         @Override public void run() {
             if (!consoleVisible) return;
-            conThemeTick();   // v1.17.4：每秒查一次 console.json 变没变（变了就整页重渲染）
-            refreshConsole();
+            // v1.19.6 加固：原来 conThemeTick()/refreshConsole() 里任何一个抛异常，
+            // 下面的 postDelayed 就永远执行不到 → **整条每秒刷新链永久死掉**，
+            // 之后 console.json 再改也不会热重载（界面停在旧样式，只有重启 App 才恢复）。
+            // 现在异常吞掉并记日志，链条照常续上；"控制台不可见就停"的原语义保持不变（不额外耗电）。
+            try {
+                conThemeTick();   // v1.17.4：每秒查一次 console.json 变没变（变了就整页重渲染）
+                refreshConsole();
+            } catch (Throwable t) {
+                Log.w(TAG, "console tick: " + t);
+            }
             if (conTick != null) conTick.postDelayed(this, 1000);
         }
     };
@@ -919,7 +931,7 @@ public class MainActivity extends Activity {
      * 控制台/启动页那套视图是代码建的、px 固定，尺寸变化不影响可用性。
      *
      * 注意：只有「已声明的」配置项变化才会进本方法。uiMode（系统深浅色）/ density（显示大小）
-     * / fontScale（字体大小）故意**不**声明 —— 它们继续走重建，由 onCreate 的 setTheme() 重新定主题。
+     * / fontScale（字体大小）故意「不」声明 —— 它们继续走重建，由 onCreate 的 setTheme() 重新定主题。
      */
     @Override
     public void onConfigurationChanged(android.content.res.Configuration newConfig) {
@@ -939,12 +951,12 @@ public class MainActivity extends Activity {
     /**
      * DSH 前端所需的 Chromium 主版本下限。
      *
-     * ⚠️ 以前写的是 80，**那个值是错的** —— 它只是「能解析 <script type="module">」的底线，
+     * ⚠️ 以前写的是 80，「那个值是错的」 —— 它只是「能解析 <script type="module">」的底线，
      * 而 Vite 产物里实际用到了更高的语法。v1.17.3 用 `tmp-diag/v1173/scan-syntax.mjs`
      * 对当前入口 bundle 实测：`assets/index-*.js` 里有 2 处 class 静态初始化块 `static{}`
-     * → 需要 **Chrome 94**。
+     * → 需要 「Chrome 94」。
      *
-     * 阈值偏低的后果：80~93 的设备**静默白屏且不弹任何提示**（issue #38 报告人那台 Chromium 91
+     * 阈值偏低的后果：80~93 的设备「静默白屏且不弹任何提示」（issue #38 报告人那台 Chromium 91
      * 就是被这个阈值漏过去的）。
      * ⚠️ 上游重建前端后此值可能变化 —— 出包前用上面那个脚本重测。
      */
@@ -1503,16 +1515,16 @@ public class MainActivity extends Activity {
 
     /**
      * v1.13.11：修「状态栏不显示」「状态栏没有沉浸」两个问题，实现要点有三：
-     * ① **颜色之前根本没生效**。父主题 Theme.Black.NoTitleBar 是 Holo 时代主题，
+     * ① 「颜色之前根本没生效」。父主题 Theme.Black.NoTitleBar 是 Holo 时代主题，
      *   不设 windowDrawsSystemBarBackgrounds → Window 上缺 FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS，
      *   于是 setStatusBarColor()/setNavigationBarColor() 全是空操作（Holo 主题默认色是纯黑）：
      *   实测顶栏恒为 #000000，而浅色模式下又给了 SYSTEM_UI_FLAG_LIGHT_STATUS_BAR（深色图标）
      *   → 深色图标画在纯黑条上 = 时间/信号/电池全看不见。这就是「状态栏不显示」。
      *   现在显式 addFlags(FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)，颜色才真正落地。
-     * ② 底色不再固定用 cBg()，而优先用**页面实测背景色**（refreshPageBackground()）：
+     * ② 底色不再固定用 cBg()，而优先用「页面实测背景色」（refreshPageBackground()）：
      *   DSH 前端底色实测 #151517，与壳底色 #0b0f1a 并不相同 → 状态栏会与页面割裂成一条色带，
      *   观感上就是「没有沉浸」。取到页面真实底色后，状态栏/导航栏与页面同色，视觉上无缝。
-     * ③ 图标深浅按**底色亮度**判定，而不是按系统深浅色判定：用户在前端手动选「浅色/深色」时
+     * ③ 图标深浅按「底色亮度」判定，而不是按系统深浅色判定：用户在前端手动选「浅色/深色」时
      *   系统设置并不跟着变，只有按底色亮度算才不会出现「浅底配白图标」。
      */
     private void applyStatusBar() {
@@ -1558,7 +1570,7 @@ public class MainActivity extends Activity {
 
     /**
      * 读页面实测背景色并刷新状态栏/导航栏与壳底色。
-     * 页面主题由 DSH 前端自己的偏好决定（light/dark/system），与壳的系统深浅色**不一定一致**，
+     * 页面主题由 DSH 前端自己的偏好决定（light/dark/system），与壳的系统深浅色「不一定一致」，
      * 所以只能从页面实际渲染结果里取，不能靠猜。
      */
     private void refreshPageBackground() {
@@ -1667,9 +1679,12 @@ public class MainActivity extends Activity {
             });
             box.addView(resetRow);
         }
+        // v1.19.6：控制台风格开关**下线**。主控台只有新版（方案 B）一套，
+        // 不再提供"回到旧卡片版"的入口（用户 2026-10-05：「就是完整版」= 新版就是完整版）。
+        // 旧偏好 console_ui_style 与主题 layout.style 都不再被读取（见 consoleUiStyle()）。
         conDialogView("界面主题", box, null, null, "关闭");
     }
-    // v1.17.4：这 9 个 c*() 是控制台配色的**唯一出口**，主题包只在这里覆盖；
+    // v1.17.4：这 9 个 c*() 是控制台配色的「唯一出口」，主题包只在这里覆盖；
     // 没配置 / 该项没写时返回的仍是原来那套内置色（视觉与旧版一致）。
     private int cBg() { return conColor("bg", getColor(conDark() ? R.color.shell_bg_dark : R.color.shell_bg_light)); }
     private int cCard() { return conCardsAlpha(conColor("card", getColor(conDark() ? R.color.shell_card_dark : R.color.shell_card_light))); }
@@ -2687,7 +2702,7 @@ public class MainActivity extends Activity {
         try { binderOk = Shizuku.pingBinder(); } catch (Throwable ignored) {}
         boolean rootOkNow = rootOk != null && rootOk;
 
-        // v1.13：**实时探测**，不信 shizukuOk 缓存。
+        // v1.13：「实时探测」，不信 shizukuOk 缓存。
         // 缓存由 probeShizuku() 异步刷新，而用户“在 Shizuku 里撤销授权 → 回来马上点授权”时缓存
         // 往往还是旧的 true → 会走“已授权”分支而不调 requestPermission → 表现为“点了没任何弹窗”。
         boolean shizukuNow = false;
@@ -2722,7 +2737,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 请求 Shizuku 授权 + **超时傅底**。
+     * 请求 Shizuku 授权 + 「超时傅底」。
      * v1.13：授权框由 Shizuku 应用弹出；在部分 ROM（ColorOS 等）上它可能被拦截/不弹，
      * 而 requestPermission 本身不报错也不回调 —— 用户看到的就是“点了没任何反应”。
      * 这里过 8 秒仍未拿到结果，就弹一个“怎么手动授权”的引导框（附当前状态供排查）。
@@ -2735,7 +2750,7 @@ public class MainActivity extends Activity {
             Log.w(TAG, "Shizuku requestPermission failed", t);
         }
         // v1.13.3：真机实测本机（Shizuku 13.6.0 + ColorOS 15）上 requestPermission() 不弹框，
-        // 而“引擎里 AI 调 rish”能弹 —— 因为 Shizuku 的授权框是 Shizuku 应用在收到**真实请求**时才弹。
+        // 而“引擎里 AI 调 rish”能弹 —— 因为 Shizuku 的授权框是 Shizuku 应用在收到「真实请求」时才弹。
         // 所以这里补两条与引擎同款的真实触发；授权框弹出后用户点允许，3 秒后回探一次即可反映到界面。
         triggerShizukuPrompt();
         ui.postDelayed(new Runnable() {
@@ -2751,7 +2766,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 发两条**真实请求**逼 Shizuku 弹授权框（requestPermission 在本机不弹）：
+     * 发两条「真实请求」逼 Shizuku 弹授权框（requestPermission 在本机不弹）：
      *   ① 向 Shizuku 应用要 binder（client provider 路径）；
      *   ② 用 App 自己 spawn 一个 rish（与引擎里 rish 完全同款：同样的 dex、同样的 env 清理、同样的广播）。
      * ② 会超时（5 秒广播预算）也没关系——我们要的是它在 Shizuku 应用侧触发的授权框。
@@ -3003,6 +3018,8 @@ public class MainActivity extends Activity {
                 "/dsh-tool-android/",
                 "/dsh-tool-accessibility/",
                 "/dsh-tool-shizuku/",
+                // v1.19.0：AI 浏览器插件（结构化 DOM 快照 + 稳定 ref）
+                "/dsh-tool-browser/",
                 "/dsh-bash-local/",
                 // grep/glob 修复：fs-search 的 resolveRgPath 已改为 Android 走自带的 runtime/bin/rg
                 // （@vscode/ripgrep 没有 android 平台包，模块求值即 throw）。不在这张表里，
@@ -3049,6 +3066,39 @@ public class MainActivity extends Activity {
         Log.i(TAG, "engine plugins refreshed from payload.zip, files=" + copied);
     }
 
+    /** v1.18.0：读 assets 里的小文本文件（如 vscreen_jar_sha256.txt）；读不到返回空串。 */
+    private String assetText(String name) {
+        try {
+            InputStream in = getAssets().open(name);
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] b = new byte[256];
+            int n;
+            while ((n = in.read(b)) > 0) bos.write(b, 0, n);
+            in.close();
+            return new String(bos.toByteArray(), "UTF-8").trim().toLowerCase();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** v1.18.0：文件 SHA-256（小写 hex）；失败返回空串（调用方按"不符"处理）。 */
+    private String sha256Of(File f) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            InputStream in = new java.io.FileInputStream(f);
+            byte[] b = new byte[65536];
+            int n;
+            while ((n = in.read(b)) > 0) md.update(b, 0, n);
+            in.close();
+            byte[] d = md.digest();
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < d.length; i++) sb.append(String.format("%02x", d[i]));
+            return sb.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     private File extractVscreenDex() {
         // 优先提取到外部共享目录（/sdcard/<EXT_DSHROOT_ROOT>/vscreen/）：
         // shell(uid 2000) 读不到 app 私有目录（SELinux + 权限双重拦截），但能读 /sdcard ——
@@ -3065,6 +3115,21 @@ public class MainActivity extends Activity {
                 while ((n = in.read(b)) > 0) fos.write(b, 0, n);
                 fos.close();
                 in.close();
+                // v1.18.0：写出后核对随包分发的 SHA-256（共享存储上的 jar 会被替换 → shell 身份执行任意代码）
+                String wantHash = assetText("vscreen_jar_sha256.txt");
+                String gotHash = sha256Of(out);
+                if (wantHash.isEmpty() || !wantHash.equalsIgnoreCase(gotHash)) {
+                    Log.w(TAG, "vscreen jar 哈希不符（期望 " + wantHash + "，实际 " + gotHash + "），重写一次");
+                    java.io.FileOutputStream fos2 = new java.io.FileOutputStream(out);
+                    InputStream in2 = getAssets().open("vscreen_shizuku.jar");
+                    while ((n = in2.read(b)) > 0) fos2.write(b, 0, n);
+                    fos2.close();
+                    in2.close();
+                    gotHash = sha256Of(out);
+                    if (!wantHash.isEmpty() && !wantHash.equalsIgnoreCase(gotHash)) {
+                        Log.w(TAG, "vscreen jar 重写后仍不符（" + gotHash + "），虚拟屏将被拒绝启动");
+                    }
+                }
                 return out;
             }
         } catch (Exception e) {
@@ -3396,13 +3461,13 @@ public class MainActivity extends Activity {
      *  v1.12：改用顶部 marker 判定版本。旧实现靠“内容里必须有 llm-pi-ai”判定，
      *        而 v1.12 起 llm-pi-ai 已取消禁用 → 升级用户会被判为“不完整”并自动落地新配置
      *        （正是我们想要的迁移效果）。
-     *  ⚠ v1.15.9：本常量必须与 config/cordis.patch.yml 首行的 marker **逐字相等**。
+     *  ⚠ v1.15.9：本常量必须与 config/cordis.patch.yml 首行的 marker 「逐字相等」。
      *        v1.15.1 把那个文件的 marker 提到 v3（强制迁移 sandbox 修复），而这里的
      *        常量留在 v2 → 上面那句 contains() 恒为 false → 每次启动都判「配置不完整」
      *        并从 payload 刷新官方配置，用户在 dshhome/cordis.patch.yml 上的改动被反复擦掉
      *        （issue #33「引擎 boot 时重写全部配置」）。
      *        今后改 yml 的 marker，必须同步改这一处（共四份源码）。 */
-    private static final String PATCH_CONFIG_MARKER = "dsh-android-patch: v3";
+    private static final String PATCH_CONFIG_MARKER = "dsh-android-patch: v4";
 
     private void ensurePatchConfig(File payload) {
         try {
@@ -3434,7 +3499,7 @@ public class MainActivity extends Activity {
         HttpURLConnection c = null;
         try {
             // 0.1.5：首页需要 token（否则 401 authentication required）。
-            // ⚠ 探测**绝不能带 token**：token 是一次性的（用过即废），若被探测吃掉，
+            // ⚠ 探测「绝不能带 token」：token 是一次性的（用过即废），若被探测吃掉，
             // 随后 WebView 拿同一个 token 加载就会 401（用户看到的白屏/黑字就是这个）。
             // 探测只用不带 token 的 /：401 + DSH 专属正文 也足以证明“是本引擎且在跑”。
             String probe = "http://127.0.0.1:" + port + "/";
@@ -3516,6 +3581,10 @@ public class MainActivity extends Activity {
     private static int defaultEnginePort(Context ctx) {
         return BuildVariant.ENGINE_PORT;
     }
+
+    /** v1.19.0：AI 浏览器宿主（懒建；见 BrowserHost 类注释）。 */
+    /** v1.19.6 · A2：AI 浏览器跑在独立 :browser 进程里，主进程只留这条 IPC 客户端。 */
+    private BrowserIpc browserIpc;
 
     private int notifyPort() { return enginePort + 1; }
 
@@ -3603,8 +3672,17 @@ public class MainActivity extends Activity {
                         // 否则阻塞等 EOF 会 5s 读超时（SocketTimeoutException），所有 GET 路由卡死。
                     }
                     // 3) 分发处理
+                    // v1.18.0：本地服务统一鉴权。loopback 不是访问控制（任意应用都能连 127.0.0.1），
+                    // 令牌与 /shell 同源（dsh_prefs 的 local_token，随 env 交给引擎里的插件）。
+                    String mine = localToken();
+                    boolean authed = LocalAuth.ok(mine, h, path)
+                            || (path.startsWith("/shell") && mine.length() >= 16
+                                && mine.equals(jsonField(body.toString(), "token")));
                     String respBody;
-                    if (path.startsWith("/shell")) {
+                    if (!authed) {
+                        Log.w(TAG, "本地服务请求被拒（令牌缺失或错误）：" + path);
+                        respBody = LocalAuth.denied();
+                    } else if (path.startsWith("/shell")) {
                         // v1.13.1：App 进程内的特权执行（Shizuku API 通道）——见 handleShellRequest
                         respBody = handleShellRequest(body.toString());
                     } else if (path.startsWith("/setting")) {
@@ -3623,8 +3701,14 @@ public class MainActivity extends Activity {
                         respBody = handleOverlayRequest(path, body.toString());
                     } else if (path.startsWith("/status")) {
                         respBody = handleStatusRequest();
-                    } else {
+                    } else if (path.startsWith("/browser")) {
+                        // v1.19.0：AI 浏览器（结构化 DOM 快照 + 稳定 ref）——走同一道令牌闸门
+                        respBody = handleBrowserRequest(body.toString());
+                    } else if (path.equals("/notify") || path.equals("/")) {
                         respBody = handleNotifyRequest(body.toString());
+                    } else {
+                        // v1.18.0 fail-closed：未匹配路径不再默认当 /notify 处理
+                        respBody = "{\"ok\":false,\"error\":\"未知路由: " + jesc(path) + "\"}";
                     }
                     BufferedWriter w = new BufferedWriter(new OutputStreamWriter(s.getOutputStream(), "UTF-8"));
                     w.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
@@ -3637,6 +3721,34 @@ public class MainActivity extends Activity {
                 }
             }
         }, "local-conn").start();
+    }
+
+    /**
+     * v1.19.0：AI 浏览器路由。请求体 {op, args, timeout_ms?}，op ∈
+     * caps | open | snapshot | find | click | type | read | scroll | press | nav | screenshot | close。
+     *
+     * 设计要点（我们自己的）：ref 是「元素身份指纹」（跨快照稳定），不是位置编号；
+     * snapshot 支持差分（since）；find 命中的元素自动打 ref；动作后回 changed + 最小差异。
+     * 定位一律走 ref —— 截图只做"给人看的证据"。
+     */
+    /**
+     * ⚠ **必须 synchronized**：BrowserIpc 只有**一个 inbox**，每次 op 前还会 clear() ——
+     * 两条 op 并发进来会互相把回信吃掉。原来只有本地服务线程在调（事实上的单线程），
+     * v1.19.6 控制台的「AI 浏览器」页也从这里走，串行化就从"碰巧"变成"必须"。
+     */
+    private synchronized String handleBrowserRequest(String raw) {
+        try {
+            org.json.JSONObject req = (raw == null || raw.trim().isEmpty())
+                    ? new org.json.JSONObject() : new org.json.JSONObject(raw);
+            String op = req.optString("op", "caps");
+            org.json.JSONObject args = req.optJSONObject("args");
+            int timeout = req.optInt("timeout_ms", 30000);
+            if (browserIpc == null) browserIpc = new BrowserIpc(this);
+            return browserIpc.op(op, args, timeout);
+        } catch (Throwable t) {
+            return "{\"ok\":false,\"reason\":\"browser-route-error\",\"error\":\""
+                    + jesc(String.valueOf(t.getMessage())) + "\"}";
+        }
     }
 
     /** 处理 /usage：查询应用使用时长（UsageStats）。参数 days=N（默认 1，上限 30）。 */
@@ -3781,7 +3893,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * POST /shell {"command":"…","timeout_ms":N,"token":"…"} —— 在 **App 进程内**经 Shizuku API
+     * POST /shell {"command":"…","timeout_ms":N,"token":"…"} —— 在 「App 进程内」经 Shizuku API
      * 以 shell 身份执行命令并回收 stdout/stderr/退出码。
      *
      * 为什么不继续用引擎里的 rish：Shizuku 服务端校验「某个包是否被授权」时要回头问 Shizuku 应用本体，
@@ -4125,7 +4237,7 @@ public class MainActivity extends Activity {
     /**
      * 从请求体里取一个字符串字段。
      *
-     * v1.13.4：改成**认识转义**的解析。旧实现是“取第一个引号到下一个引号”，不认 `\"` `\\` `\n` 等，
+     * v1.13.4：改成「认识转义」的解析。旧实现是“取第一个引号到下一个引号”，不认 `\"` `\\` `\n` 等，
      * 于是命令里带引号/换行会被截断：例如 shizuku_shell 传
      * `pm install -r "/sdcard/Download/my app.apk"` 会被解析成 `pm install -r \`，后半段全丢，
      * 而工具还会“照跑”——表现为莫名其妙的失败。
@@ -4432,7 +4544,7 @@ public class MainActivity extends Activity {
             File target;
             boolean skipIfExists = false;
             if (additive && isDshroot) {
-                // 记录新树里的插件包名。⚠ 真实布局是**嵌套**的：
+                // 记录新树里的插件包名。⚠ 真实布局是「嵌套」的：
                 //     dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/<pkg>/...
                 // 顶层 dshroot/lib/node_modules/@deepseek-ai/ 下只有 dsh 本身 ——
                 // 只认顶层前缀会得到 rest="dsh/node_modules/..."，取出来的"包名"是 dsh，
@@ -4458,7 +4570,7 @@ public class MainActivity extends Activity {
                     // 增量补齐：已有文件一律保留（保留 AI 运行时修改），缺失文件才落地
                     skipIfExists = !name.equals("dshroot/REVISION") && !isForceOverwrite(name) && target.exists();
                 } else {
-                    // v1.17.9（混装树自愈）：全量模式**不再跳过已存在的文件**。
+                    // v1.17.9（混装树自愈）：全量模式「不再跳过已存在的文件」。
                     // 旧行为是"已存在就跳过"，于是上游改过内容的文件永远是旧的 ——
                     // 真机踩过：内核升级后 cosmokit 少了导出，引擎 import 到旧文件直接拒启，
                     // 而且"重新解压"也救不回（全量同样跳过）。用户数据在 dshhome，不在这棵树里。
@@ -4507,7 +4619,7 @@ public class MainActivity extends Activity {
                 int n;
                 while ((n = zis.read(buf)) > 0) fos.write(buf, 0, n);
                 fos.close();
-                // v1.13.5：dex 必须**不可写**——Android 14+ 的 ART 拒绝加载可写 dex
+                // v1.13.5：dex 必须「不可写」——Android 14+ 的 ART 拒绝加载可写 dex
                 // （logcat: SecurityException: Writable dex file '…' is not allowed → 进程直接
                 //  SIGABRT/exit 134，终端上只看到一个 "Aborted"）。payload.zip 内所有条目都不带
                 // unix 权限（external_attr=0），文件权限完全由本函数决定，所以这里对 *.dex 收成 0444。
@@ -4526,7 +4638,7 @@ public class MainActivity extends Activity {
         // 增量补齐收尾：清理"新树里已不存在"的顶层插件包，防止旧副本被 Node 优先解析。
         // 只清 @deepseek-ai 插件层（包管理范畴，AI 不会改），不动整棵树。
         if (additive && addPkgs != null && !addPkgs.isEmpty()) {
-            // ⚠ 必须同时覆盖**嵌套层**：插件包实际都在
+            // ⚠ 必须同时覆盖「嵌套层」：插件包实际都在
             //   dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/
             // 只扫顶层（里面只有 dsh 自己）等于什么都不清。
             final String NESTED_DIR = "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai";
@@ -4553,7 +4665,7 @@ public class MainActivity extends Activity {
         if (payloadNames != null && !payloadNames.isEmpty()) {
             File base = (externalRoot != null) ? externalRoot : destInternal;
             // ⚠ 安全边界（用户明确要求：不许删用户自己的东西 / 装的插件）：
-            //   只在**内核自己的包命名空间** @deepseek-ai/* 里清陈旧副本，别处一律不动。
+            //   只在「内核自己的包命名空间」 @deepseek-ai/* 里清陈旧副本，别处一律不动。
             final String TOP = "dshroot/lib/node_modules/@deepseek-ai";
             final String NESTED = TOP + "/dsh/node_modules/@deepseek-ai";
             int orphans = pruneOrphans(new File(base, TOP), TOP, payloadNames);
@@ -4566,10 +4678,10 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 清陈旧内核包（v1.17.9 混装树自愈）——**安全边界写死在这里**：
+     * 清陈旧内核包（v1.17.9 混装树自愈）——「安全边界写死在这里」：
      *   · 由调用方限定只传 @deepseek-ai 包目录（顶层 / 嵌套各一个），别处永不进入；
-     *   · 只删**目录名以 dsh 开头**且 payload 里没有的条目（内核 dsh 与官方 dsh-tool-* 的陈旧副本）；
-     *   · 其他任何名字（第三方包、用户/AI 放的文件）**一律跳过**，只记一条日志；
+     *   · 只删「目录名以 dsh 开头」且 payload 里没有的条目（内核 dsh 与官方 dsh-tool-* 的陈旧副本）；
+     *   · 其他任何名字（第三方包、用户/AI 放的文件）「一律跳过」，只记一条日志；
      *   · `.complete` 例外（App 解压完自己写的标记，不属于 payload，解压后会被重写）。
      * `keep` 里是 payload 条目名（形如 "dshroot/lib/xxx"，目录不带尾斜杠）。
      * 日志最多列 10 条，其余只报总数（避免刷屏）。
@@ -4657,13 +4769,13 @@ public class MainActivity extends Activity {
     }
 
     // dshhome 里随 APK 更新的官方配置文件（凭证 .credentials.yaml、会话数据 storages/ 等不在内）。
-    // ⚠ settings.yaml **不在此列**：它存的是用户自己填的模型/供应商配置
+    // ⚠ settings.yaml 「不在此列」：它存的是用户自己填的模型/供应商配置
     //   （llm-pi-ai.providers.*、agent-default-model 等），属用户数据。
     //   曾被列在这里 → 每次「重新解压」/覆盖安装都被 APK 里的开发机模板覆盖掉，
     //   表现为「模型配置莫名为空、要重填」（用户实测报障）。
     private static final String[] DSHHOME_CONFIG_PATHS = {
         "dshhome/cordis.patch.yml",
-        // ⚠ 0.1.7 起 profiles/<name>/cordis.patch.yml 不再是空壳模板，而是**用户配置文档**：
+        // ⚠ 0.1.7 起 profiles/<name>/cordis.patch.yml 不再是空壳模板，而是「用户配置文档」：
         //   内核的 dsh-config-editor 把它的 documentPath 指向 profileContext.patchPath，
         //   设置页（模型/供应商等）的保存全部写在这个文件里。
         //   它已改列入 DSHHOME_USER_PATHS，此处不再强制覆盖（否则 issue #20 会以新形式复发）。
@@ -4672,7 +4784,7 @@ public class MainActivity extends Activity {
         "dshhome/profiles/web/pnpm-workspace.yaml"
     };
 
-    // dshhome 里属于**用户**的文件：只在「不存在」时写入，任何解压模式都不得覆盖。
+    // dshhome 里属于「用户」的文件：只在「不存在」时写入，任何解压模式都不得覆盖。
     // 双保险：extractPayload（写盘）与 refreshInternalConfig（配置刷新）两处都拦。
     private static final String[] DSHHOME_USER_PATHS = {
         "dshhome/settings.yaml",
@@ -4844,7 +4956,7 @@ public class MainActivity extends Activity {
                 "bin/npm",
                 "bin/npx",
                 // v1.16.1 内置 pip：python 自带的 ensurepip 在 Termux deb 里没带 wheel，
-                // 所以 pip 是**直接解进 site-packages** 的（同因：解压不保留执行位）。
+                // 所以 pip 是「直接解进 site-packages」 的（同因：解压不保留执行位）。
                 "bin/pip",
                 "bin/pip3"};
         for (String p : execs) {
@@ -4868,7 +4980,7 @@ public class MainActivity extends Activity {
     /**
      * dex 文件强制不可写（0444）。
      *
-     * 为什么必须这么做：Android 14+ 的 ART **拒绝加载可写 dex**，报
+     * 为什么必须这么做：Android 14+ 的 ART 「拒绝加载可写 dex」，报
      * `java.lang.SecurityException: Writable dex file '<path>' is not allowed`，
      * 进程直接 SIGABRT（exit=134）——而终端上只看得到一句 “Aborted”，
      * 极易被误判成 “Shizuku 没运行 / 未授权”，把排查方向带偏。
@@ -4942,7 +5054,7 @@ public class MainActivity extends Activity {
 
     // v1.15.8：profile 的插件注册表。dsh-plugin-manager 装插件时把依赖与 bundle 名写在这里
     // （saveManifest → <profile>/package.json 的 dependencies + dsh.profile.bundles），
-    // 所以它**不是**可以整文件覆盖的官方配置，必须合并（见 writeMergedProfileManifest）。
+    // 所以它「不是」可以整文件覆盖的官方配置，必须合并（见 writeMergedProfileManifest）。
     private static final String PROFILE_MANIFEST_PATH = "dshhome/profiles/web/package.json";
 
     /** 把一个 zip 条目整个读出来（用于需要「先读后合并」的条目）。 */
@@ -4955,7 +5067,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 写 profile 清单：以 payload 那份为基准，**合并**已有文件里的用户/插件内容。
+     * 写 profile 清单：以 payload 那份为基准，「合并」已有文件里的用户/插件内容。
      *
      * 为什么不能直接覆盖：这个文件是插件注册表 —— dsh-plugin-manager 把已装插件写进它的
      * dependencies 与 dsh.profile.bundles。整文件覆盖会让「装完插件→重启引擎→插件消失」
@@ -5161,10 +5273,10 @@ public class MainActivity extends Activity {
         // 用户填 git@github.com:user/repo.git / git+ssh://… / ssh://… 时报
         // "error: cannot run ssh: No such file or directory"（真机实测）。
         //
-        // 做法：把 ssh 形式用 git 的 url.<base>.insteadOf 改写成 https —— 但**不能靠环境变量传**
+        // 做法：把 ssh 形式用 git 的 url.<base>.insteadOf 改写成 https —— 但「不能靠环境变量传」
         // （v1.15.6 的错误做法）：内核给 pnpm 的是「洗过的父环境」（dsh-subprocess 的
         // scrubbedParentEnv：SENSITIVE_ENV_PATTERN = /KEY|PASSWORD|SECRET|TOKEN/i），而 git 用环境变量
-        // 传配置的键名恰好叫 **GIT_CONFIG_KEY_<n>** —— 含 "KEY" 被当凭据洗掉，GIT_CONFIG_COUNT 却活下来
+        // 传配置的键名恰好叫 「GIT_CONFIG_KEY_<n>」 —— 含 "KEY" 被当凭据洗掉，GIT_CONFIG_COUNT 却活下来
         // → 真机报 "error: missing config key GIT_CONFIG_KEY_0"。
         // 改成写配置文件（见 ensureGitConfig），用 GIT_CONFIG_GLOBAL 指过去：该名字不含
         // KEY/PASSWORD/SECRET/TOKEN，能活过清洗（已按该正则逐项自查）。
@@ -5207,7 +5319,7 @@ public class MainActivity extends Activity {
         env.put("SHIZUKU_DEX", rishDex != null ? rishDex.getAbsolutePath() : "");
         // v1.9 虚拟屏 server dex：app_process 特权加载 VirtualScreenServer
         env.put("VS_DEX", vscreenDex != null ? vscreenDex.getAbsolutePath() : "");
-        // v1.13 修正：这里原来**硬编码** "com.deepseek.harness.beta"，而三版共用同一份源码 —— 正式版跑起来
+        // v1.13 修正：这里原来「硬编码」 "com.deepseek.harness.beta"，而三版共用同一份源码 —— 正式版跑起来
         // 也在自称 beta，而 rish 要拿这个 appId 去 Shizuku 要授权，Shizuku 比对实际调用者的包名/uid
         // （正式版 uid ≠ beta uid）→ 门卫不认（用户回报：“SHIZUKU_APP_ID=…beta，但真正在跑的是 com.deepseek.harness”）。
         // 按实际包名派生；并写回 dsh_prefs，供无障碍服务等其它组件复用（同样不能信旧值）。
@@ -5555,6 +5667,8 @@ public class MainActivity extends Activity {
             }
             hiddenPopups.clear();
         } catch (Throwable ignored) {}
+        // v1.19.6 · A2：松绑 :browser 进程（不松绑会一直拖着它，也回收不了）
+        if (browserIpc != null) { browserIpc.release(); browserIpc = null; }
         if (webView != null) webView.destroy();
         super.onDestroy();
     }
@@ -5590,7 +5704,7 @@ public class MainActivity extends Activity {
 
     /**
      * 运行时与内核树是否已就绪。
-     * v1.12：加两道判定 —— ① 关键文件必须在；② 内部那棵树必须是**当前这次安装**解压出来的
+     * v1.12：加两道判定 —— ① 关键文件必须在；② 内部那棵树必须是「当前这次安装」解压出来的
      * （payload_build_code == 当前 versionCode）。否则升级安装后拿着旧树（例：v1.10 留下的）
      * 会显示“已解压”、校验也“通过”（用户实测就是这个问题）。
      */
@@ -5624,7 +5738,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 控制台用的“引擎就绪”判定：**只认真实端口探测**，不再回退看进程句柄。
+     * 控制台用的“引擎就绪”判定：「只认真实端口探测」，不再回退看进程句柄。
      * v1.13 修正：真机实测 node 从拉起→开始监听要 17~25 秒，若把“进程活着”当成“已就绪”，
      * 控制台会过早点亮「打开主界面」，用户点进去时 3080 还没监听 → WebView 连不上，
      * 看起来就是“点了没反应”；同时底部还在刷“正在启动…（已等待 N 秒）” → 两套文案交替闪。
@@ -5652,7 +5766,7 @@ public class MainActivity extends Activity {
         return starting || (p != null && p.isAlive());
     }
 
-    /** 端口是否已被监听（TCP 连接得通即算；**后台线程调用**）。
+    /** 端口是否已被监听（TCP 连接得通即算；后台线程调用）。
      *  比 healthOk() 更早为真：node 还在启动时端口已经 listen，用它避免重复拉起引擎。 */
     private boolean portListening(int port) {
         java.net.Socket s = null;
@@ -5667,7 +5781,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 真探一次引擎端口（**必须在后台线程调用**：主线程做网络 IO 会被系统直接抛异常）。 */
+    /** 真探一次引擎端口（必须在后台线程调用：主线程做网络 IO 会被系统直接抛异常）。 */
     private boolean conProbeEngineNow() {
         boolean up = false;
         try { up = healthOk(); } catch (Throwable ignored) {}
@@ -5736,7 +5850,13 @@ public class MainActivity extends Activity {
         });
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(dp(18), cGap(24), dp(18), cGap(24));   // v1.17.5：compact 收紧上下留白
+        // v1.19.x：上边距必须**避让状态栏**（原来固定 24dp，真机上品牌字被状态栏压住）
+        int topInset = 0;
+        try {
+            int id = getResources().getIdentifier("status_bar_height", "dimen", "android");
+            if (id > 0) topInset = getResources().getDimensionPixelSize(id);
+        } catch (Throwable ignored) {}
+        col.setPadding(dp(18), Math.max(cGap(24), topInset + dp(10)), dp(18), cGap(24));
         sc.addView(col, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         box.addView(sc, new FrameLayout.LayoutParams(
@@ -5798,10 +5918,10 @@ public class MainActivity extends Activity {
     /**
      * 取一个主题色：没配置 / 该项没写 → 内置默认色。
      *
-     * v1.17.7（真机反馈）：**只改了底色**（colors.bg / perScheme.*.bg 或加了背景图）而没写其它项时，
+     * v1.17.7（真机反馈）：「只改了底色」（colors.bg / perScheme.*.bg 或加了背景图）而没写其它项时，
      * 分割线等仍会取"浅色方案的内置默认 #e5e7eb" → 深底上一条白线非常突兀。现在这类项按底色推导：
      * line/track/card 跟着底色走，text/sub 在"底色深浅与方案不一致"时自动取对比色。
-     * **显式写过的值永远优先**（含 perScheme 里写的那一份）。
+     * 「显式写过的值永远优先」（含 perScheme 里写的那一份）。
      */
     private int conColor(String key, int def) {
         ConsoleTheme t = conTheme;
@@ -5914,7 +6034,7 @@ public class MainActivity extends Activity {
 
     /**
      * 每秒一次的「热重载」检查（控制台可见时由 consoleTick 调用）。
-     * 这是「放一份 console.json → 控制台外观立刻变」的实现点：**配置真变了才整页重渲染**；
+     * 这是「放一份 console.json → 控制台外观立刻变」的实现点：「配置真变了才整页重渲染」；
      * 没变时只有一次 stat 的开销（不重建视图）。
      */
     private void conThemeTick() {
@@ -5987,6 +6107,9 @@ public class MainActivity extends Activity {
             if (f.exists()) {
                 String ts = new SimpleDateFormat("yyMMdd-HHmmss").format(new java.util.Date());
                 File to = new File(consoleDir(), "console.json.disabled-" + ts);
+                // v1.19.x：改名之外**再留一份可恢复副本** —— 用户之后用文件管理器改动/误删也还能找回来。
+                // （主题页新增的「我保存过的主题」会把这两种都列出来，点一条即可恢复。）
+                try { copyFileShallow(f, new File(consoleDir(), "console.json.replaced-" + ts)); } catch (Throwable ignored) {}
                 if (!f.renameTo(to)) { conToast("改名失败：" + to.getName()); return; }
             }
         } catch (Throwable t) {
@@ -6009,7 +6132,7 @@ public class MainActivity extends Activity {
 
     /**
      * 把 assets/console-theme/ 里的四件套解到 /sdcard/<包名目录>/console/，
-     * 让**跑在同一台设备上的 AI** 不联网也能读到规范（设计稿 §6.1 第 4 条）。
+     * 让「跑在同一台设备上的 AI」 不联网也能读到规范（设计稿 §6.1 第 4 条）。
      * 内容长度不同才重写（升级/改版自动更新）；没存储权限时静默失败，下次再试。
      */
     private void ensureConsoleThemeAssets() {
@@ -6319,6 +6442,10 @@ public class MainActivity extends Activity {
         b.setEllipsize(android.text.TextUtils.TruncateAt.END);
         b.setMinWidth(dp(primary ? 96 : 68));
         b.setMinimumWidth(dp(primary ? 96 : 68));
+        // v1.19.6：高度也要兜底。原来只钉了宽度 —— 父布局高度不够时按钮会被压成
+        // 一条扁色块、文字被裁掉（用户真机反馈："扁扁的，然后也没有文字"）。
+        b.setMinHeight(dp(36));
+        b.setMinimumHeight(dp(36));
         b.setPadding(dp(16), dp(9), dp(16), dp(9));
         b.setIncludeFontPadding(false);
         if (primary) {
@@ -6327,7 +6454,9 @@ public class MainActivity extends Activity {
         } else {
             // 次按钮：强调色描边 + 强调色文字（之前用灰底，看着像“禁用”）
             b.setTextColor(cAccent());
-            b.setBackground(cShape(isDark() ? 0x1A4D6BFE : 0x144D6BFE, cAccent(), 1, 8));
+            // v1.19.6：走 conDark()（控制台方案），不要用 isDark()（系统偏好）——
+        // 主题指定了 appearance.dark 时两者会相反，底/字就不是一套了。
+        b.setBackground(cShape(conDark() ? 0x1A4D6BFE : 0x144D6BFE, cAccent(), 1, 8));
         }
         return b;
     }
@@ -6367,6 +6496,10 @@ public class MainActivity extends Activity {
                 conTogglePaint(t);
                 conSetPluginDisabled(id, !now);
                 conToast("dsh-" + id + (now ? " 已启用" : " 已关闭") + "（重启引擎生效）");
+                // v1.19.6：改完立刻重绘（改完立刻重绘）——
+                // 只改自己那个 TextView 的话，页头「插件列表 · 已启用 N / M」会停在旧数字上，
+                // 用户看不出这一下生效没有（真机验收发现，正好砸在路线图③"可开可关"的反馈上）。
+                renderConsole();
             }
         });
         return t;
@@ -6376,7 +6509,7 @@ public class MainActivity extends Activity {
         boolean on = ((Boolean) t.getTag()).booleanValue();
         t.setText(on ? "已启用" : "已关闭");
         t.setTextColor(on ? cGreen() : cSub());
-        t.setBackground(cShape(on ? (isDark() ? 0x241F9D6B : 0x1A1F9D6B) : 0x00000000,
+        t.setBackground(cShape(on ? (conDark() ? 0x241F9D6B : 0x1A1F9D6B) : 0x00000000,
                 on ? cGreen() : cLine(), 1, 12));
     }
 
@@ -6439,6 +6572,14 @@ public class MainActivity extends Activity {
     // ---------- 页面渲染 ----------
     private void renderConsole() {
         if (consoleBody == null) return;
+        // v1.19.6 修（第六轮真机）：换页必须回页首。
+        // 原来只换 consoleBody 的子视图，**从不重置 ScrollView 的偏移** → 换页会继承上一页的
+        // 滚动位置：主控台滚到底点「主题」，落点直接在主题页中段，第一行「导出主题包」
+        // 不在可视区（验收脚本因此"点了没反应"，一度被误判成导出功能坏了）。
+        if (consolePage != conLastRenderedPage) {
+            conLastRenderedPage = consolePage;
+            if (consoleLayer != null) consoleLayer.scrollTo(0, 0);
+        }
         conThemeReloadIfChanged(false);   // v1.17.4：热重载（比 mtime+size，变了才重新解析）
         conBgApply();                     // 背景图/压暗/透明度（位图有缓存，每秒调用也不解码）
         consoleBody.removeAllViews();
@@ -6448,6 +6589,11 @@ public class MainActivity extends Activity {
         if (consolePage == 2) { renderConsolePlug(); return; }
         if (consolePage == 3) { renderConsoleLog(); return; }
         if (consolePage == 4) { renderConsoleTheme(); return; }
+        if (consolePage == PAGE_SELFCHECK) { renderConsoleSelfCheck(); return; }   // v1.19.x：内核自检（负页号哨兵，避免与自定义页冲突）
+        if (consolePage == PAGE_SESSION_HEAL) { renderConsoleSessionHeal(); return; }   // v1.19.x：会话级自愈（自修复 ③）
+        if (consolePage == PAGE_SESSION_ADMIN) { renderConsoleSessionAdmin(); return; }   // v1.19.4：会话管理（删除）
+        if (consolePage == PAGE_SESSION_TRASH) { renderConsoleSessionTrash(); return; }   // v1.19.4：回收站
+        if (consolePage == PAGE_BROWSER) { renderConsoleBrowser(); return; }   // v1.19.6 · 阶段 C：AI 浏览器
         if (consolePage >= 5) {                       // v1.17.8：layout.pages 的额外页
             ConsoleTheme ct = conTheme;
             int idx = consolePage - 4;
@@ -6460,10 +6606,450 @@ public class MainActivity extends Activity {
         renderConsoleMain();
     }
 
+
+    /**
+     * 精简版主控台（缺省风格）。
+     * 设计意图：一屏讲清三件事 —— ① 现在什么状态 ② 我要做什么（一个按钮）③ 去哪找别的。
+     * 刻意**不做卡片、不做装饰分隔线**（原来 9 张卡片的视觉噪音就来自这里）。
+     */
+    /**
+     * 精简版主控台（缺省风格）—— v1.19.5 重做（方案 B：状态块 + 分组）。
+     *
+     * 设计意图：一屏讲清三件事 —— ① 现在能不能用（状态块）② 我要做什么（主按钮）③ 去哪儿找别的（三组入口）。
+     * 硬约束：
+     *   · 每个字仍走 t("key", "默认值")，所以主题的 text 覆盖照旧生效；
+     *   · layout.pages 存在时本方法根本不会被调用（renderConsole 里"整页自拼"优先）；
+     *   · 会话分组不是卡片（不进 order/hidden 体系），因此不动任何既有卡片语义。
+     */
+    private void renderConsoleSimple() {
+        LinearLayout col = consoleBody;
+        conRenderedSimple = true;
+
+        // v1.19.7（新版骨架吃主题布局）：新版主控台**条目化** ——
+        // 从此它也吃主题的 layout.hidden / layout.cardOrder / actions。
+        // 条目 id 一律沿用 classic 的卡片 id，所以老主题里写过的「隐藏/排序」在新版下照样有意义。
+        // （表头与页脚固定、不参与排序 —— 与 classic 的做法一致。）
+        java.util.LinkedHashMap<String, View> items = new java.util.LinkedHashMap<String, View>();
+
+        // ── 表头：品牌 + 版本 + 右侧"完整版"入口 ──
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.addView(conBrandView(), new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        vlp.leftMargin = dp(8);
+        head.addView(cText(conVersionLabel(), 10f, cSub(), false), vlp);
+        head.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+        // v1.19.6：右上角原来有个「完整版」按钮（切回旧的卡片平铺）。用户 2026-10-05：
+        // 「既然已经重做了，就没有必要弄一个回到之前页面的按钮了」→ 已移除。
+        // 旧卡片版仍是 layout.pages 那些积木（extract.block / engine.status / …）的实现来源，
+        // 只是不再作为"可选风格"暴露。
+        col.addView(head);
+
+        // ── 状态块：运行环境 + 引擎 合成一块（一眼看清"能不能用 + 下一步做什么"） ──
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(cShape(cCard(), cLine(), 1, 12));
+        card.setPadding(dp(15), dp(13), dp(15), dp(13));
+        // v1.19.7：主操作块（环境 + 引擎 + 主按钮 + 重启/停止 + 详情）作为一个**可排序条目**，
+        // 不再直接挂到 col 上。它受保护、不可隐藏（hidden 里写 extract / engine 都会被忽略）——
+        // 它是「解压 / 启动引擎」的唯一入口，藏了就没法用了。
+        items.put("extract", card);
+
+        // 大字状态：未解压时讲"运行环境"，解压好了讲"引擎"（两个字段都留着，由 refreshConsole 切可见性）
+        conExState = cText("", 16f, cText(), true);
+        card.addView(conExState);
+        conEnState = cText("", 16f, cText(), true);
+        card.addView(conEnState);
+        conEnMeta = cText("", 11f, cSub(), false);
+        card.addView(conEnMeta, cTop(cGap(4)));
+        conExMeta = cText("", 11f, cSub(), false);
+        card.addView(conExMeta, cTop(cGap(2)));
+        // 解压进度条（只在解压时显示）
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setBackground(cShape(cTrack(), 0, 0, 3));
+        conFill = new View(this);
+        conFill.setBackgroundColor(cAccent());
+        conSpacer = new View(this);
+        bar.addView(conFill, new LinearLayout.LayoutParams(0, dp(6), 1f));
+        bar.addView(conSpacer, new LinearLayout.LayoutParams(0, dp(6), 0f));
+        bar.setVisibility(View.GONE);
+        conBar = bar;
+        card.addView(bar, cTop(cGap(10)));
+        // 主按钮（文案随状态变，refreshConsole 驱动）
+        uiSimpleActionBtn = cButton(t("btn.extract.run", "解压文件"), true);
+        uiSimpleActionBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { conSimplePrimaryAction(); }
+        });
+        card.addView(uiSimpleActionBtn, cTop(cGap(14)));
+        // 次要操作：重启 / 停止（只在引擎活着时可用）
+        LinearLayout sub = new LinearLayout(this);
+        sub.setOrientation(LinearLayout.HORIZONTAL);
+        conEnRestart = cButton(t("btn.engine.restart", "重启"), false);
+        conEnRestart.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { conRestartEngine(); }
+        });
+        conEnStop = cButton(t("btn.engine.stop", "停止"), false);
+        conEnStop.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { conStopEngine(); }
+        });
+        sub.addView(conEnRestart, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        slp.leftMargin = dp(8);
+        sub.addView(conEnStop, slp);
+        card.addView(sub, cTop(cGap(8)));
+        // 详情（默认收起；已就绪时可点开）
+        conDetailBox = conExtractDetail();
+        card.addView(conDetailBox);
+
+        // ── 会话（把原来藏在「内核自检」页里的两个入口提到首页） ──
+        items.put("group.sessions", cGrpTitle(t("title.grpSessions", "会话")));
+        items.put("sessionadmin", cNavRow(t("card.sessionadmin", "会话管理"),
+                t("desc.sessionadmin", "删除不需要的会话 · 先进回收站，可恢复"), "", PAGE_SESSION_ADMIN));
+        items.put("sessionheal", cNavRow(t("card.sessionheal", "会话修复"),
+                t("desc.sessionheal", "坏图毒死的会话：只降级那一条消息"), "", PAGE_SESSION_HEAL));
+
+        // ── 系统 ──
+        items.put("group.system", cGrpTitle(t("title.grpSystem", "系统")));
+        // **常驻**的运行环境入口（「重新解压」是修坏树的一键入口，v1.19.7 起进 KEEP_CARDS，不许藏）。
+        items.put("env", cNavRowEnv());
+        // AI 浏览器的常驻入口（同屏查看 / 页签 / 关闭）：同屏是"AI 正在点哪一页"的唯一人眼通道。
+        items.put("browser", cNavRow(t("card.browser", "AI 浏览器"),
+                t("desc.browser", "看 AI 正在哪一页 · 同屏查看（画面可直接操作，拖顶部小条搬窗）"),
+                conBrowserSummary(), PAGE_BROWSER));
+        items.put("perm", cNavRow(t("card.perm", "授予权限"), t("desc.perm", "存储 · 通知 · 悬浮窗 · 电池 · root · Shizuku · 无障碍"),
+                conPermSummary(), 1));
+        items.put("plugins", cNavRow(t("card.plugins", "插件"), t("desc.plugins", "关掉用不到的，省上下文"), conPlugSummary(), 2));
+        items.put("log", cNavRow(t("card.log", "日志"), conLogLine(), "", 3));
+        items.put("theme", cNavRow(t("card.theme", "主题"), t("desc.theme", "外观 / 布局 / 文案都由 console.json 决定 · 点这里导入导出"),
+                "", 4));
+
+        // ── 诊断 ──
+        items.put("group.diagnose", cGrpTitle(t("title.grpDiagnose", "诊断")));
+        items.put("selfcheck", cNavRow(t("card.selfcheck", "内核自检"), t("desc.selfcheckShort", "清单式一致性证明 · 自愈账本"), "", PAGE_SELFCHECK));
+
+        // v1.19.7：主题的自定义动作卡（actions[]）—— classic 一直渲染它，新版以前**根本不渲染**。
+        // 用户手上那份「软软小白团」正好用了 actions，属于"设了却没生效"。
+        View actCard = cardActions();
+        if (actCard != null) items.put("actions", actCard);
+
+        // 按主题的 layout.hidden / layout.cardOrder 过滤 + 排序后一次性挂上主控台
+        emitConsoleItems(col, items);
+
+        // ── 页脚：状态 + 三个等宽按钮（救援能力一项不少） ──
+        col.addView(cSep(cGap(20)));
+        conFoot = cText(t("status.ready", "就绪"), 11f, cSub(), false);
+        col.addView(conFoot);
+        LinearLayout foot = new LinearLayout(this);
+        foot.setOrientation(LinearLayout.HORIZONTAL);
+        Button rescue = cButton(t("btn.rescue", "救援"), false);
+        rescue.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        rescue.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { conShowRescueDialog(); }
+        });
+        foot.addView(rescue, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button upd = cButton(t("card.update", "检查更新"), false);
+        upd.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        upd.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { conToast("正在检查…"); checkForUpdate(true); }
+        });
+        LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        ulp.leftMargin = dp(8);
+        foot.addView(upd, ulp);
+        Button th = cButton(t("btn.shellTheme", "界面主题"), false);
+        th.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        th.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { conThemeDialog(); }
+        });
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        tlp.leftMargin = dp(8);
+        foot.addView(th, tlp);
+        col.addView(foot, cTop(cGap(10)));
+
+        refreshConsole();
+    }
+
+    /** v1.19.7：新版主控台里「分组标题 → 它管着哪些行」（整组被隐藏时标题一并收掉）。 */
+    private static final String[][] SIMPLE_GROUPS = {
+        {"group.sessions", "sessionadmin", "sessionheal"},
+        {"group.system", "env", "browser", "perm", "plugins", "log", "theme"},
+        {"group.diagnose", "selfcheck"},
+    };
+
+    /**
+     * v1.19.7（新版骨架吃主题布局）：把「条目表」按主题的 `layout.hidden` / `layout.cardOrder`
+     * 过滤排序后挂上主控台。
+     *
+     * 为什么需要它：v1.19.6 起主控台缺省走新版骨架，而新版骨架是**硬编码**的 ——
+     * `layout.cardOrder` / `layout.hidden` / `actions` 三层在新版下**静默失效**
+     * （`conCardsOrder()` 只在 classic 分支被调；`cardActions()` 只由 `conCardView("actions")` 调；
+     *  `renderConsoleSimple()` 里对主题对象的唯一引用是一句 `conThemeDialog()`）。
+     *
+     * · **不可隐藏**：`extract`（新版里它是主操作块，解压/启动引擎/重启/停止全在里面）、
+     *   `env` / `theme` / `selfcheck`（KEEP_CARDS：重新解压、换主题、自修复的唯一入口）。
+     * · **分组标题自动收**：某一组里的行全被隐藏时，标题自己也不再出现（不留孤立小标题）。
+     * · **顺序语义与 classic 的 `conCardsOrder()` 完全一致**：`cardOrder` 里列到的按它排，
+     *   没列到的按内置默认顺序接在后面 —— 老主题一个字都不用改。
+     */
+    private void emitConsoleItems(LinearLayout col, java.util.LinkedHashMap<String, View> items) {
+        ConsoleTheme ct = conTheme;
+        java.util.List<String> hidden = new java.util.ArrayList<String>();
+        if (ct != null) hidden.addAll(ct.hiddenCards);
+
+        for (int g = 0; g < SIMPLE_GROUPS.length; g++) {
+            boolean anyVisible = false;
+            for (int k = 1; k < SIMPLE_GROUPS[g].length; k++) {
+                if (!hidden.contains(SIMPLE_GROUPS[g][k]) && items.containsKey(SIMPLE_GROUPS[g][k])) anyVisible = true;
+            }
+            if (!anyVisible) hidden.add(SIMPLE_GROUPS[g][0]);   // 整组都没了 → 标题也别留
+        }
+        hidden.remove("extract");   // 主操作块不给藏（藏了就没有启动引擎的入口）
+
+        java.util.List<String> order = new java.util.ArrayList<String>();
+        if (ct != null && ct.cardOrder != null) order.addAll(ct.cardOrder);
+        for (String id : items.keySet()) if (!order.contains(id)) order.add(id);
+
+        String prev = null;
+        for (int i = 0; i < order.size(); i++) {
+            String id = order.get(i);
+            if (hidden.contains(id)) continue;
+            View v = items.get(id);
+            if (v == null) continue;
+            boolean isGrp = id.startsWith("group.");
+            int top;
+            if (prev == null) top = isGrp ? cGap(20) : cGap(12);
+            else if (isGrp) top = cGap(20);
+            else top = prev.startsWith("group.") ? 0 : cGap(12);
+            col.addView(v, cTop(top));
+            prev = id;
+        }
+    }
+
+    /** 分组小标题（方案 B 的三组：会话 / 系统 / 诊断）。 */
+    private View cGrpTitle(String s) {
+        return cText(s, 11f, cSub(), true);
+    }
+
+    // ==================== v1.19.6：细页面统一版式的构件 ====================
+    //
+    // 背景：主控台按方案 B 重做后，细页面（权限 / 插件 / 日志 / 主题 / 内核自检）还是
+    // 老的"行 + 分隔线"堆法，跟主页面不是一套视觉。用户 2026-10-05：
+    // 「只重置了主页面 那些细页面都没有重做」。
+    // 统一版式 = 返回行 + 一句说明 + 分组小标题 + 卡片块（块内是"标题 / 副标题 / 右列短状态"的行）
+    //           + 危险操作单独放底部（离手远）。
+
+    /** 主控台「运行环境」那一行的副标题（refreshConsole 里更新，跟状态块同源）。 */
+    private TextView conEnvState = null;
+
+    /** 卡片块：圆角 + 卡片底色 + 与主控台状态块同一套内边距。 */
+    private LinearLayout cCardBox() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(cShape(cCard(), cLine(), 1, 12));
+        box.setPadding(dp(15), dp(4), dp(15), dp(4));
+        return box;
+    }
+
+    /** 卡片块内行与行之间的极淡分隔线（v1.19.6：与权限页那条同一套视觉）。 */
+    private View cCardSep() {
+        View sep = new View(this);
+        sep.setBackgroundColor(cLine());
+        sep.setAlpha(0.5f);
+        sep.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1))));
+        return sep;
+    }
+
+    /**
+     * 行式列表的标题只有一行位置：过长就压成一行并截断。
+     * 会话标题来自用户的第一句话，真机上见过整段贴进来的（不截断会把一行撑成十几行）。
+     */
+    private String cCut(String s, int max) {
+        if (s == null) return "";
+        String one = s.replace('\n', ' ').replace('\r', ' ').trim();
+        return one.length() <= max ? one : (one.substring(0, max) + "…");
+    }
+
+    /** 卡片块里的一行：标题 + 副标题 + 右列短状态（可选 ›），整行可点。 */
+    private View cCardRow(String title, String sub, String right, boolean chevron, View.OnClickListener click) {
+        return cCardRow(title, sub, right, cSub(), chevron, click);
+    }
+
+    /** 同上，但右列状态可指定颜色（已授权=绿 / 未授权=红）。 */
+    private View cCardRow(String title, String sub, String right, int rightColor, boolean chevron,
+                          View.OnClickListener click) {
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        left.addView(cText(title, 13.5f, cText(), false));
+        if (sub != null && sub.length() > 0) left.addView(cText(sub, 11f, cSub(), false));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(12), 0, dp(12));
+        row.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        if (right != null && right.length() > 0) row.addView(cText(right, 11.5f, rightColor, false));
+        if (chevron) {
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            clp.leftMargin = dp(6);
+            row.addView(cText("›", 14f, cSub(), false), clp);
+        }
+        if (click != null) row.setOnClickListener(click);
+        return row;
+    }
+
+    /** 卡片块里的一行：右侧放一个控件（开关 / 小按钮），不做整行点击。 */
+    private View cCardRowWith(String title, String sub, View right) {
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        left.addView(cText(title, 13.5f, cText(), false));
+        if (sub != null && sub.length() > 0) left.addView(cText(sub, 11f, cSub(), false));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(12), 0, dp(12));
+        row.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rlp.leftMargin = dp(8);
+        row.addView(right, rlp);
+        return row;
+    }
+
+    /** 说明段落（11sp 次要色 + 行距），细页面统一用它写"这一页是干什么的"。 */
+    private View cNote(String s) {
+        TextView tv = cText(s, 11f, cSub(), false);
+        tv.setLineSpacing(dp(2), 1f);
+        return tv;
+    }
+
+    /**
+     * 主控台「运行环境」入口（常驻）。
+     * 为什么必须是常驻：见 renderConsoleSimple 里的注释 —— 解压完成后主按钮变成「启动引擎」，
+     * 没有这一行就再也点不到「解压 / 重新解压 / 校验」了。
+     */
+    private View cNavRowEnv() {
+        conEnvState = cText("", 11f, cSub(), false);
+        LinearLayout left = new LinearLayout(this);
+        left.setOrientation(LinearLayout.VERTICAL);
+        left.addView(cText(t("title.grpEnv", "运行环境"), 14f, cText(), false));
+        left.addView(conEnvState);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(15), 0, dp(15));
+        row.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(cText("›", 14f, cSub(), false));
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { conEnvDialog(); }
+        });
+        return row;
+    }
+
+    /**
+     * 「运行环境」弹窗：解压 / 重新解压 / 校验文件 / 看详情。
+     * 全部复用既有链路（conExtractClick 自己在"已解压"时会转成 conReExtract）；
+     * 这里一个字节都不碰用户数据 —— 解压只覆盖 payload 里有的文件。
+     */
+    private void conEnvDialog() {
+        final boolean ready = conFilesReady();
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(cNote(ready
+                ? "运行环境已就绪。引擎起不来（升级后报 import 错、混装树）时先点「重新解压」——"
+                  + "它只覆盖内核自己的文件，不动你的会话、插件与配置。"
+                : "还没解压。首次使用必须先解压运行环境（约 2 分钟），之后才能启动引擎。"));
+        box.addView(cText(conExtractMetaText(ready), 12f, cText(), false), cTop(cGap(10)));
+
+        Button run = cButton(ready ? t("btn.extract.rerun", "重新解压") : t("btn.extract.run", "解压文件"), true);
+        run.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { closeDialogOverlay(); conExtractClick(); }
+        });
+        box.addView(run, cTop(cGap(14)));
+
+        Button verify = cButton(t("btn.extract.verify", "校验文件"), false);
+        verify.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { closeDialogOverlay(); conVerifyFiles(); }
+        });
+        box.addView(verify, cTop(cGap(8)));
+
+        Button detail = cButton(t("btn.extract.detail", "看详情"), false);
+        detail.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                closeDialogOverlay();
+                consoleDetailOpen = true;
+                renderConsole();
+            }
+        });
+        box.addView(detail, cTop(cGap(8)));
+        conDialogView(t("title.grpEnv", "运行环境"), box, "关闭", null, null);
+    }
+
+
+    /** 精简版那个主按钮按下去干什么：看当前状态决定（解压 / 启动 / 打开界面）。 */
+    private void conSimplePrimaryAction() {
+        boolean ready = conFilesReady();
+        if (!ready) { conExtractClick(); return; }
+        if (conEngineRunning()) { enterMainUi(); return; }
+        conEngineClick();
+    }
+
+    /** 日志行的一行摘要（精简版用；格式与卡片版保持一致口径）。 */
+    private String conLogLine() {
+        try {
+            File f = conLogFile();
+            long kb = f.exists() ? Math.max(1, f.length() / 1024) : 0;
+            String when = f.exists()
+                    ? new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US).format(new java.util.Date(f.lastModified()))
+                    : "";
+            return "dsh-web.log · " + kb + " KB" + (when.length() > 0 ? " · " + when : "");
+        } catch (Throwable t) { return "dsh-web.log"; }
+    }
+
+    /**
+     * 救援入口（精简版把它收进一个弹窗，避免占主界面；能力一项不少）。
+     * 这是本项目的"不可移除面"：安全模式 / 导出 / 导入一个都不能少。
+     */
+    private void conShowRescueDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(cText(t("card.rescueDesc", "引擎起不来时，用安全模式跳过用户层启动（不丢数据）；也可以随时导出全部数据做备份。"),
+                11f, cSub(), false));
+        Button safe = cButton("安全模式启动", false);
+        safe.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { closeDialogOverlay(); conSafeMode(); }
+        });
+        box.addView(safe, cTop(cGap(12)));
+        Button exp = cButton("导出全部数据", false);
+        exp.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { closeDialogOverlay(); conBackupExport(); }
+        });
+        box.addView(exp, cTop(cGap(8)));
+        Button imp = cButton("从备份导入还原", false);
+        imp.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { closeDialogOverlay(); conBackupImport(); }
+        });
+        box.addView(imp, cTop(cGap(8)));
+        conDialogView("救援", box, "关闭", null, null);
+    }
+
     private void renderConsoleMain() {
+        // v1.19.6：只要不走精简骨架，就必须把 conRenderedSimple 复位。
+        // 它控制 refreshConsole() 里「解压状态行 / 引擎状态行」的可见性切换，
+        // 只置 true 不复位的话，主题热切到 classic（或 layout.pages）时会把卡片版的
+        // 状态行整行藏掉 —— 真机上表现为「解压卡片只剩一个按钮」。
+        conRenderedSimple = false;
         ConsoleTheme ct0 = conTheme;
         if (ct0 != null && ct0.pages != null && !ct0.pages.isEmpty()) {
-            renderConsolePages(ct0);        // v1.17.8：layout.pages 整页自定义
+            renderConsolePages(ct0);        // v1.17.8：layout.pages 整页自定义（优先级最高，不受 style 影响）
+            return;
+        }
+        // v1.19.x：风格分流 —— simple（缺省）走精简骨架；classic 走原来的卡片平铺（代码未改）
+        if (!"classic".equals(consoleUiStyle())) {
+            renderConsoleSimple();
             return;
         }
         LinearLayout col = consoleBody;
@@ -6518,7 +7104,7 @@ public class MainActivity extends Activity {
      * 再按 layout.hidden 过滤（rescue / theme 强制保留 —— 它们是这个 App 的救援面）。
      */
     private String[] conCardsOrder() {
-        String[] def = {"extract", "engine", "rescue", "actions", "perm", "plugins", "log", "theme", "update"};
+        String[] def = {"extract", "engine", "rescue", "selfcheck", "actions", "browser", "perm", "plugins", "log", "theme", "update"};
         ConsoleTheme ct = conTheme;
         java.util.List<String> base = new java.util.ArrayList<String>();
         if (ct != null && ct.cardOrder != null) {
@@ -6548,6 +7134,8 @@ public class MainActivity extends Activity {
         if ("log".equals(id)) return cardLog();
         if ("update".equals(id)) return cardUpdate();
         if ("theme".equals(id)) return cardTheme();   // v1.17.6：主题页入口（不可隐藏）
+        if ("selfcheck".equals(id)) return cardSelfCheck();   // v1.19.x：内核自检（自修复功能）
+        if ("browser".equals(id)) return cardBrowser();       // v1.19.6 · 阶段 C：AI 浏览器
         return null;
     }
 
@@ -6625,7 +7213,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * ②·5 救援（安全模式 / 备份）—— **不可隐藏**（这个 App 的救援面）。
+     * ②·5 救援（安全模式 / 备份）—— 「不可隐藏」（这个 App 的救援面）。
      * 解决的真实痛点：装的插件把 profile 的 patch 文件写成非法 YAML → 引擎直接拒启，
      * 而「修」又得先让引擎跑起来 → 形成死结，过去只能清数据。
      */
@@ -6675,7 +7263,7 @@ public class MainActivity extends Activity {
 
     /**
      * ⑦ 自定义按钮（`actions[]`，v1.17.7 第 3 轮）。
-     * 没配 actions 就返回 null（不占位置）；**可执行动作（shell/http/intent/prompt）用红描边**标记，
+     * 没配 actions 就返回 null（不占位置）；「可执行动作（shell/http/intent/prompt）用红描边」标记，
      * 点它们会先弹确认框，把命令/网址/意图/提示词原文摆出来再让你决定。
      */
     private View cardActions() {
@@ -6890,7 +7478,7 @@ public class MainActivity extends Activity {
         LinearLayout col = consoleBody;
         ConsoleTheme.Page home = ct.pages.get(0);
 
-        // 表头只在**树里没放 brand.label** 时自动补 —— 放了就按主题自己的排法（否则会出现两条表头，
+        // 表头只在「树里没放 brand.label」 时自动补 —— 放了就按主题自己的排法（否则会出现两条表头，
         // 真机踩过）。补的这一份同时保证"长按品牌字 → 以默认样式打开"这个逃生口始终存在。
         if (!ConsoleTheme.nodeHasBuiltin(home.children, "brand.label")) {
             LinearLayout top = new LinearLayout(this);
@@ -6971,7 +7559,7 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams lp;
             // ⚠ spacer / divider 是"纯 View"：给它 WRAP_CONTENT，在 AT_MOST 下会被撑满整个可用高度
             //   （View.getDefaultSize 的行为），而 fillViewport 让内容短的页面正好走 AT_MOST —— 真机踩过：
-            //   12dp 的缝吃了 1376px，后面的按钮被挤成 0 高。这里一律给**显式高度**。
+            //   12dp 的缝吃了 1376px，后面的按钮被挤成 0 高。这里一律给「显式高度」。
             if ("spacer".equals(n.type)) {
                 lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                         dp(n.size == null ? 12 : n.size.intValue()));
@@ -6991,7 +7579,7 @@ public class MainActivity extends Activity {
                 lp = new LinearLayout.LayoutParams(dp(n.width.intValue()),
                         ViewGroup.LayoutParams.WRAP_CONTENT);
             } else {
-                // 竖排（column / 根容器）默认占满宽；**横排（row）默认按内容宽** ——
+                // 竖排（column / 根容器）默认占满宽；「横排（row）默认按内容宽」 ——
                 // 否则一行里没写 weight 的节点会抢满整行，把带 weight 的兄弟挤成 0 宽（真机踩过）。
                 lp = new LinearLayout.LayoutParams(
                         parent.getOrientation() == LinearLayout.HORIZONTAL
@@ -7098,7 +7686,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 内置积木（id 表见 SPEC §4）：可放在控件树的**任意位置、任意顺序、可重复**。
+     * 内置积木（id 表见 SPEC §4）：可放在控件树的「任意位置、任意顺序、可重复」。
      * ⚠ perm.list / plugin.list 目前退化成"打开这一页"的按钮（页内清单还没拆成积木），如实标注。
      */
     private View conBuiltinView(String id) {
@@ -7440,7 +8028,7 @@ public class MainActivity extends Activity {
         logRow.setPadding(0, dp(12), 0, dp(12));
         logRow.addView(logLeft, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         logRow.addView(logActs);
-        // v1.15.1 修复：原来这一行只有「查看 / 分享」两个快捷按钮，**没有任何入口**
+        // v1.15.1 修复：原来这一行只有「查看 / 分享」两个快捷按钮，「没有任何入口」
         // 把 consolePage 设为 3 —— 于是渲染日志页的 renderConsoleLog()（含「清空日志」）
         // 成了不可达的死代码，用户找不到清空入口。现在整行可点进入日志页，并补 › 提示。
         logRow.setOnClickListener(new View.OnClickListener() {
@@ -7472,14 +8060,19 @@ public class MainActivity extends Activity {
 
     /**
      * 壳的深浅色设置行（v1.13.12；「恢复默认控制台主题」也在这个弹窗里）。
-     * 注意：这是 **App 主题**（跟随系统/浅色/深色），与主题包的 appearance 是两回事。
+     * 注意：这是 「App 主题」（跟随系统/浅色/深色），与主题包的 appearance 是两回事。
+     */
+    /**
+     * 页脚的「界面主题 · 模式 ›」行。
+     * ⚠ 它被**完整版页脚**（renderConsoleMain）与**自定义页页脚**（renderConsolePages）使用，
+     *   精简版（方案 B）已改用三个等宽按钮，但这里不能删 —— 删之前必须 grep 全部调用点。
      */
     private View conShellThemeRow() {
         LinearLayout themeRow = new LinearLayout(this);
         themeRow.setOrientation(LinearLayout.HORIZONTAL);
         themeRow.setGravity(Gravity.CENTER_VERTICAL);
         themeRow.setPadding(0, dp(12), 0, dp(12));
-        themeRow.addView(cText("界面主题", 12f, cSub(), false),
+        themeRow.addView(cText(t("btn.shellTheme", "界面主题"), 12f, cSub(), false),
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         themeRow.addView(cText(themeModeLabel(themeMode()) + " ›", 12f, cSub(), false));
         themeRow.setOnClickListener(new View.OnClickListener() {
@@ -7491,6 +8084,7 @@ public class MainActivity extends Activity {
         box.addView(cSep(0));
         return box;
     }
+    // 原来那一行"界面主题 · 浅色 ›"被按钮取代，且主题模式的显示与切换都在 conThemeDialog() 里。
 
     /** layout.defaultPage / detailOpen：只在主题重载时应用一次（不覆盖用户当次的点击）。 */
     private void conThemeApplyLayout() {
@@ -7498,7 +8092,7 @@ public class MainActivity extends Activity {
         if (ct == null) return;
         if (ct.defaultPage != null) {
             int p = ct.defaultPage.intValue();
-            boolean okPage = (p >= 0 && p <= 4)                       // 0~4 内置页
+            boolean okPage = (p >= 0 && p <= 4)                       // 0~4 内置页（页号 5 已归自定义页，内置页不得占用）
                     || (p >= 5 && ct.pages != null && (p - 4) < ct.pages.size());   // v1.17.8：自定义页
             if (okPage) consolePage = p;
             else ct.notes.add("layout.defaultPage=" + p + "：这一页不存在（内置 0~4，自定义页从 5 起），已忽略");
@@ -7510,7 +8104,7 @@ public class MainActivity extends Activity {
     // 设计稿 §3.1：四块 —— ①当前状态 + 五个操作 ②让 AI 做主题包（5 条可复制提示词）
     // ③规范与自检入口 ④可执行动作确认区（第 3 轮才执行，现在只如实列出）
 
-    /** 主控台的「主题」导航行（card id = theme，**不可隐藏**：它是换主题的唯一入口）。 */
+    /** 主控台的「主题」导航行（card id = theme，不可隐藏：它是换主题的唯一入口）。 */
     private View cardTheme() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -7535,14 +8129,15 @@ public class MainActivity extends Activity {
     private void renderConsoleTheme() {
         LinearLayout col = consoleBody;
         col.addView(conBackRow(t("title.themePage", "主题")));
-        col.addView(cText(t("desc.themePage",
-                "这一页管的是控制台自己的样子。配置文件在手机存储里，改完存盘几秒内自动生效，不用重启 App。"),
-                11.5f, cSub(), false), cTop(cGap(10)));
+        col.addView(cNote(t("desc.themePage",
+                "这一页管的是控制台自己的样子。配置文件在手机存储里，改完存盘几秒内自动生效，不用重启 App。")),
+                cTop(cGap(8)));
 
-        // ---------- ① 当前状态 ----------
-        col.addView(cSep(cGap(16)));
-        col.addView(cText(t("title.themeStatus", "当前主题"), 15f, cText(), false), cTop(cGap(16)));
-        col.addView(cText(conThemeStatusText(), 11.5f, cSub(), false), cTop(cGap(7)));
+        // ---------- ① 当前主题（卡片：状态 + 一个主操作） ----------
+        col.addView(cGrpTitle(t("title.themeStatus", "当前主题")), cTop(cGap(16)));
+        LinearLayout c1 = cCardBox();
+        c1.addView(cCardRow(t("title.themeStatus", "当前主题"), conThemeStatusText(), "", false, null));
+        col.addView(c1, cTop(cGap(8)));
 
         LinearLayout a1 = new LinearLayout(this);
         a1.setOrientation(LinearLayout.HORIZONTAL);
@@ -7551,63 +8146,71 @@ public class MainActivity extends Activity {
             @Override public void onClick(View v) { conThemeReloadNow(); }
         });
         a1.addView(rl, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        Button ex = cButton(t("btn.theme.export", "导出主题包"), false);
-        ex.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { conThemeExport(); }
-        });
-        LinearLayout.LayoutParams exlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        exlp.leftMargin = dp(8);
-        a1.addView(ex, exlp);
+        // 「恢复默认」是可逆的，但仍是"改数据"，按统一版式放到最下面单独一块（见 ④ 维护）。
         col.addView(a1, cTop(cGap(12)));
 
-        LinearLayout a2 = new LinearLayout(this);
-        a2.setOrientation(LinearLayout.HORIZONTAL);
-        Button im = cButton(t("btn.theme.import", "导入主题包"), true);
-        im.setOnClickListener(new View.OnClickListener() {
+        // ---------- ② 导入 / 导出（行式入口） ----------
+        col.addView(cGrpTitle(t("title.grpThemeIo", "导入 / 导出")), cTop(cGap(20)));
+        LinearLayout c2 = cCardBox();
+        c2.addView(cCardRow(t("btn.theme.export", "导出主题包"),
+                t("desc.themeExport", "把当前主题打成 zip（含 console.json 与图片），导出后可直接分享"),
+                "", true, new View.OnClickListener() {
+            @Override public void onClick(View v) { conThemeExport(); }
+        }));
+        c2.addView(cCardRow(t("btn.theme.import", "导入主题包"),
+                t("desc.themeImport", "从 zip 装一份主题；现有配置会先备份，可反悔"),
+                "", true, new View.OnClickListener() {
             @Override public void onClick(View v) { conThemeImport(); }
-        });
-        a2.addView(im, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        Button rs = cButton(t("btn.theme.reset", "恢复默认"), false);
-        rs.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { conThemeReset(); }
-        });
-        LinearLayout.LayoutParams rslp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        rslp.leftMargin = dp(8);
-        a2.addView(rs, rslp);
-        col.addView(a2, cTop(cGap(8)));
+        }));
+        col.addView(c2, cTop(cGap(8)));
 
-        LinearLayout a4 = new LinearLayout(this);
-        a4.setOrientation(LinearLayout.HORIZONTAL);
-        Button od = cButton(t("btn.theme.openDir", "打开主题目录"), false);
-        od.setOnClickListener(new View.OnClickListener() {
+        // v1.19.x：让「恢复默认」可逆 —— 只有真的存在被收起来的配置时才显示这个入口
+        int nBackups = conThemeBackups().size();
+        if (nBackups > 0) {
+            col.addView(cCardRow(t("btn.theme.backups", "我保存过的主题") + "（" + nBackups + "）",
+                    t("desc.themeBackups", "恢复默认 / 导入之前的旧配置都收在这里，点一下直接恢复"),
+                    "", true, new View.OnClickListener() {
+                @Override public void onClick(View v) { conThemeShowBackups(); }
+            }), cTop(cGap(8)));
+        }
+
+        // ---------- ③ 规范与自检（行式入口） ----------
+        col.addView(cGrpTitle(t("title.themeSpec", "规范与自检")), cTop(cGap(20)));
+        col.addView(cNote(t("desc.themeSpec",
+                "规范就在主题目录里（THEME-PACK-SPEC.md），连同 schema、示例、零依赖校验器一起随包分发；"
+                        + "AI 生成的包可以先自检一遍再导入。")), cTop(cGap(6)));
+        LinearLayout c3 = cCardBox();
+        c3.addView(cCardRow(t("btn.theme.openSpec", "打开规范"),
+                t("desc.themeSpecShort", "THEME-PACK-SPEC.md · 含卡片 / 积木 / 动作三张 id 表"),
+                "", true, new View.OnClickListener() {
+            @Override public void onClick(View v) { conThemeOpenSpec(); }
+        }));
+        c3.addView(cCardRow(t("btn.theme.openDir", "打开主题目录"),
+                t("desc.themeDir", "console.json、背景图与规范都放在这里"),
+                "", true, new View.OnClickListener() {
             @Override public void onClick(View v) { conThemeOpenDir(); }
-        });
-        a4.addView(od, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        Button dg = cButton(t("btn.theme.diag", "诊断"), false);
-        dg.setOnClickListener(new View.OnClickListener() {
+        }));
+        c3.addView(cCardRow(t("btn.theme.diag", "诊断"),
+                t("desc.themeDiag", "看解析结果、回退项与布局页数"),
+                "", true, new View.OnClickListener() {
             @Override public void onClick(View v) { conThemeShowDetail(); }
-        });
-        LinearLayout.LayoutParams dglp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        dglp.leftMargin = dp(8);
-        a4.addView(dg, dglp);
-        col.addView(a4, cTop(cGap(8)));
-        // 逃生口（也放在主题页里，免得长按品牌字那条路被自己改没了）
-        TextView esc = cText(conThemeIgnored()
-                        ? t("btn.theme.unsafe", "恢复主题样式（现在按默认样式打开）")
-                        : t("btn.theme.safe", "以默认样式打开（忽略主题配置，文件不删）"),
-                11.5f, cAccent(), false);
-        esc.setPadding(0, cGap(12), 0, 0);
-        esc.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { conThemeEscapeDialog(); }
-        });
-        col.addView(esc);
+        }));
+        col.addView(c3, cTop(cGap(8)));
 
-        // ---------- ② 让 AI 做主题包 ----------
-        col.addView(cSep(cGap(18)));
-        col.addView(cText(t("title.themeAi", "让 AI 做主题包"), 15f, cText(), false), cTop(cGap(16)));
-        col.addView(cText(t("desc.themeAi",
-                "复制一条提示词发给任意 AI（手机上的 DSH、电脑上的、网页的都行），它产出的 zip 用上面的「导入主题包」装进来。"),
-                11f, cSub(), false), cTop(cGap(7)));
+        Button cc = cButton(t("btn.theme.copyCheck", "复制自检命令"), false);
+        cc.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                conThemeCopy("python3 theme_pack_check.py 你的主题包.zip", "自检命令已复制（在电脑或手机终端里跑）");
+            }
+        });
+        col.addView(cc, cTop(cGap(12)));
+
+        // ---------- ④ 让 AI 做主题包 ----------
+        col.addView(cGrpTitle(t("title.themeAi", "让 AI 做主题包")), cTop(cGap(20)));
+        col.addView(cNote(t("desc.themeAi",
+                "复制一条提示词发给任意 AI（手机上的 DSH、电脑上的、网页的都行），它产出的 zip 用上面的「导入主题包」装进来。")),
+                cTop(cGap(6)));
+        LinearLayout c4 = cCardBox();
         for (int i = 0; i < CON_THEME_PROMPTS.length; i++) {
             final int idx = i;
             LinearLayout row = new LinearLayout(this);
@@ -7628,48 +8231,256 @@ public class MainActivity extends Activity {
             };
             row.setOnClickListener(click);
             cp.setOnClickListener(click);
-            col.addView(row);
-            col.addView(cSep(0));
+            c4.addView(row);
         }
+        col.addView(c4, cTop(cGap(8)));
 
-        // ---------- ③ 规范与自检 ----------
-        col.addView(cSep(cGap(18)));
-        col.addView(cText(t("title.themeSpec", "规范与自检"), 15f, cText(), false), cTop(cGap(16)));
-        col.addView(cText(t("desc.themeSpec",
-                "规范就在主题目录里（THEME-PACK-SPEC.md），连同 schema、示例、零依赖校验器一起随包分发；"
-                        + "AI 生成的包可以先自检一遍再导入。"),
-                11f, cSub(), false), cTop(cGap(7)));
-        LinearLayout a3 = new LinearLayout(this);
-        a3.setOrientation(LinearLayout.HORIZONTAL);
-        Button os = cButton(t("btn.theme.openSpec", "打开规范"), false);
-        os.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { conThemeOpenSpec(); }
-        });
-        a3.addView(os, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        Button cc = cButton(t("btn.theme.copyCheck", "复制自检命令"), false);
-        cc.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) {
-                conThemeCopy("python3 theme_pack_check.py 你的主题包.zip", "自检命令已复制（在电脑或手机终端里跑）");
-            }
-        });
-        LinearLayout.LayoutParams cclp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        cclp.leftMargin = dp(8);
-        a3.addView(cc, cclp);
-        col.addView(a3, cTop(cGap(12)));
+        // ---------- ⑤ 维护：恢复默认（可撤销，但仍属"改数据"→ 红字、单独一块、放最后） ----------
+        col.addView(cGrpTitle(t("title.grpThemeCare", "维护")), cTop(cGap(20)));
+        LinearLayout c5 = cCardBox();
+        c5.addView(cCardRow(t("btn.theme.reset", "恢复默认主题"),
+                t("desc.themeReset", "把 console.json 改名留底（不删）；之后可从「我保存过的主题」恢复"),
+                t("btn.theme.resetShort", "恢复"), cRed(), true, new View.OnClickListener() {
+            @Override public void onClick(View v) { conThemeReset(); }
+        }));
+        col.addView(c5, cTop(cGap(8)));
 
-        // ---------- ④ 可执行动作（第 3 轮才启用） ----------
+        // 逃生口（也放在主题页里，免得长按品牌字那条路被自己改没了）
+        TextView esc = cText(conThemeIgnored()
+                        ? t("btn.theme.unsafe", "恢复主题样式（现在按默认样式打开）")
+                        : t("btn.theme.safe", "以默认样式打开（忽略主题配置，文件不删）"),
+                11.5f, cAccent(), false);
+        esc.setPadding(0, cGap(12), 0, 0);
+        esc.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { conThemeEscapeDialog(); }
+        });
+        col.addView(esc);
+
+        // ---------- ⑥ 可执行动作（只读展示，实际执行在主控台的「自定义按钮」卡片里） ----------
         ConsoleTheme ct = conTheme;
         if (ct != null && !ct.execActions.isEmpty()) {
-            col.addView(cSep(cGap(18)));
-            col.addView(cText(t("title.themeActions", "可执行动作（本版不会执行）"), 15f, cText(), false), cTop(cGap(16)));
+            col.addView(cGrpTitle(t("title.themeActions", "可执行动作（本版不会执行）")), cTop(cGap(20)));
             col.addView(cText("这份配置里有 " + ct.execActions.size()
                     + " 个可执行动作（shell / http / intent / prompt）。"
-                    + "它们在主控台的「自定义按钮」卡片里可以点，**点的时候会先弹确认**、"
+                    + "它们在主控台的「自定义按钮」卡片里可以点，「点的时候会先弹确认」、"
                     + "把要执行的命令/网址/提示词原样摆出来；http / intent / prompt 三类本版还没接执行。",
                     11f, cRed(), false), cTop(cGap(7)));
             for (int i = 0; i < ct.execActions.size(); i++) {
                 col.addView(cText("· " + ct.execActions.get(i), 11f, cSub(), false), cTop(cGap(4)));
             }
+        }
+    }
+
+
+    // ==================== 「我保存过的主题」（v1.19.x：让"恢复默认"可逆） ====================
+    //
+    // 背景：conThemeReset() 只把 console.json 改名为 console.json.disabled-<时间戳>（不删除，是可逆的安全设计），
+    // 但界面上原本**没有任何入口能读回来** —— 用户点了「恢复默认」就再也找不回自己的定制。
+    // 这里补上：列出所有"被收起来"的配置 + 一键恢复（覆盖前再留一份底）。
+
+    /** 是否是我们自己收起来的配置备份（不是普通文件）。 */
+    private static boolean isThemeBackupName(String n) {
+        return n.startsWith("console.json.disabled-") || n.startsWith("console.json.replaced-")
+                || n.startsWith("console.json.bak");
+    }
+
+    /** 列出全部可恢复的配置备份（按时间倒序）。 */
+    private java.util.List<File> conThemeBackups() {
+        java.util.List<File> out = new java.util.ArrayList<File>();
+        try {
+            File[] fs = consoleDir().listFiles();
+            if (fs == null) return out;
+            for (int i = 0; i < fs.length; i++) {
+                if (!fs[i].isFile()) continue;
+                String n = fs[i].getName();
+                // .bak / .bak-import-* 都算；但不收当前正在用的 console.json
+                if (n.equals("console.json")) continue;
+                if (isThemeBackupName(n)) out.add(fs[i]);
+            }
+            java.util.Collections.sort(out, new java.util.Comparator<File>() {
+                @Override public int compare(File a, File b) { return Long.compare(b.lastModified(), a.lastModified()); }
+            });
+        } catch (Throwable t) {
+            Log.w(TAG, "conThemeBackups failed", t);
+        }
+        return out;
+    }
+
+    /** 把时间戳文件名变成人话：console.json.disabled-261004-201533 → 26-10-04 20:15:33。 */
+    private String conThemeBackupLabel(File f) {
+        String n = f.getName();
+        String ts = null;
+        int dash = n.indexOf('-');
+        if (dash > 0 && n.length() >= dash + 12) ts = n.substring(dash + 1, dash + 12);
+        String kind = n.startsWith("console.json.disabled-") ? "恢复默认时收起的"
+                : n.startsWith("console.json.replaced-") ? "被新配置替换的"
+                : "上次生效时的备份";
+        String when = ts != null && ts.length() == 11
+                ? ("20" + ts.substring(0, 2) + "-" + ts.substring(2, 4) + "-" + ts.substring(4, 6)
+                   + " " + ts.substring(6, 8) + ":" + ts.substring(8, 10) + ":" + ts.substring(10, 11))
+                : new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US).format(new java.util.Date(f.lastModified()));
+        String name = "";
+        String head = readTextFile(f, 4096);
+        if (head != null) {
+            String nm = jsonField(head, "name");
+            if (nm != null && nm.length() > 0) name = "「" + nm + "」 ";
+        }
+        return name + kind + " · " + when + " · " + (f.length() / 1024) + " KB";
+    }
+
+    /**
+     * 「我保存过的主题」：**一个弹窗解决**（用户 2026-10-04 明确要求）。
+     * 每行 = 名称 · 类型 · 时间 · 大小 + 行尾「恢复」，点一下直接恢复；
+     * 同一个弹窗里还有「清空记录」（红框按钮 + 二次确认，只删备份、绝不动正在用的 console.json）。
+     * 恢复不再套第二层确认 —— 因为它本身可逆：覆盖前会把当前这份也留一份底。
+     */
+    private void conThemeShowBackups() {
+        final java.util.List<File> list = conThemeBackups();
+        if (list.isEmpty()) { conToast("没有可恢复的配置（你还没「恢复默认」过）"); return; }
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(cText("点任意一条右边的「恢复」就换回那份配置 —— 换之前会把现在这份也留一份底，随时能换回来。",
+                11f, cSub(), false));
+
+        final int shown = Math.min(list.size(), 30);
+        LinearLayout inner = new LinearLayout(this);
+        inner.setOrientation(LinearLayout.VERTICAL);
+        for (int i = 0; i < shown; i++) {
+            inner.addView(conThemeBackupRow(list.get(i)), cTop(cGap(8)));
+        }
+        if (list.size() > shown) {
+            inner.addView(cText("…另外 " + (list.size() - shown) + " 份未列出（先「清空记录」再进来看）",
+                    10.5f, cSub(), false), cTop(cGap(8)));
+        }
+        android.widget.ScrollView sc = new android.widget.ScrollView(this);
+        sc.addView(inner);
+        // 固定高度：内容多时滚动。⚠ 不能给 WRAP_CONTENT —— 弹窗里是 AT_MOST，
+        // 纯容器在 AT_MOST 下会取满 specSize（本项目 spacer 撑爆整页的同一个坑）。
+        int h = Math.max(64, Math.min(360, shown * 58));
+        sc.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(h)));
+        box.addView(sc, cTop(cGap(10)));
+        box.addView(cText("共 " + list.size() + " 份 · " + conThemeBackupsSizeText(list)
+                        + "\n「清空记录」只删这些备份文件，不动当前正在用的 console.json。",
+                10.5f, cSub(), false), cTop(cGap(10)));
+
+        conDialogView("我保存过的主题（" + list.size() + "）", box, "清空记录", new Runnable() {
+            @Override public void run() { conThemeClearBackupsConfirm(list); }
+        }, "关闭", true);
+    }
+
+    /** 备份列表里的一行：左边「名称 · 类型 · 时间 · 大小」，右边「恢复」。 */
+    private View conThemeBackupRow(final File f) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setBackground(cShape(cCard(), cLine(), 1, 10));
+        row.setPadding(dp(12), dp(10), dp(12), dp(10));
+        TextView tv = cText(conThemeBackupLabel(f), 11.5f, cText(), false);
+        tv.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(tv);
+        Button b = cButton("恢复", false);
+        b.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View x) { conThemeRestoreBackupNow(f); }
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = dp(8);
+        row.addView(b, lp);
+        return row;
+    }
+
+    /** 备份合计大小（弹窗底部那行用）。 */
+    private String conThemeBackupsSizeText(java.util.List<File> list) {
+        long n = 0;
+        for (int i = 0; i < list.size(); i++) n += list.get(i).length();
+        if (n >= 1048576L) return String.format(java.util.Locale.US, "%.1f MB", n / 1048576.0);
+        if (n >= 1024L) return (n / 1024L) + " KB";
+        return n + " B";
+    }
+
+    /** 「清空记录」的二次确认：把要删的东西列清楚，并写明不动正在用的配置。 */
+    private void conThemeClearBackupsConfirm(final java.util.List<File> list) {
+        conDialogDanger("清空恢复记录？",
+                "会删除下面这些备份文件（共 " + list.size() + " 份 · " + conThemeBackupsSizeText(list) + "）：\n"
+              + "· console.json.disabled-*（点「恢复默认」时收起的）\n"
+              + "· console.json.replaced-*（恢复操作换下来的）\n"
+              + "· console.json.bak*（导入主题前的备份）\n\n"
+              + "只删这些备份，不动当前正在用的 console.json —— 你现在看到的主题不会变。\n"
+              + "删掉之后这些历史配置就找不回来了。",
+                "确认清空",
+                new Runnable() { @Override public void run() { conThemeClearBackupsNow(list); } },
+                "取消");
+    }
+
+    /** 真正清空（只删 conThemeBackups() 给出的那些文件，一个别的都不碰），并记一笔账本。 */
+    private void conThemeClearBackupsNow(java.util.List<File> list) {
+        int ok = 0;
+        int failed = 0;
+        long bytes = 0;
+        StringBuilder names = new StringBuilder("[");
+        for (int i = 0; i < list.size(); i++) {
+            File f = list.get(i);
+            long n = f.length();
+            boolean gone;
+            try { gone = f.delete() || !f.exists(); } catch (Throwable t) { gone = false; }
+            if (!gone) { failed++; continue; }
+            ok++;
+            bytes += n;
+            if (ok <= 50) {
+                if (ok > 1) names.append(",");
+                names.append("\"").append(jesc(f.getName())).append("\"");
+            }
+        }
+        names.append("]");
+        try {
+            conLedgerWrite("theme-backup-clear", "{\"deleted\":" + ok + ",\"failed\":" + failed
+                    + ",\"bytes\":" + bytes + ",\"files\":" + names + "}");
+        } catch (Throwable ignored) {}
+        conToast("已清空 " + ok + " 份备份" + (failed > 0 ? ("（" + failed + " 份没删掉）") : "")
+                + " · 当前主题未改动");
+        renderConsole();
+    }
+
+    // （v1.19.x）conThemePickBackup / conThemeRestoreBackup 已删除：
+    // 单弹窗改造后不再需要「列表弹窗」和「恢复确认弹窗」两层 ——
+    // 行内「恢复」直接调 conThemeRestoreBackupNow()，而它自己会先把当前这份留底（可逆）。
+
+    private void conThemeRestoreBackupNow(File src) {
+        try {
+            File cur = conThemeFile();
+            String ts = new java.text.SimpleDateFormat("yyMMdd-HHmmss", java.util.Locale.US).format(new java.util.Date());
+            if (cur.exists()) {
+                // 当前这份也留底（用 .replaced- 前缀，语义与"恢复默认时收起"区分开）
+                File keep = new File(consoleDir(), "console.json.replaced-" + ts);
+                copyFileShallow(cur, keep);
+            }
+            copyFileShallow(src, cur);
+            conTheme = null;
+            conThemeLoaded = false;
+            conThemeStamp = null;
+            conThemeReloadIfChanged(true);
+            conBgApply();
+            renderConsole();
+            conLedgerWrite("theme-restore", "{\"from\":\"" + jesc(src.getName()) + "\",\"to\":\"console.json\""
+                    + ",\"loaded\":" + (conTheme != null) + "}");
+            conToast(conTheme != null ? "已恢复：" + conThemeBackupLabel(src) : "已恢复，但这份配置有语法错误（走整体回退）");
+        } catch (Throwable t) {
+            conToast("恢复失败：" + t.getMessage());
+        }
+    }
+
+    /** 单文件浅拷贝（恢复主题用；不做递归、不跟链）。 */
+    private void copyFileShallow(File src, File dst) throws java.io.IOException {
+        java.io.FileInputStream in = new java.io.FileInputStream(src);
+        java.io.FileOutputStream out = new java.io.FileOutputStream(dst);
+        try {
+            byte[] buf = new byte[16384];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        } finally {
+            try { in.close(); } catch (Throwable ignored) {}
+            try { out.close(); } catch (Throwable ignored) {}
         }
     }
 
@@ -7679,7 +8490,9 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         File f = conThemeFile();
         if (ct == null) {
+            int backups = conThemeBackups().size();
             sb.append("主题：内置默认（").append(f.exists() ? "配置文件存在但没生效？" : "没有 console.json").append("）");
+            if (backups > 0) sb.append("\n可恢复：有 ").append(backups).append(" 份你用过的配置（点下面「我保存过的主题」）");
         } else {
             sb.append("主题：").append(ct.name != null && ct.name.length() > 0 ? ct.name : "未命名主题");
             if (ct.fatal) sb.append("\n状态：整体回退默认（配置有语法错误）");
@@ -7858,7 +8671,7 @@ public class MainActivity extends Activity {
                                        final java.util.LinkedHashMap<String, byte[]> files) {
         final ConsoleTheme probe = ConsoleTheme.fromText(cfgText);
         if (probe.fatal) {
-            StringBuilder sb = new StringBuilder("这个主题包不能用（**现有配置未改动**）：\n");
+            StringBuilder sb = new StringBuilder("这个主题包不能用（「现有配置未改动」）：\n");
             for (int i = 0; i < probe.errors.size(); i++) sb.append("\n· ").append(probe.errors.get(i));
             conDialog("导入主题包 · 校验失败", sb.toString().replace("**", ""), "知道了", null, null);
             return;
@@ -7876,7 +8689,7 @@ public class MainActivity extends Activity {
         }
         if (!probe.execActions.isEmpty()) {
             body.append("\n\n⚠ 含 ").append(probe.execActions.size())
-                .append(" 个可执行动作（shell/http/intent/prompt）：本版**不会执行**它们（第 3 轮才启用，且必须逐个确认）。");
+                .append(" 个可执行动作（shell/http/intent/prompt）：本版「不会执行」它们（第 3 轮才启用，且必须逐个确认）。");
         }
         conDialog("导入主题包", body.toString().replace("**", ""), "导入", new Runnable() {
             @Override public void run() { conThemeImportNow(cfgText, files); }
@@ -8005,7 +8818,7 @@ public class MainActivity extends Activity {
     /**
      * 把一个刚导出的文件调起系统分享面板（与「分享日志」同一条链路：
      * LogShareProvider 的 content:// + 临时读权限），用户可以直接发到 QQ / 微信 / 网盘 / 邮件，
-     * 也可以选"保存到文件"。**导出到 /sdcard 的那份仍然保留**，这里是"再发一份出去"。
+     * 也可以选"保存到文件"。「导出到 /sdcard 的那份仍然保留」，这里是"再发一份出去"。
      */
     private void conShareExportedFile(File src, String mime, String title) {
         if (src == null || !src.exists()) return;
@@ -8072,8 +8885,23 @@ public class MainActivity extends Activity {
         conDialogView(title, t, positive, onPositive, negative);
     }
 
+    /**
+     * 同风格弹窗的「危险动作」版：确认按钮画成红框。
+     * 与主题动作的安全规格一致 —— 会写盘/有副作用的动作，按钮必须显眼，正文必须写清它到底要干什么。
+     */
+    private void conDialogDanger(String title, String body, String positive, final Runnable onPositive, String negative) {
+        TextView t = null;
+        if (body != null && body.length() > 0) t = cText(body, 12.5f, cSub(), false);
+        conDialogView(title, t, positive, onPositive, negative, true);
+    }
+
     /** 同风格弹窗的通用版：内容自定（例如带滚动的日志正文）。 */
     private void conDialogView(String title, View content, String positive, final Runnable onPositive, String negative) {
+        conDialogView(title, content, positive, onPositive, negative, false);
+    }
+
+    /** 同上；danger=true 时确认按钮画红框（会写盘 / 有副作用的动作）。 */
+    private void conDialogView(String title, View content, String positive, final Runnable onPositive, String negative, boolean danger) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         // v1.13：卡片自己画圆角背景（原来用直角色块，系统对话框面板的圆角/描边会露在外面，
@@ -8081,7 +8909,17 @@ public class MainActivity extends Activity {
         box.setBackground(cShape(cBg(), 0, 0, 16));
         box.setPadding(dp(22), dp(22), dp(22), dp(14));
         if (title != null && title.length() > 0) box.addView(cText(title, 16f, cText(), true));
-        if (content != null) box.addView(content, cTop(dp(12)));
+        // v1.19.6 修复：正文一律放进 ScrollView（调用方已经给 ScrollView 的就沿用，不套两层）。
+        // 为什么必须包：见下面 post() 前的注释 —— 正文一长，动作按钮会被挤出屏幕且**点不到**。
+        if (content != null) {
+            ScrollView sv = (content instanceof ScrollView) ? (ScrollView) content : null;
+            if (sv == null) {
+                sv = new ScrollView(this);
+                sv.addView(content, new ScrollView.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
+            box.addView(sv, cTop(dp(12)));
+        }
 
         LinearLayout acts = new LinearLayout(this);
         acts.setOrientation(LinearLayout.HORIZONTAL);
@@ -8095,6 +8933,10 @@ public class MainActivity extends Activity {
         }
         if (positive != null) {
             Button pb = cButton(positive, true);
+            if (danger) {
+                pb.setTextColor(cRed());
+                pb.setBackground(cShape(0x00000000, cRed(), 1, 8));
+            }
             pb.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) {
                     closeDialogOverlay();
@@ -8118,11 +8960,24 @@ public class MainActivity extends Activity {
      *
      * 症状：弹窗卡片外面还套着一层深色圆角框（用户截图可见）。
      * 成因：AlertDialog 的面板背景来自 Activity 主题（Theme.Black 的 alertDialogTheme），
-     *   那层 frame 画在 **对话框布局自己身上**，只把 *窗口* 背景设成透明并不管用
+     *   那层 frame 画在 「对话框布局自己身上」，只把 *窗口* 背景设成透明并不管用
      *   （旧代码就是把窗口背景设透明，所以外框一直在）。
      * 做法：自绘「遮罩 + 圆角卡片」，不经过任何系统对话框窗口 —— 没有主题面板，
      *   也就没有外框；顺带把圆角/边距/点空白取消都握在自己手里。
      */
+    /** 弹窗卡片里的第一个 ScrollView（正文区）；没有就返回 null。 */
+    private ScrollView dialogScroller(View v) {
+        if (v instanceof ScrollView) return (ScrollView) v;
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                ScrollView s = dialogScroller(g.getChildAt(i));
+                if (s != null) return s;
+            }
+        }
+        return null;
+    }
+
     private void showDialogOverlay(View card) {
         closeDialogOverlay();
         FrameLayout host = null;
@@ -8141,17 +8996,38 @@ public class MainActivity extends Activity {
         lp.leftMargin = dp(20);
         lp.rightMargin = dp(20);
         scrim.addView(card, lp);
-        // 内容再高也不超过屏幕 80%（历史日志弹窗等），超出部分由内容自己的 ScrollView 滚
+        // 兜底：卡片高度不超过屏幕 80%，**但只压缩正文区** —— 标题与动作按钮永远留在屏幕里。
+        //
+        // 为什么不能像原来那样"直接把卡片截到 80%"（v1.19.6 真机实测复现）：
+        //   竖直 LinearLayout 在高度被截断后，排在最后的子 View（动作按钮行）会被裁到可视区
+        //   之外 —— 不显示、不可点，uiautomator 里连节点都没有。真机现场：会话修复详情弹窗
+        //   （28 处坏引用）只剩正文，按钮全不见了，只能按返回键逃。
+        //   原来那句注释「超出部分由内容自己的 ScrollView 滚」只对**调用方自己传了 ScrollView**
+        //   的调用点成立；`conDialog(长正文)` 传的是裸 TextView，所以必然踩。
+        //   现在：正文设成 height=0 + weight=1，LinearLayout 先量标题/按钮，剩余空间全给正文，
+        //   正文在自己内部滚 —— 三个调用点（日志、主题诊断）本来就传 ScrollView，行为不变。
         scrim.post(new Runnable() {
             @Override public void run() {
                 try {
                     View c = scrim.getChildAt(0);
                     if (c == null) return;
                     int maxH = Math.round(getResources().getDisplayMetrics().heightPixels * 0.8f);
-                    if (c.getHeight() > maxH) {
-                        ViewGroup.LayoutParams p = c.getLayoutParams();
-                        p.height = maxH;
-                        c.setLayoutParams(p);
+                    if (c.getHeight() <= maxH) return;
+                    ViewGroup.LayoutParams p = c.getLayoutParams();
+                    p.height = maxH;
+                    c.setLayoutParams(p);
+                    // 正文区 = 卡片视图树里的第一个 ScrollView（conDialogView 刚包好的那个）。
+                    // ⚠ 不能用"在 conDialogView 里抓住引用"的写法：这段兜底在
+                    //   showDialogOverlay() 里，两个方法作用域不通（patch57 就是在这儿栽的，
+                    //   javac 报「找不到符号 · 变量 fsv」）。
+                    ScrollView sc = dialogScroller(c);
+                    if (sc != null) {
+                        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+                        if (sc.getLayoutParams() instanceof LinearLayout.LayoutParams) {
+                            nlp.topMargin = ((LinearLayout.LayoutParams) sc.getLayoutParams()).topMargin;
+                        }
+                        sc.setLayoutParams(nlp);
                     }
                 } catch (Throwable ignored) {}
             }
@@ -8199,6 +9075,7 @@ public class MainActivity extends Activity {
         if (conExState != null) conExState.setText(extracting ? t("status.extract.running", "正在解压…")
                 : (ready ? t("status.extract.done", "已解压") : t("status.extract.idle", "未解压")));
         if (conExMeta != null) conExMeta.setText(conExtractMetaText(ready));
+        if (conEnvState != null) conEnvState.setText(conExtractMetaText(ready));   // v1.19.6：运行环境入口的副标题
         if (conDetailBox != null) conDetailBox.setVisibility(ready && consoleDetailOpen ? View.VISIBLE : View.GONE);
         if (conBar != null) conBar.setVisibility(extracting ? View.VISIBLE : View.GONE);
         if (!extracting) conSetProgress(ready ? 100 : 0);
@@ -8228,6 +9105,21 @@ public class MainActivity extends Activity {
         cSetEnabled(conEnStop, run || busy);
         if (conFoot != null) conFoot.setText(run ? t("status.serving", "本地服务已就绪")
                 : (busy ? t("status.starting", "正在启动引擎…") : t("status.ready", "就绪")));
+        // v1.19.5 精简版的状态块：未解压时讲"运行环境"，解压好了讲"引擎"——
+        // 避免同一屏出现两套状态（v1.19.2 记录过的"糙"点之一）。
+        // ⚠ 只在精简版生效：卡片版那两个字段一直都该可见，不能被这里改掉。
+        if (conRenderedSimple) {
+            if (conExState != null) conExState.setVisibility(ready ? View.GONE : View.VISIBLE);
+            if (conEnState != null) conEnState.setVisibility(ready ? View.VISIBLE : View.GONE);
+            if (conEnMeta != null) conEnMeta.setVisibility(ready ? View.VISIBLE : View.GONE);
+        }
+        // 精简版：把"下一步该干什么"收敛到一个按钮上（文案随状态变）
+        if (uiSimpleActionBtn != null) {
+            uiSimpleActionBtn.setText(!ready ? (extracting ? t("status.extract.running", "解压中…") : t("btn.extract.run", "解压文件"))
+                    : (run ? t("btn.engine.openUi", "打开主界面")
+                           : (busy ? t("status.engine.starting", "启动中…") : t("btn.engine.start", "启动引擎"))));
+            cSetEnabled(uiSimpleActionBtn, !extracting && !busy && (run || ready || !extracting));
+        }
     }
 
     private String conExtractMetaText(boolean ready) {
@@ -8268,7 +9160,7 @@ public class MainActivity extends Activity {
     private void conStartExtract() {
         if (extracting) return;
         if (!conFilesReady()) {
-            // 本次安装还没解压过（升级安装最常见）：清掉旧标记 → 走一次**完整内部解压**
+            // 本次安装还没解压过（升级安装最常见）：清掉旧标记 → 走一次「完整内部解压」
             // （runtime/node/so/dshhome/rish 全部重写），避免“拿着上一版的树”看着像已解压。
             try { new File(payloadDir(), ".extracted").delete(); } catch (Throwable ignored) {}
         }
@@ -8296,7 +9188,7 @@ public class MainActivity extends Activity {
 
     private void conEngineClick() {
         if (starting) return;
-        // v1.13：判定“引擎是否已在跑”必须先真正探一次端口，而探测**只能在后台线程做**
+        // v1.13：判定“引擎是否已在跑”必须先真正探一次端口，而探测「只能在后台线程做」
         // （主线程做网络 IO → NetworkOnMainThreadException 被吞 → 误判未启动 → 又拉起第二个 node）。
         new Thread(new Runnable() {
             @Override public void run() {
@@ -8373,7 +9265,7 @@ public class MainActivity extends Activity {
     /**
      * 找出当前真正在跑的引擎 node 进程 PID（不依赖内存里的 Process 句柄）。
      *
-     * 为什么可行：node 是本 App 的子进程、**同一个 uid**，而同 uid 的进程在 /proc 里互相可见
+     * 为什么可行：node 是本 App 的子进程、「同一个 uid」，而同 uid 的进程在 /proc 里互相可见
      * （真机实测：App 身份能读到 /proc/&lt;pid&gt;/cmdline）。所以哪怕 Activity 被重建、
      * 句柄丢了，也仍然能定位并终止它。
      * 认人条件：cmdline 同时含 bin.js、web、--port &lt;enginePort&gt;，避免误杀别的 node。
@@ -8472,6 +9364,10 @@ public class MainActivity extends Activity {
         computeFilesSummaryAsync();
         refreshConsole();
         int healed = lastHealOrphans;
+        // 自愈账本：解压/清理是最常见的一次"自愈"，必须留证（依据 = 全量解压按 payload 覆盖 + 清 dsh* 陈旧包）
+        conLedgerWrite("extract", "{\"trigger\":\"user-extract\",\"prunedStaleKernelEntries\":" + healed
+                + ",\"kernelRoot\":\"" + jesc(String.valueOf(dshrootDir)) + "\","
+                + "\"note\":\"全量解压：按 payload 覆盖内核树，并清理 payload 已没有的 dsh* 陈旧内核包（用户数据与第三方插件不动）\"}");
         conToast(healed > 0
                 ? "解压完成（顺带清理了 " + healed + " 个内核树里多余的文件），可以启动引擎了"
                 : "解压完成，可以启动引擎了");
@@ -8503,7 +9399,7 @@ public class MainActivity extends Activity {
         showIndeterminate("正在启动 DeepSeek Harness…");
         starting = true;
         if (engineStartTs == 0L) engineStartTs = System.currentTimeMillis();
-        // v1.13：已有一个 node 进程在跑（可能只是还没开始监听端口）→ **绝不再 spawn 第二个**。
+        // v1.13：已有一个 node 进程在跑（可能只是还没开始监听端口）→ 「绝不再 spawn 第二个」。
         // 旧实现只看 healthOk()：node 启动中的那几秒会被误判为“没在跑”→ 重复 spawn。
         // 真机日志实证：同一时刻两个 node 抢 3080，第二次流程的 notify 端口 3081 直接 EADDRINUSE。
         Process alive = nodeProcess;
@@ -8515,7 +9411,7 @@ public class MainActivity extends Activity {
             return;
         }
         // v1.13 第二道防线：句柄丢了（App 重启/被系统回收）也不凭 healthOk() 就重建 ——
-        // node 启动中虽然不响应 HTTP，但**端口已经 listen**；只要端口被占就不该再拉一个。
+        // node 启动中虽然不响应 HTTP，但「端口已经 listen」；只要端口被占就不该再拉一个。
         // （引擎日志里 EADDRINUSE 高达 72 次 vs 成功启动 38 次，重复拉起是最高频的浪费。）
         if (portListening(enginePort)) {
             Log.w(TAG, "port " + enginePort + " already listening, wait instead of respawning");
@@ -8908,22 +9804,38 @@ public class MainActivity extends Activity {
 
     private void renderConsolePerm() {
         LinearLayout col = consoleBody;
-        col.addView(conBackRow("授予权限"));
-        col.addView(cSep(dp(12)));
-        addPermRow(col, "所有文件访问", "读写 /sdcard，AI 才能碰你的文件", "storage");
-        addPermRow(col, "通知", "AI 发通知 / 提醒", "notify");
-        addPermRow(col, "悬浮窗", "黑鲸鱼悬浮窗 / 虚拟屏预览", "overlay");
-        addPermRow(col, "电池优化", "设为「不限制」，否则切后台引擎会被杀", "battery");
-        addPermRow(col, "root（超级用户）", "替代 Shizuku 跑特权命令：装应用 / 改设置 / 虚拟屏点击 / 任意 shell", "root");
-        addPermRow(col, "Shizuku（免 root 特权通道）", "有 root 时用 root；没 root 时装 Shizuku 走同一套能力", "shizuku");
-        addPermRow(col, "无障碍服务（读屏 / 点屏）", "android_screen / tap / type / see（不需要 root 或 Shizuku）", "a11y");
-        addPermRow(col, "读取应用列表", "AI 查看 / 启动你装的应用（多数手机无需授权）", "applist");
-        addPermRow(col, "安装未知应用", "android_package 装 APK 用", "install");
+        col.addView(conBackRow(t("card.perm", "授予权限")));
+        // v1.19.6：统一版式（返回行 + 一句说明 + 分组小标题 + 卡片块）。
+        col.addView(cNote(t("desc.permPage", "点任意一行去授权 / 管理。root 与 Shizuku 二选一即可（root 优先）。")
+                + "  " + conPermSummary()), cTop(cGap(8)));
+
+        col.addView(cGrpTitle(t("title.grpPermBasic", "基本权限")), cTop(cGap(16)));
+        LinearLayout c1 = cCardBox();
+        addPermRow(c1, "所有文件访问", "读写 /sdcard，AI 才能碰你的文件", "storage");
+        addPermRow(c1, "通知", "AI 发通知 / 提醒", "notify");
+        addPermRow(c1, "悬浮窗", "黑鲸鱼悬浮窗 / 虚拟屏预览", "overlay");
+        addPermRow(c1, "电池优化", "设为「不限制」，否则切后台引擎会被杀", "battery");
+        col.addView(c1, cTop(cGap(8)));
+
+        col.addView(cGrpTitle(t("title.grpPermPriv", "特权通道（二选一）")), cTop(cGap(18)));
+        LinearLayout c2 = cCardBox();
+        addPermRow(c2, "root（超级用户）", "替代 Shizuku 跑特权命令：装应用 / 改设置 / 虚拟屏点击 / 任意 shell", "root");
+        addPermRow(c2, "Shizuku（免 root 特权通道）", "有 root 时用 root；没 root 时装 Shizuku 走同一套能力", "shizuku");
+        col.addView(c2, cTop(cGap(8)));
+
+        col.addView(cGrpTitle(t("title.grpPermMore", "其它")), cTop(cGap(18)));
+        LinearLayout c3 = cCardBox();
+        addPermRow(c3, "无障碍服务（读屏 / 点屏）", "android_screen / tap / type / see（不需要 root 或 Shizuku）", "a11y");
+            // v1.21（我们保留）：读取应用列表 —— android_apps / 启动应用工具依赖
+            addPermRow(c3, "读取应用列表", "AI 查看 / 启动你装的应用（多数手机无需授权）", "applist");
+        addPermRow(c3, "安装未知应用", "android_package 装 APK 用", "install");
         // issue #30：工作区入口原先只在首启引导完成页，走完引导就再无入口（只能清数据重走引导）。
         // 这里复用同一套 onWorkspaceRowClick()，使权限页也能查看 / 更改 / 恢复默认。
-        addWorkspaceRow(col);
-        col.addView(cText("root / Shizuku 二选一即可（root 优先）。root 只能由你在 root 管理器（Magisk / KernelSU）里授予本应用；设备没 root 时这一项显示「本机无 root」。",
-                11f, cSub(), false), cTop(dp(14)));
+        addWorkspaceRow(c3);
+        col.addView(c3, cTop(cGap(8)));
+
+        col.addView(cNote("root 只能由你在 root 管理器（Magisk / KernelSU）里授予本应用；"
+                + "设备没 root 时这一项显示「本机无 root」。"), cTop(cGap(14)));
         conRefreshRootAsync();
     }
 
@@ -8934,34 +9846,27 @@ public class MainActivity extends Activity {
     private void addWorkspaceRow(LinearLayout col) {
         final String cur = workspacePath();
         final boolean unset = (cur == null || cur.isEmpty());
+        // v1.19.6：跟权限行统一 —— 右列短状态（选择 / 更改）+ ›，整行可点。
+        // conWorkspaceDesc 这个字段保留：工作区变更后要靠它做局部刷新。
+        conWorkspaceDesc = cText(unset ? "未设置（AI 文件操作在内部目录）" : cur, 11f, cSub(), false);
         LinearLayout left = new LinearLayout(this);
         left.setOrientation(LinearLayout.VERTICAL);
         left.addView(cText("AI 工作区（可选）", 13.5f, cText(), false));
-        conWorkspaceDesc = new TextView(this);
-        conWorkspaceDesc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        conWorkspaceDesc.setTextColor(cSub());
-        conWorkspaceDesc.setPadding(0, dp(2), 0, 0);
-        conWorkspaceDesc.setText(unset ? "未设置（AI 文件操作在内部目录）" : cur);
         left.addView(conWorkspaceDesc);
-        Button act = cButton(unset ? "选择" : "更改", false);
-        act.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-        act.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { onWorkspaceRowClick(); }
-        });
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(13), 0, dp(13));
+        row.setPadding(0, dp(12), 0, dp(12));
         row.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
+        row.addView(cText(unset ? "选择" : "更改", 11.5f, cAccent(), false));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        alp.leftMargin = dp(8);
-        row.addView(act, alp);
+        clp.leftMargin = dp(6);
+        row.addView(cText("›", 14f, cSub(), false), clp);
         row.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { onWorkspaceRowClick(); }
         });
         col.addView(row);
-        col.addView(cSep(0));
     }
 
     /** 工作区变更后，若正停在控制台「权限」页就整页重绘（按钮文案「选择 / 更改」跟着变）。 */
@@ -8972,30 +9877,24 @@ public class MainActivity extends Activity {
     private void addPermRow(LinearLayout col, String title, String desc, final String id) {
         boolean ok = conPermOk(id);
         boolean noRoot = "root".equals(id) && !conRootOk;
-        String state = ok ? "已授权" : (noRoot ? "本机无 root" : "未授权");
-        int color = ok ? cGreen() : (noRoot ? cSub() : cRed());
-        LinearLayout left = new LinearLayout(this);
-        left.setOrientation(LinearLayout.VERTICAL);
-        left.addView(cText(title, 13.5f, cText(), false));
-        left.addView(cText(desc, 11f, cSub(), false));
-        Button act = cButton(ok ? "管理" : "去授权", false);
-        act.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
-        if (noRoot) cSetEnabled(act, false);
-        act.setOnClickListener(new View.OnClickListener() {
+        String state = ok ? t("status.perm.granted", "已授权")
+                : (noRoot ? t("status.perm.noroot", "本机无 root") : t("status.perm.denied", "未授权"));
+        final int color = ok ? cGreen() : (noRoot ? cSub() : cRed());
+        // v1.19.6：右列只放一个短状态（原来是一个「管理 / 去授权」按钮 + 状态文字，一行里塞两样）；
+        // 整行可点、带 › —— 与主控台的入口行同一套交互。无 root 时也给提示（点一下会说明）。
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = dp(8);
+        View row = cCardRow(title, desc, state, color, true, new View.OnClickListener() {
             @Override public void onClick(View v) { conPermAction(id); }
         });
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(13), 0, dp(13));
-        row.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(cText(state, 11f, color, false));
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        alp.leftMargin = dp(8);
-        row.addView(act, alp);
         col.addView(row);
-        col.addView(cSep(0));
+        // 行之间给一条极淡的分隔（卡片内部；最后一行后面那条由卡片内边距兜住，视觉上可接受）
+        View sep = new View(this);
+        sep.setBackgroundColor(cLine());
+        sep.setAlpha(0.5f);
+        sep.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1))));
+        col.addView(sep);
     }
 
     private void conPermAction(String id) {
@@ -9061,6 +9960,7 @@ public class MainActivity extends Activity {
 
     // ---------- 插件页 ----------
     private static final String[][] CON_PLUGINS = {
+        {"tool-browser", "AI 浏览器：结构化 DOM 快照 + 稳定 ref（关掉则 AI 不能上网）"},
         {"tool-vscreen", "虚拟屏：建屏 / 看图 / 点击 · 8 个工具"},
         {"tool-accessibility", "无障碍读屏 / 手势 / 截图理解"},
         {"tool-android", "用量统计 / 悬浮窗 / 装包 / 应用与设置 / 截图 / 输入"},
@@ -9082,10 +9982,10 @@ public class MainActivity extends Activity {
     private String conPatchPath() { return new File(payloadDir(), "dshhome/cordis.patch.yml").getAbsolutePath(); }
 
     // ---------- cordis.patch.yml 读写（v1.13 重写） ----------
-    // 文件结构：顶层是**平铺的 patch 条目数组** —— 要么 `- id: <行id>` + `disabled: true` / `config:`
+    // 文件结构：顶层是「平铺的 patch 条目数组」 —— 要么 `- id: <行id>` + `disabled: true` / `config:`
     // （作用在别层已注册的行上），要么 `- insert:` 桶（桶内 `    - id: <行id>` + `      name:` 注册新行）。
     // 两条硬规则：① patch 按列表顺序生效 —— insert 桶里的行必须先被注册，之后的行才能按 id 命中该行；
-    // ② 开关只能**原地**改写条目本身那一行 —— 删掉 `- id:` 行会留下悬空 `name:`（YAML 重复键 → 引擎启动即崩）。
+    // ② 开关只能「原地」改写条目本身那一行 —— 删掉 `- id:` 行会留下悬空 `name:`（YAML 重复键 → 引擎启动即崩）。
 
     /** 行首缩进宽度（空格/Tab 各计 1，够用）。 */
     private static int conIndentOf(String line) {
@@ -9179,7 +10079,7 @@ public class MainActivity extends Activity {
     }
 
     /** 顶层 patch 条目（id 由别层注册，如 sandbox）：禁用=确保该条目存在且 disabled: true；
-     *  启用=删掉 disabled 行，条目再无其它键时连 `- id:` 行一起删；新增一律**追加到文件末尾**
+     *  启用=删掉 disabled 行，条目再无其它键时连 `- id:` 行一起删；新增一律「追加到文件末尾」
      *  （patch 按顺序生效，插入行必须先被注册）。 */
     private void conSetTopEntryDisabled(java.util.List<String> lines, String id, boolean disabled) {
         int at = conFindRow(lines, id);
@@ -9205,7 +10105,7 @@ public class MainActivity extends Activity {
 
     /** 结构性自愈（返回是否有改动）：修复控制台旧实现写坏的 cordis.patch.yml。
      *  旧实现关插件时把 `- id: xxx` 整行删掉、再把条目搬到文件顶部，后果两连：
-     *   ① 原地留下悬空 `name:` → YAML “duplicated mapping key” → 引擎**启动即崩**、App 反复重拉（界面一直闪）；
+     *   ① 原地留下悬空 `name:` → YAML “duplicated mapping key” → 引擎「启动即崩」、App 反复重拉（界面一直闪）；
      *   ② 搬上去的条目落在 `- insert:` 之前 → 插入行还没注册 → 就算 YAML 合法也不生效。
      *  自愈动作：按包名补回被删的 `- id:` 行；把“只有 disabled 的顶层条目”折叠回它对应的 insert 行内。 */
     /** 从 `name: '@deepseek-ai/dsh-tool-vscreen'` 反推行 id（补回被删的 `- id:` 行用）。 */
@@ -9329,60 +10229,1558 @@ public class MainActivity extends Activity {
 
     private void renderConsolePlug() {
         LinearLayout col = consoleBody;
-        col.addView(conBackRow("插件"));
-        col.addView(cText("关掉的插件不加载：工具不进 AI 的工具表，也少占上下文。改动在重启引擎后生效。",
-                11f, cSub(), false), cTop(dp(10)));
-        col.addView(cSep(dp(12)));
+        col.addView(conBackRow(t("card.plugins", "插件")));
+        col.addView(cNote(t("desc.pluginsPage",
+                "关掉的插件不加载：工具不进 AI 的工具表，也少占上下文。改动在重启引擎后生效。")), cTop(cGap(8)));
+
+        col.addView(cGrpTitle(t("title.grpPlugList", "插件列表") + " · " + conPlugSummary()), cTop(cGap(16)));
+        LinearLayout box = cCardBox();
         for (int i = 0; i < CON_PLUGINS.length; i++) {
             final String id = CON_PLUGINS[i][0];
             boolean disabled = conPluginDisabled(id);
-            LinearLayout left = new LinearLayout(this);
-            left.setOrientation(LinearLayout.VERTICAL);
-            left.addView(cText("dsh-" + id, 13.5f, cText(), false));
-            left.addView(cText(CON_PLUGINS[i][1], 11f, cSub(), false));
-            TextView pill = cToggle(id, !disabled);
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(0, dp(12), 0, dp(12));
-            row.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            row.addView(pill);
-            col.addView(row);
-            col.addView(cSep(0));
+            box.addView(cCardRowWith("dsh-" + id, CON_PLUGINS[i][1], cToggle(id, !disabled)));
         }
-        Button apply = cButton("重启引擎生效", true);
+        col.addView(box, cTop(cGap(8)));
+
+        Button apply = cButton(t("btn.plugins.restart", "重启引擎生效"), true);
         apply.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { conRestartEngine(); }
         });
-        col.addView(apply, cTop(dp(14)));
+        col.addView(apply, cTop(cGap(14)));
+    }
+
+    // ========== v1.19.6 · 阶段 C：AI 浏览器页（同屏查看 / 页签 / 关闭） ==========
+    //
+    // 设计（tmp-diag/v1180/browser-process-design.md「阶段 C」）：
+    //   · 「同屏查看」= 把 :browser 那扇承载窗由 INVISIBLE 切可见（原生侧的 panel op）。
+    //     **只切可见性** —— 动尺寸会改 WebView 的 CSS 视口，AI 的 ref / 点击坐标口径全建立在它上面。
+    //   · 只读：承载窗保持 NOT_TOUCHABLE，触摸穿透到下面，用户照样操作控制台。
+    //   · 本页所有 op 都在**后台线程**跑（op 是阻塞编排，AI 的 op 可能正占着）；
+    //     handleBrowserRequest 是 synchronized 的，所以不会与 AI 抢 BrowserIpc 那唯一的 inbox。
+    //   · 状态只认原生回的 running / visible / tabs（panelStateJson），前端不猜。
+
+    /** 状态缓存：后台线程写、UI 线程读。 */
+    private volatile boolean conBrowserRunning = false;
+    private volatile boolean conBrowserPanel = false;
+    private volatile int conBrowserCount = -1;          // -1 = 还没查过
+    private volatile String conBrowserErr = "";
+    private volatile String conBrowserTabs = "";        // tabs.list 原文
+    private volatile boolean conBrowserBusy = false;
+    private volatile boolean conBrowserQueried = false;
+
+    /** 主控台那一行的右列短状态（没查过就不显示 —— 别每渲染一次就打一次 op）。 */
+    private String conBrowserSummary() {
+        if (conBrowserBusy) return t("status.browserBusy", "查询中…");
+        if (!conBrowserQueried) return "";
+        if (!conBrowserRunning || conBrowserCount <= 0) return t("status.browserIdle", "未运行");
+        return conBrowserCount + " 个页签" + (conBrowserPanel ? " · " + t("status.browserPanelOn", "同屏中") : "");
+    }
+
+    /** 状态行文字（**UI 线程**：要用 t()）。 */
+    private String conBrowserStateText() {
+        if (conBrowserErr.length() > 0) return conBrowserErr;
+        if (!conBrowserQueried) return t("status.browserBusy", "查询中…");
+        if (!conBrowserRunning || conBrowserCount <= 0) return t("status.browserIdle", "未运行");
+        return t("status.browserRunning", "运行中") + " · " + conBrowserCount + " 个页签 · "
+                + (conBrowserPanel ? t("status.browserPanelOn", "同屏中") : t("status.browserPanelOff", "同屏关"));
+    }
+
+    /** 行内直连（控制台 → 主进程 → :browser）。op 必须在**非主线程**调用。 */
+    private String conBrowserCall(String op, String argsJson) {
+        return handleBrowserRequest("{\"op\":\"" + op + "\",\"args\":" + argsJson + ",\"timeout_ms\":8000}");
+    }
+
+    /**
+     * 跑一次浏览器操作：op == null 表示"只刷新状态"。
+     * 跑完自动重绘（主控台那一行的短状态也要跟着变）。
+     */
+    private void conBrowserRun(final String op, final String argsJson) {
+        if (conBrowserBusy) { conToast(t("status.browserBusy", "查询中…")); return; }
+        conBrowserBusy = true;
+        conBrowserQueried = true;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    if (op != null) conBrowserApply(op, conBrowserCall(op, argsJson));
+                    conBrowserApply("panel.state", conBrowserCall("panel.state", "{}"));
+                    if (conBrowserRunning) {
+                        conBrowserApply("tabs.list", conBrowserCall("tabs.list", "{}"));
+                    } else {
+                        conBrowserTabs = "";
+                        conBrowserCount = 0;
+                    }
+                } catch (Throwable t) {
+                    conBrowserErr = String.valueOf(t.getMessage());
+                } finally {
+                    conBrowserBusy = false;
+                    conBrowserReleaseIfIdle();
+                }
+                ui.post(new Runnable() { @Override public void run() {
+                    if (consolePage != PAGE_BROWSER && consolePage != 0) return;
+                    if (conBrowserErr.length() > 0 && op != null) conToast(conBrowserErr);
+                    renderConsole();
+                }});
+            }
+        }, "con-browser-op").start();
+    }
+
+    /**
+     * 浏览器没在跑就把绑定松掉。
+     * 为什么必须做：BrowserIpc 是 BIND_AUTO_CREATE —— "打开控制台看一眼状态"本身就会把
+     * :browser 进程拉起来；不松绑它就一直挂着（空进程也是内存）。
+     * 松绑只影响主进程这一侧；子进程由系统按需回收（这正是设计里的"可整套丢弃"）。
+     */
+    private synchronized void conBrowserReleaseIfIdle() {
+        if (conBrowserRunning) return;
+        try {
+            if (browserIpc != null) browserIpc.release();
+        } catch (Throwable ignored) {}
+    }
+
+    /** 回执 → 状态缓存。字段只认原生给的 running / visible / tabs。 */
+    private void conBrowserApply(String op, String res) {
+        try {
+            org.json.JSONObject j = new org.json.JSONObject(res == null ? "{}" : res);
+            if (!j.optBoolean("ok", false)) {
+                String why = j.optString("error", "");
+                if (why.length() == 0) {
+                    why = j.optString("reason", "");
+                    if (why.length() == 0) why = "未知错误";
+                }
+                conBrowserErr = why;
+                // 连不上 / 还没打开页面 / 缺悬浮窗权限 —— 这时候它确实没在跑，按"未运行"显示
+                conBrowserRunning = false;
+                conBrowserPanel = false;
+                conBrowserCount = 0;
+                conBrowserTabs = "";
+                return;
+            }
+            conBrowserErr = "";
+            conBrowserRunning = j.optBoolean("running", conBrowserRunning);
+            conBrowserPanel = j.optBoolean("visible", conBrowserPanel);
+            if (j.has("tabs")) conBrowserCount = j.optInt("tabs", 0);
+            if ("tabs.list".equals(op)) {
+                conBrowserRunning = true;
+                conBrowserCount = j.optInt("count", 0);
+                conBrowserTabs = res;
+            }
+            if ("nav".equals(op) && j.optBoolean("closed", false)) {
+                // 关掉浏览器 = 全部页签连同页面一起释放（原生 closeWebView），同屏自然也没了
+                conBrowserRunning = false;
+                conBrowserPanel = false;
+                conBrowserCount = 0;
+                conBrowserTabs = "";
+            }
+        } catch (Throwable t) {
+            conBrowserErr = String.valueOf(t.getMessage());
+            conBrowserCount = 0;
+            conBrowserTabs = "";
+        }
+    }
+
+    /** tabs.list 原文 → 「标题 / tabId · 地址 / 是否当前」三列（解析失败给空表，不抛）。 */
+    private java.util.List<String[]> conBrowserTabRows() {
+        java.util.List<String[]> out = new java.util.ArrayList<String[]>();
+        String raw = conBrowserTabs;
+        if (raw == null || raw.length() == 0) return out;
+        try {
+            org.json.JSONArray arr = new org.json.JSONObject(raw).optJSONArray("tabs");
+            if (arr == null) return out;
+            for (int i = 0; i < arr.length(); i++) {
+                org.json.JSONObject tb = arr.optJSONObject(i);
+                if (tb == null) continue;
+                String id = tb.optString("tabId", "");
+                String title = tb.optString("title", "");
+                String url = tb.optString("url", "");
+                String head = title.length() > 0 ? title : (url.length() > 0 ? url : "(空白页)");
+                out.add(new String[]{cCut(head, 26), cCut(id + " · " + url, 46),
+                        tb.optBoolean("active", false) ? "1" : "0"});
+            }
+        } catch (Throwable ignored) {}
+        return out;
+    }
+
+    /** 「同屏查看」开关：与插件开关同一套视觉，但绑定的是**面板**而不是插件。 */
+    private TextView conBrowserPanelToggle() {
+        final TextView tg = new TextView(this);
+        tg.setTag(Boolean.valueOf(conBrowserPanel));
+        tg.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        tg.setPadding(dp(12), dp(6), dp(12), dp(6));
+        tg.setSingleLine(true);
+        tg.setGravity(Gravity.CENTER);
+        conTogglePaint(tg);
+        tg.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (conBrowserBusy) { conToast(t("status.browserBusy", "查询中…")); return; }
+                final boolean want = !conBrowserPanel;
+                // 先给即时反馈；真状态以 op 回执为准（回来会整体重绘一次）
+                tg.setTag(Boolean.valueOf(want));
+                conTogglePaint(tg);
+                conBrowserRun("panel", "{\"show\":" + (want ? "true" : "false") + "}");
+            }
+        });
+        return tg;
+    }
+
+    private void conBrowserConfirmClose() {
+        conDialog(t("btn.browser.close", "关闭浏览器"),
+                t("desc.browserClose", "关掉全部页签并回收浏览器进程（不影响引擎）"),
+                t("btn.browser.close", "关闭浏览器"), new Runnable() { @Override public void run() {
+                    conBrowserRun("nav", "{\"op\":\"close\"}");
+                } }, "取消");
+    }
+
+    private void renderConsoleBrowser() {
+        LinearLayout col = consoleBody;
+        col.addView(conBackRow(t("card.browser", "AI 浏览器")));
+        col.addView(cNote(t("desc.browserPage",
+                "AI 浏览器跑在独立进程里：页面崩了不会带走控制台和引擎。这里能看它正在哪一页，也能把画面同屏显示出来。")),
+                cTop(cGap(8)));
+        // v1.19.6 · 路线图③：插件关着的时候必须说清楚「AI 现在用不了浏览器」——
+        // 否则页面上"未运行 / 还没有页签"看起来像浏览器坏了。整行可点 → 直达「插件」页。
+        if (conPluginDisabled("tool-browser")) {
+            LinearLayout pbox = cCardBox();
+            pbox.addView(cCardRow(t("status.browserPluginOff", "插件已关闭"),
+                    t("desc.browserPluginOff", "AI 现在用不了浏览器工具 · 去「插件」页打开 dsh-tool-browser · 重启引擎后生效"),
+                    "›", false, new View.OnClickListener() {
+                        @Override public void onClick(View v) { consolePage = 2; renderConsole(); }
+                    }));
+            col.addView(pbox, cTop(cGap(12)));
+        }
+
+        // 首次进页面自动查一次（异步，不卡 UI；查完会重绘）
+        if (!conBrowserQueried) conBrowserRun(null, null);
+
+        col.addView(cGrpTitle(t("title.grpBrowserState", "浏览器状态")), cTop(cGap(16)));
+        LinearLayout box = cCardBox();
+        String right = conBrowserErr.length() > 0 ? t("status.browserUnreachable", "读不到状态")
+                : (conBrowserRunning ? t("status.browserRunning", "运行中") : t("status.browserIdle", "未运行"));
+        box.addView(cCardRow(t("card.browser", "AI 浏览器"), conBrowserStateText(), right, false,
+                new View.OnClickListener() {
+                    @Override public void onClick(View v) { conBrowserRun(null, null); }
+                }));
+        box.addView(cCardSep());
+        box.addView(cCardRowWith(t("btn.browser.panel", "同屏查看"),
+                t("desc.browserPanel", "把画面显示成一块浮窗 · 拖顶部小条移动、点小条关掉 · 画面可直接操作"),
+                conBrowserPanelToggle()));
+        col.addView(box, cTop(cGap(8)));
+
+        col.addView(cGrpTitle(t("title.grpBrowserTabs", "页签")), cTop(cGap(16)));
+        LinearLayout tbox = cCardBox();
+        java.util.List<String[]> rows = conBrowserTabRows();
+        if (rows.isEmpty()) {
+            tbox.addView(cCardRow(t("status.browserNoTab", "还没有页签"),
+                    t("desc.browserNoTab", "让 AI 打开一个网页后，这里会列出它的页签"), "", false, null));
+        } else {
+            for (int i = 0; i < rows.size(); i++) {
+                if (i > 0) tbox.addView(cCardSep());
+                String[] r = rows.get(i);
+                tbox.addView(cCardRow(r[0], r[1],
+                        "1".equals(r[2]) ? t("status.browserActive", "当前") : "", false, null));
+            }
+        }
+        col.addView(tbox, cTop(cGap(8)));
+
+        LinearLayout acts = new LinearLayout(this);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        Button rf = cButton(t("btn.browser.reload", "刷新"), false);
+        rf.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { conBrowserRun(null, null); }
+        });
+        acts.addView(rf, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button cl = cButton(t("btn.browser.close", "关闭浏览器"), false);
+        cl.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { conBrowserConfirmClose(); }
+        });
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        clp.leftMargin = dp(8);
+        acts.addView(cl, clp);
+        col.addView(acts, cTop(cGap(14)));
+
+        col.addView(cNote(t("desc.browserWarn",
+                "边界（写死在代码里）：① 同屏是只读的（能看不能点，触摸穿透）；② 不改窗口尺寸 —— AI 的点击坐标口径依赖它；③ 浏览器崩溃只死 :browser 进程，控制台与引擎不受影响。")),
+                cTop(cGap(10)));
+    }
+
+    /** AI 浏览器卡片（完整版布局 / layout.pages 下用；精简版走主控台那一行）。 */
+    private View cardBrowser() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(cSep(cGap(20)));
+        box.addView(cNavRow(t("card.browser", "AI 浏览器"),
+                t("desc.browser", "看 AI 正在哪一页 · 同屏查看（能看不能点）"), conBrowserSummary(), PAGE_BROWSER));
+        box.addView(cSep(0));
+        return box;
     }
 
     // ---------- 日志页 ----------
-    private void renderConsoleLog() {
+
+    // ==================== 自修复：自检页 + 自愈账本（v1.19.x） ====================
+    //
+    // 设计稿：tmp-diag/v1180/selfheal-design.md（我们的四条）。
+    //  ① 清单式一致性证明 —— KernelSelfCheck.java（只读，随包 kernel-manifest.tsv）
+    //  ② 自愈账本 —— 每次自检/修复/快照写一条 JSON，追加式，可读可审计
+    //  ③ 会话级自愈、④ AI 只解释不执行 —— 见后续轮次
+    // 安全边界：自检「只读」；唯一会写盘的是「配置快照」（白名单文件，自己另存一份，不动原文件）。
+
+    private KernelSelfCheck.Result conSelfCheckResult = null;
+    private volatile boolean conSelfCheckRunning = false;
+    // 自检进度（后台线程写、UI 线程读；volatile 数组元素在真机上够用，且只用于显示）
+    private final int[] conSelfCheckProgress = new int[]{0, 0};
+    private volatile String conSelfCheckPhase = "";
+    private volatile boolean conSelfCheckCancel = false;
+    private volatile long conSelfCheckStart = 0L;
+
+    /**
+     * 自检页的页号：「用负数做哨兵」。
+     * 为什么不用 5：自定义页从 `4 + i`（i≥1）编号，「第一张自定义页就是 5」 ——
+     * 用 5 会把用户的第一张自定义页顶掉（本轮代码核对发现的冲突）。
+     * 负数与所有 `>= 0` 的页号结构上不可能撞，也不受以后新增内置页影响。
+     */
+
+    // ==================== 控制台风格（v1.19.x：默认精简版；一键可切回完整版） ====================
+    //
+    // 用户反馈："东西多了很杂很乱，做的简洁一点" + "不能让控制台全自定义失效"。
+    // 所以风格只是个**开关**：simple（缺省）用精简骨架渲染主控台；classic 用原来的卡片平铺。
+    // 其它自定义能力（text / actions / pages / appearance / order / hidden / 积木）两种风格下都照旧。
+    private TextView uiSimpleActionText = null;   // 精简版那个主按钮的文字
+    private Button uiSimpleActionBtn = null;
+
+    /**
+     * 当前生效的控制台风格：**只看主题**（v1.19.6，用户 2026-10-05 拍板）。
+     *
+     * · 缺省 = `simple`（新版·方案 B）；
+     * · 主题包里写 `"layout": {"style": "classic"}` 仍可切回旧的卡片平铺
+     *   —— 界面上的风格开关已下线（主控台右上角那个「完整版」按钮也一并移除），
+     *   所以这个口子只留给"愿意改配置文件"的人；
+     * · ⚠ **不再读取界面偏好 `console_ui_style`**：界面上没有切回来的入口了，
+     *   读它只会把老用户永久锁在旧界面里（v1.19.2 踩过的"切过去回不来"）。
+     *
+     * 保留这个方法而不是内联常量：`renderConsoleMain()` 用它做分流，而旧卡片版仍是
+     * `layout.pages` 里那些积木（`extract.block` / `engine.status` / …）的实现来源。
+     */
+    private String consoleUiStyle() {
+        ConsoleTheme ct = conTheme;
+        if (ct != null && "classic".equals(ct.style)) return "classic";
+        return "simple";
+    }
+
+    private static final int PAGE_SELFCHECK = -100;
+    /** 会话修复页（自修复 ③；负页号哨兵：与所有 >=0 的自定义页号结构上不可能冲突）。 */
+    private static final int PAGE_SESSION_HEAL = -101;
+    /** 上一次会话扫描的结果（null = 还没扫过）。 */
+    private SessionHeal.AuditResult conSessionAudit;
+    /** 会话扫描进行中（后台线程）。 */
+    private boolean conSessionScanning;
+    /** 正在修复的会话 id（非 null 表示有修复在跑）。 */
+    private String conSessionHealingId;
+    /** 最近一次会话修复的结果。 */
+    private SessionHeal.HealResult conSessionLastHeal;
+
+    /** 当前控制台是不是**精简版**渲染的（refreshConsole 里据此切换状态字段的可见性；卡片版不受影响）。 */
+    private volatile boolean conRenderedSimple = false;
+
+    // ==================== 会话管理：删除会话（v1.19.4） ====================
+    //
+    // 用户 2026-10-04：「这个软件不能删会话，删不了会话，这是个问题，加一个页面专门删会话」。
+    // 删的时候**先移到回收站**（<dshHome>/sessions-deleted，在 sessions 之外、内核扫不到），
+    // 「彻底删除」只在回收站里做 —— 误删还能捞回来。
+    // 边界：只动 sessions/ 与回收站这两棵树；越界在 Java 与脚本两侧各拦一次。
+
+    /** 会话管理页（负页号哨兵）。 */
+    private static final int PAGE_SESSION_ADMIN = -102;
+    /** 回收站页（负页号哨兵）。 */
+    private static final int PAGE_SESSION_TRASH = -103;
+    /**
+     * v1.19.6 · 阶段 C：AI 浏览器页（同屏查看 / 页签 / 关闭）。
+     * 用负数哨兵的理由同 PAGE_SELFCHECK：自定义页从 5 起编号，内置页不得占用。
+     */
+    private static final int PAGE_BROWSER = -104;
+    /** 会话列表（null = 还没加载过）。 */
+    private SessionAdmin.ListResult conAdminList;
+    /** 回收站列表。 */
+    private SessionAdmin.TrashResult conAdminTrash;
+    /** 正在跑脚本（加载或增删）。 */
+    private boolean conAdminBusy;
+    /** 列表一次渲染多少条（话题只增不减，分批渲染，免得几百条卡住）。 */
+    private int conAdminShowCount = 30;
+    /** 最近一次操作的结果。 */
+    private SessionAdmin.OpResult conAdminLastOp;
+
+    /**
+     * 显示层去 markdown 痕迹：原生 TextView 不解析 markdown，`「加粗」`、`` `代码` ``
+     * 会「原样显示记号」，很影响观感。这里只"去掉记号、保留文字"，不做富文本。
+     * 作为兜底使用：以后新写的文案即使带了 markdown，也不会漏到界面上。
+     */
+    static String uiPlain(String s) {
+        if (s == null) return "";
+        String r = s;
+        if (r.indexOf('*') >= 0) r = r.replace("", "").replace("*", "");
+        if (r.indexOf('`') >= 0) r = r.replace("", "");
+        return r;
+    }
+
+    /** 账本目录：/sdcard/<pkgRoot>/heal-ledger/（放外部，方便用户与 AI 直接读）。 */
+    private File conHealLedgerDir() {
+        File d = new File(new File(Environment.getExternalStorageDirectory(), pkgRoot()), "heal-ledger");
+        if (!d.exists()) d.mkdirs();
+        return d;
+    }
+
+    /** 追加一条账本记录（自己拼 JSON，不引依赖）。失败只记日志，绝不打断主流程。 */
+    private void conLedgerWrite(String kind, String jsonBody) {
+        try {
+            File dir = conHealLedgerDir();
+            java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US);
+            String ts = f.format(new java.util.Date());
+            File out = new File(dir, ts + "-" + kind + ".json");
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\n");
+            sb.append("  \"ts\": \"").append(new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", java.util.Locale.US).format(new java.util.Date())).append("\",\n");
+            sb.append("  \"app\": \"").append(getPackageName()).append("\",\n");
+            sb.append("  \"versionName\": \"").append(conVersionLabel()).append("\",\n");
+            sb.append("  \"kernelVersion\": \"").append(assetText("dshroot_kernel_version.txt")).append("\",\n");
+            sb.append("  \"body\": ").append(jsonBody).append("\n");
+            sb.append("}\n");
+            java.io.FileOutputStream fo = new java.io.FileOutputStream(out);
+            fo.write(sb.toString().getBytes("UTF-8"));
+            fo.close();
+            Log.i(TAG, "heal ledger: " + out.getAbsolutePath());
+        } catch (Throwable t) {
+            Log.w(TAG, "heal ledger write failed", t);
+        }
+    }
+
+    /** 账本条数 + 最新一条的时间（自检页显示用）。 */
+    private String conLedgerSummary() {
+        try {
+            File[] fs = conHealLedgerDir().listFiles();
+            if (fs == null || fs.length == 0) return "账本为空（还没有过自检或修复记录）";
+            long newest = 0;
+            for (int i = 0; i < fs.length; i++) newest = Math.max(newest, fs[i].lastModified());
+            java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US);
+            return fs.length + " 条记录 · 最近 " + f.format(new java.util.Date(newest));
+        } catch (Throwable t) {
+            return "账本读取失败";
+        }
+    }
+
+    /** 控制台主控台的第 9 张卡：内核自检入口。 */
+    /**
+     * 找内核树根（自检/快照用）：`dshrootDir` 只在 prepareFiles() 里赋值，而冷启动会直接停在控制台 ——
+     * 那时树其实已经在磁盘上，字段却是 null（真机实测：自检报"找不到内核树：null"）。
+     * 所以这里按 App 自己的路径规则兜底：内部优先（快且可靠），再外部（内部空间不足时的回退）。
+     */
+    private File conKernelRoot() {
+        try {
+            if (dshrootDir != null && new File(dshrootDir, "lib").isDirectory()) return dshrootDir;
+            File internal = new File(payloadDir(), "dshroot");
+            if (new File(internal, "lib").isDirectory()) return internal;
+            File external = new File(new File(Environment.getExternalStorageDirectory(), pkgRoot()), "dshroot");
+            if (new File(external, "lib").isDirectory()) return external;
+            // 都没找到：把内部路径返回去，让自检如实报"找不到内核树：<路径>"
+            return internal;
+        } catch (Throwable t) {
+            return dshrootDir;
+        }
+    }
+
+    private View cardSelfCheck() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(cSep(cGap(16)));
+        box.addView(cText(t("card.selfcheck", "内核自检"), 13f, cText(), true));
+        String sub = conSelfCheckResult != null
+                ? conSelfCheckResult.summary()
+                : (KernelSelfCheck.manifestAvailable(this)
+                    ? "清单式一致性证明：比对随包清单，指出「具体哪个文件」缺失/不符（只读，不改任何东西）"
+                    : "本包不带内核树清单（kernel-manifest.tsv），只能做基础项自检");
+        box.addView(cText(sub, 11f, cSub(), false), cTop(cGap(6)));
+        box.addView(cNavRow("打开自检页", "快速自检（秒级）· 全量校验（逐个 sha256）· 自愈账本", "", PAGE_SELFCHECK));
+        return box;
+    }
+
+
+    // ==================== 自修复 ④：AI 只提案，App 才执行（v1.19.x） ====================
+    //
+    // 设计稿 §1 ④ / §2 P3：AI 只做"读证据 / 给判断 / 提建议"；执行永远走 App 的红框 + 点击确认 + 显示原文。
+    // 这里把"建议"落成「数据文件」（不含任何可执行代码），App 只解析动作名并在白名单里查表。
+    // 三道闸门：① 动作名白名单 ② 提案过期（源指纹/代次变了就不许执行）③ 同一故障最多执行 2 次。
+
+    /** 提案目录（AI 与用户都能写、App 只读）。 */
+    private File conHealProposalDir() {
+        File d = new File(new File(Environment.getExternalStorageDirectory(), pkgRoot()), "heal-proposals");
+        if (!d.exists()) d.mkdirs();
+        return d;
+    }
+
+    /**
+     * 白名单：动作 id → 中文说明。「写死在代码里」 —— AI 只能从这几个里选，无法扩展或注入新动作。
+     */
+    private static final String[][] HEAL_ACTIONS = {
+        {"resync", "重新解压（全量按 payload 覆盖内核树，并清理 payload 已没有的 dsh* 陈旧包）"},
+        {"selfcheck", "再跑一次清单式证明（修完必须能再证明一次：期望 缺失 0 / 不符 0）"},
+        {"snapshot-config", "配置快照（先留前代，再动手）"},
+        {"open-ledger", "查看自愈账本（只读）"},
+    };
+
+    private static String healActionDesc(String id) {
+        for (int i = 0; i < HEAL_ACTIONS.length; i++) if (HEAL_ACTIONS[i][0].equals(id)) return HEAL_ACTIONS[i][1];
+        return null;
+    }
+
+    /**
+     * 源码指纹：用来判断"提案提出之后，源有没有变"。
+     * 关心的是内核树的关键文件（REVISION / 内核版本 / 清单资产大小），不是整棵树（那太慢）。
+     */
+    private String conHealSourceHash() {
+        try {
+            StringBuilder sb = new StringBuilder();
+            File root = conKernelRoot();
+            if (root != null) {
+                File rev = new File(root, "REVISION");
+                if (rev.isFile()) sb.append(rev.length()).append(':').append(rev.lastModified());
+                File pkg = new File(root, "lib/node_modules/@deepseek-ai/dsh/package.json");
+                if (pkg.isFile()) sb.append('|').append(pkg.length()).append(':').append(pkg.lastModified());
+            }
+            sb.append('|').append(assetText("dshroot_kernel_version.txt"));
+            String s = sb.toString();
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest(s.getBytes("UTF-8"));
+            StringBuilder hex = new StringBuilder();
+            for (int i = 0; i < 6; i++) hex.append(String.format("%02x", d[i]));
+            return hex.toString();
+        } catch (Throwable t) {
+            return "unknown";
+        }
+    }
+
+    /** 读若干条提案（只读，按时间倒序，最多 8 条）。 */
+    private java.util.List<String[]> conReadProposals() {
+        java.util.List<String[]> out = new java.util.ArrayList<String[]>();
+        try {
+            File[] fs = conHealProposalDir().listFiles();
+            if (fs == null) return out;
+            java.util.Arrays.sort(fs, new java.util.Comparator<File>() {
+                @Override public int compare(File a, File b) { return Long.compare(b.lastModified(), a.lastModified()); }
+            });
+            for (int i = 0; i < fs.length && out.size() < 8; i++) {
+                if (!fs[i].getName().endsWith(".json")) continue;
+                String txt = readTextFile(fs[i], 64 * 1024);
+                if (txt == null) continue;
+                String action = jsonField(txt, "action");
+                String why = jsonField(txt, "reason");
+                String srcHash = jsonField(txt, "sourceHash");
+                out.add(new String[]{fs[i].getAbsolutePath(), action == null ? "" : action,
+                        why == null ? "" : why, srcHash == null ? "" : srcHash});
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "read proposals failed", t);
+        }
+        return out;
+    }
+
+    /** 小工具：读文本文件（上限 cap 字节）。 */
+    private String readTextFile(File f, int cap) {
+        java.io.FileInputStream in = null;
+        try {
+            in = new java.io.FileInputStream(f);
+            byte[] buf = new byte[Math.min(cap, (int) Math.max(1, f.length()))];
+            int n = in.read(buf);
+            return n <= 0 ? "" : new String(buf, 0, n, "UTF-8");
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            try { if (in != null) in.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /**
+     * 点"执行"：三道闸门依次过 —— 白名单 → 过期 → 次数。任何一条不过都「如实说明并拒绝」。
+     */
+    private void conHealExecuteProposal(final String[] p) {
+        if (p == null || p.length < 4) return;
+        final String path = p[0], action = p[1], why = p[2], srcHash = p[3];
+        String desc = healActionDesc(action);
+        if (desc == null) {
+            conDialog("这个提案不能执行",
+                    "动作名「" + action + "」不在白名单里。\n\n唯一允许的四个动作是：\n"
+                  + "· resync / selfcheck / snapshot-config / open-ledger\n\n"
+                  + "（AI 只能提建议，不能自己造动作；白名单写死在 App 里。）",
+                    "好", null, null);
+            return;
+        }
+        String nowHash = conHealSourceHash();
+        if (srcHash != null && srcHash.length() > 0 && !"unknown".equals(srcHash) && !srcHash.equals(nowHash)) {
+            conDialog("提案已过期",
+                    "提案提出时内核树指纹是 " + srcHash + "，现在是 " + nowHash + " —— 「源已经变了」。\n\n"
+                  + "为避免「照着一份旧判断去修一棵新树」，这个提案不允许执行。\n"
+                  + "请重新跑一次自检，并让 AI 按最新结果重新提案。",
+                    "好", null, null);
+            return;
+        }
+        int times = conHealTimesFor(nowHash);
+        if (times >= 2) {
+            conDialog("已经修过两次了",
+                    "同一份源指纹（" + nowHash + "）上的修复动作已经执行过 " + times + " 次。\n\n"
+                  + "按设计稿的护栏：「同一故障最多自动执行 2 次，第 3 次只报告不执行」 —— 防止「越修越坏」。\n"
+                  + "请把账本 / 自检报告导出给人看，或换一条思路（例如先做配置快照、或直接重新解压）。",
+                    "好", null, null);
+            return;
+        }
+        conDialog("执行这个修复动作？",
+                "动作：「" + desc + "」\n\n"
+              + "AI 的判断依据：" + (why.length() > 0 ? why : "（提案里没写原因）") + "\n\n"
+              + "提案文件：" + path + "\n"
+              + "源指纹：" + nowHash + "（与本提案一致）\n"
+              + "这一份源上已执行：" + times + " 次（上限 2 次）\n\n"
+              + "⚠ 执行会改动内核树（只碰内核自己的 @deepseek-ai 命名空间，用户数据与第三方插件不动），"
+              + "且会在执行前写一条账本记录。",
+                "执行",
+                new Runnable() { @Override public void run() { conHealRunAction(action, path, why, nowHash); } },
+                "取消");
+    }
+
+    /** 同一源指纹上已执行过几次（数账本，不数内存 —— 重启也不忘）。 */
+    private int conHealTimesFor(String sourceHash) {
+        int n = 0;
+        try {
+            File[] fs = conHealLedgerDir().listFiles();
+            if (fs == null) return 0;
+            for (int i = 0; i < fs.length; i++) {
+                if (!fs[i].getName().contains("-heal-action")) continue;
+                String txt = readTextFile(fs[i], 32 * 1024);
+                if (txt != null && txt.contains(sourceHash)) n++;
+            }
+        } catch (Throwable ignored) {}
+        return n;
+    }
+
+    /** 真正执行白名单动作（已过三道闸门）。 */
+    private void conHealRunAction(final String action, String proposalPath, String why, String srcHash) {
+        conLedgerWrite("heal-action", "{\"action\":\"" + action + "\",\"proposal\":\"" + jesc(proposalPath)
+                + "\",\"reason\":\"" + jesc(why) + "\",\"sourceHashBefore\":\"" + srcHash
+                + "\",\"sourceHashAfter\":\"" + conHealSourceHash() + "\"}");
+        if ("resync".equals(action)) { conReExtract(); return; }
+        if ("selfcheck".equals(action)) { conRunSelfCheck(false); return; }
+        if ("snapshot-config".equals(action)) { conSnapshotConfigNow(); return; }
+        if ("open-ledger".equals(action)) { conShowLedger(); return; }
+        conToast("未知动作：" + action);
+    }
+
+    /** 自检页底部：AI 提案区（只读展示 + 点击执行）。 */
+    /** 自检页底部：AI 提案区（只读展示 + 点击执行；AI 只提建议，执行必须用户点）。 */
+    private View conHealProposalBlock() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.addView(cGrpTitle(t("title.grpHealProposal", "AI 修复提案")), cTop(cGap(18)));
+        box.addView(cNote(t("desc.healProposal",
+                "AI 读自检结果与账本后，可以把判断与建议写成 /sdcard/" + pkgRoot() + "/heal-proposals/*.json；"
+              + "App 只「读」它、绝不会自动执行 —— 执行必须你点。动作白名单写死在 App 里："
+              + "resync / selfcheck / snapshot-config / open-ledger。"
+              + "提案里带源指纹，源一变即过期；同一源上最多执行 2 次。")), cTop(cGap(8)));
+
+        java.util.List<String[]> ps = conReadProposals();
+        LinearLayout card = cCardBox();
+        if (ps.isEmpty()) {
+            card.addView(cCardRow(t("status.noProposal", "当前没有提案文件"),
+                    t("desc.noProposal", "AI 写出提案后，这里会出现它、并列出它想做什么"), "", false, null));
+        } else {
+            for (int i = 0; i < ps.size(); i++) {
+                if (i > 0) card.addView(cCardSep());
+                final String[] p = ps.get(i);
+                String desc = healActionDesc(p[1]);
+                String fingerprint = (p[3] == null || p[3].length() == 0)
+                        ? t("desc.healNoFingerprint", "（提案未提供 → 会跳过过期检查）") : p[3];
+                String sub = (p[2] != null && p[2].length() > 0 ? ("依据：" + p[2] + " · ") : "")
+                        + t("desc.healFingerprint", "源指纹：") + fingerprint;
+                Button run = cButton(desc == null ? t("btn.heal.notRunnable", "不可执行")
+                        : t("btn.heal.run", "执行（需确认）"), false);
+                run.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+                if (desc == null) run.setTextColor(cRed());
+                run.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View x) { conHealExecuteProposal(p); }
+                });
+                card.addView(cCardRowWith(desc == null ? ("【不在白名单】" + p[1]) : desc, cCut(sub, 72), run));
+            }
+        }
+        box.addView(card, cTop(cGap(8)));
+        box.addView(cNote(t("desc.healProposalWarn",
+                "⚠ 执行会改动内核树（只碰内核自己的 @deepseek-ai 命名空间）；每次执行都会写账本。")), cTop(cGap(10)));
+        return box;
+    }
+
+
+    /** consolePage == PAGE_SELFCHECK：内核自检页（负页号哨兵）。 */
+    private void renderConsoleSelfCheck() {
         LinearLayout col = consoleBody;
-        col.addView(conBackRow("日志"));
-        col.addView(cText(conLogSummary(), 12f, cText(), false), cTop(dp(12)));
-        col.addView(cText("「查看」直接看末尾 200 行；「分享」调用系统分享（QQ / 微信 / 邮件…都能选），正文里带完整日志路径与末尾 400 行。日志会随使用不断追加，太长不好读时可「清空日志」。",
-                11f, cSub(), false), cTop(dp(8)));
+        col.addView(conBackRow(t("card.selfcheck", "内核自检")));
+        col.addView(cText(t("desc.selfcheck",
+                        "这是「清单式一致性证明」：拿随包清单（每个文件的路径/大小/sha256）跟设备上的内核树逐条比对，"
+                      + "回答的是「到底哪个文件不对」，而不是「感觉坏了」。全程只读，不会改任何文件。"),
+                11f, cSub(), false), cTop(cGap(8)));
+
+        KernelSelfCheck.Result r = conSelfCheckResult;
+        if (conSelfCheckRunning) {
+            // 进度条（自绘，跟页面同风格）：全量校验逐个算 sha256，实测 2.5 万文件约 200 秒
+            int done = conSelfCheckProgress[0], total = conSelfCheckProgress[1];
+            double frac = total > 0 ? Math.min(1.0, done / (double) total) : 0.0;
+            long secs = (System.currentTimeMillis() - conSelfCheckStart) / 1000;
+            col.addView(cText("自检进行中 · " + (conSelfCheckPhase == null ? "" : conSelfCheckPhase),
+                    12.5f, cText(), true), cTop(cGap(12)));
+            // 内联自绘进度条（既有那条权重条是「解压卡」的全局单例，不能复用）
+            LinearLayout track = new LinearLayout(this);
+            track.setOrientation(LinearLayout.HORIZONTAL);
+            int pct = total > 0 ? (int) Math.round(frac * 100) : 0;
+            View fill = new View(this);
+            fill.setBackground(cShape(cAccent(), 0, 0, 6));
+            View rest = new View(this);
+            rest.setBackground(cShape(cTrack(), 0, 0, 6));
+            LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(0, dp(8), Math.max(pct, 0.01f));
+            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(0, dp(8), Math.max(100 - pct, 0.01f));
+            track.addView(fill, flp);
+            track.addView(rest, rlp);
+            col.addView(track, cTop(cGap(8)));
+            String line = total > 0
+                    ? ("已处理 " + done + " / " + total + " 个文件（" + Math.round(frac * 100) + "%）")
+                    : ("已处理 " + done + " 个文件（总数读取中…）");
+            col.addView(cText(line + " · 已用 " + secs + "s", 11f, cSub(), false), cTop(cGap(6)));
+            Button cancel = cButton("取消", false);
+            cancel.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View x) { conSelfCheckCancel = true; conToast("正在停止…"); }
+            });
+            col.addView(cancel, cTop(cGap(10)));
+            return;
+        }
+        if (r == null) {
+            col.addView(cText("还没有跑过自检。建议先点「快速自检」（只比大小，秒级）。",
+                    12f, cText(), false), cTop(cGap(12)));
+        } else {
+            // v1.19.6：结论放最上面（大字 + 绿/红），数字一行带过，"下一步"紧跟其后
+            int color = "ok".equals(r.verdict) ? cGreen() : ("fail".equals(r.verdict) ? cRed() : cSub());
+            LinearLayout c0 = cCardBox();
+            c0.addView(cText(uiPlain(r.verdict.toUpperCase() + " · " + r.headline), 15f, color, true),
+                    cTop(cGap(12)));
+            c0.addView(cText("清单文件 " + r.manifestFiles + " · 树上文件 " + r.treeFiles
+                    + " · 已校验内容 " + r.hashed + " · 用时 " + (r.elapsedMs / 1000) + "s"
+                    + (r.quick ? "（快速：只比大小）" : "（全量：大小 + sha256）"),
+                    11f, cSub(), false), cTop(cGap(6)));
+            if (!r.samples.isEmpty()) {
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < r.samples.size(); i++) sb.append("· ").append(r.samples.get(i)).append("\n");
+                c0.addView(cText(uiPlain(sb.toString().trim()), 11f, cText(), false), cTop(cGap(8)));
+            }
+            if (!r.nextSteps.isEmpty()) {
+                StringBuilder sb = new StringBuilder("下一步：\n");
+                for (int i = 0; i < r.nextSteps.size(); i++) sb.append(i + 1).append(". ").append(r.nextSteps.get(i)).append("\n");
+                c0.addView(cText(uiPlain(sb.toString().trim()), 11f, cSub(), false), cTop(cGap(8)));
+            }
+            c0.addView(new View(this), new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(8)));
+            col.addView(c0, cTop(cGap(12)));
+        }
+
+        // 动作
+        col.addView(cGrpTitle(t("title.grpSelfCheckActions", "动作")), cTop(cGap(18)));
         LinearLayout acts = new LinearLayout(this);
         acts.setOrientation(LinearLayout.HORIZONTAL);
-        Button v = cButton("查看日志", false);
-        v.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) { conViewLog(); } });
-        Button e = cButton("分享", true);
-        e.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) { conShareLog(); } });
-        acts.addView(v);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        Button q = cButton(t("btn.selfcheck.quick", "快速自检"), true);
+        q.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) { conRunSelfCheck(true); } });
+        acts.addView(q, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button f = cButton(t("btn.selfcheck.full", "全量校验"), false);
+        f.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) { conRunSelfCheck(false); } });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         lp.leftMargin = dp(8);
-        acts.addView(e, lp);
-        col.addView(acts, cTop(dp(14)));
-        // 只占一行的次要操作：日志积累久了会很大，给一个直接清空的入口（单独一行，避免窄屏挤在一起）
-        LinearLayout clearRow = new LinearLayout(this);
-        clearRow.setOrientation(LinearLayout.HORIZONTAL);
-        Button c = cButton("清空日志", false);
-        c.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) { conClearLog(); } });
-        clearRow.addView(c);
-        col.addView(clearRow, cTop(dp(10)));
+        acts.addView(f, lp);
+        col.addView(acts, cTop(cGap(10)));
+
+        // v1.19.6：原来这一行是「看账本 | 配置快照」两个按钮，与下面账本卡片里的入口重复；
+        // 账本入口已并入「自愈账本」卡片行（带摘要 + ›），这里只留配置快照。
+        Button snap = cButton(t("btn.selfcheck.snapshot", "配置快照"), false);
+        snap.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) { conSnapshotConfigConfirm(); } });
+        col.addView(snap, cTop(cGap(10)));
+
+        // v1.19.6：自愈账本从"一段灰字"收进卡片行（标题 / 摘要 / 右列「看账本 ›」，整行可点）
+        col.addView(cGrpTitle(t("title.grpLedger", "自愈账本")), cTop(cGap(18)));
+        LinearLayout lb = cCardBox();
+        lb.addView(cCardRow(t("card.ledger", "自愈账本"),
+                t("desc.ledger", "每次自检与修复追加一条 JSON，AI 可以直接读它向你解释修过什么")
+                        + " · " + conLedgerSummary(),
+                t("btn.selfcheck.ledger", "看账本"), true, new View.OnClickListener() {
+            @Override public void onClick(View x) { conShowLedger(); }
+        }));
+        col.addView(lb, cTop(cGap(8)));
+        col.addView(cNote(t("desc.ledgerDir", "目录：") + "/sdcard/" + pkgRoot() + "/heal-ledger/"), cTop(cGap(6)));
+        col.addView(conHealProposalBlock());
+        // v1.19.6：原来这里还挂着「会话修复 / 会话管理」两个入口 —— 它们在 v1.19.5 已经提到
+        // 主控台首页的「会话」分组，这里再放一次就是同一入口出现两次，已移除。
+
+        col.addView(cNote(t("desc.selfcheckWarn",
+                "边界（写死在代码里）：① 自检「只读」，不删不改；"
+              + "② 「缺失/内容不符」才是需要处理的真问题，「清单外文件」只是参考信息"
+              + "（清单在开发树上算的，天然比出货树少，多数是第三方依赖）；"
+              + "③ 真正的清理只发生在两个 @deepseek-ai 目录里、且只删 dsh 开头的陈旧条目 —— "
+              + "用户数据（dshhome 下）与第三方插件（dshhome/profiles 下）永远只报不改。")), cTop(cGap(8)));
+    }
+
+    // ==================== 自修复 ③：会话级自愈（v1.19.x） ====================
+    //
+    // 设计稿 selfheal-design.md §1 ③：坏附件（例如文件头合法、IDAT 已损坏的 PNG）一旦作为
+    // tool_result 进入会话历史，之后每次请求都会重新读它、每次都以同样方式失败，用户只能放弃整条
+    // 会话（v1.15.1 记录过两条）。这里做的是「只降级那一条消息」：把坏掉的 image/file 块换成等价的
+    // 文字说明，会话的正文、上下文与顺序一字不动。
+    //
+    // 边界（写死在代码里，不得绕过）：
+    //   ① 只处理用户点选的那一条会话，没有「扫全目录批量修」的入口；
+    //   ② 引擎在跑时不允许改写（内核可能正在写同一条会话）—— 让用户先停引擎；
+    //   ③ 写盘前先备份，写完立刻复检；每次修复写一条自愈账本。
+    // 真正的解帧/改写/复检在随包脚本 assets/session-heal.mjs 里（会话是多帧 zstd，Java 侧没有
+    // 现成的 zstd 实现，而 payload 自带 node 原生支持它）。
+
+    /** 加载会话 + 回收站两份清单（后台线程；只读）。 */
+    private void conAdminLoad() {
+        if (conAdminBusy) return;
+        conAdminBusy = true;
+        conToast("正在读取会话列表…（只读）");
+        renderConsole();
+        final File payload = payloadDir();
+        final File dshHome = new File(payload, "dshhome");
+        new Thread(new Runnable() { @Override public void run() {
+            final SessionAdmin.ListResult lr = SessionAdmin.list(MainActivity.this, payload, dshHome);
+            final SessionAdmin.TrashResult tr = SessionAdmin.trashList(MainActivity.this, payload, dshHome);
+            ui.post(new Runnable() { @Override public void run() {
+                conAdminBusy = false;
+                conAdminList = lr;
+                conAdminTrash = tr;
+                if (consolePage == PAGE_SESSION_ADMIN || consolePage == PAGE_SESSION_TRASH) renderConsole();
+                conToast(lr.headline());
+            }});
+        }}, "dsh-session-admin-list").start();
+    }
+
+    /** 会话管理页。 */
+    /** 会话管理页（v1.19.6：统一版式 —— 说明 / 结论卡 / 行式列表 / 等宽操作区 / 边界）。 */
+    private void renderConsoleSessionAdmin() {
+        LinearLayout col = consoleBody;
+        col.addView(conBackRow(t("card.sessionadmin", "会话管理")));
+        col.addView(cNote(t("desc.sessionadminPage",
+                "这里可以删掉不需要的会话。删除是「先移到回收站」—— 随时能恢复；"
+              + "真要腾空间，去回收站里「彻底删除」。删除只动这一条会话，不碰别的。")), cTop(cGap(8)));
+
+        View lastOp = conLastOpCard();
+        if (lastOp != null) col.addView(lastOp, cTop(cGap(14)));
+
+        if (conAdminBusy) {
+            col.addView(cText("正在读取…（只读，不改任何东西）", 12f, cText(), true), cTop(cGap(12)));
+            return;
+        }
+        SessionAdmin.ListResult r = conAdminList;
+        if (r == null) {
+            col.addView(cNote(t("desc.sessionadminIdle",
+                    "还没有读取过列表。点下面的「读取会话列表」开始 —— 只读。")), cTop(cGap(12)));
+        } else {
+            int show = r.ok ? Math.min(conAdminShowCount, r.sessions.size()) : 0;
+            col.addView(cGrpTitle(t("title.grpSessionList", "会话列表")), cTop(cGap(16)));
+            LinearLayout box = cCardBox();
+            if (!r.ok) {
+                box.addView(cCardRow(t("status.readFailed", "读取失败"), cCut(r.error, 80), "",
+                        cRed(), false, null));
+            } else if (r.sessions.isEmpty()) {
+                box.addView(cCardRow(t("status.sessionNone", "一条会话都没有"),
+                        t("desc.sessionNone", "在 Web 界面里发一条消息，这里就会出现它"), "", false, null));
+            } else {
+                for (int i = 0; i < show; i++) {
+                    if (i > 0) box.addView(cCardSep());
+                    box.addView(conAdminRow(r.sessions.get(i)));
+                }
+            }
+            col.addView(box, cTop(cGap(8)));
+            col.addView(cNote(r.ok ? r.headline() : cCut(r.error, 120)), cTop(cGap(8)));
+            if (r.ok && r.sessions.size() > show) {
+                Button more = cButton(t("btn.session.more", "显示更多")
+                        + "（还有 " + (r.sessions.size() - show) + " 条）", false);
+                more.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View x) { conAdminShowCount += 30; renderConsole(); }
+                });
+                col.addView(more, cTop(cGap(10)));
+            }
+        }
+
+        // 操作区：两个等宽按钮（首次读取=主操作实心；回收站带条数）
+        LinearLayout acts = new LinearLayout(this);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        Button load = cButton(r == null ? t("btn.session.load", "读取会话列表")
+                : t("btn.session.reload", "重新读取"), r == null);
+        load.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) { conAdminLoad(); } });
+        acts.addView(load, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        int trashN = conAdminTrash == null ? 0 : conAdminTrash.count;
+        Button trash = cButton(t("card.sessiontrash", "回收站") + "（" + trashN + "）", false);
+        trash.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View x) { consolePage = PAGE_SESSION_TRASH; renderConsole(); }
+        });
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        tlp.leftMargin = dp(8);
+        acts.addView(trash, tlp);
+        col.addView(acts, cTop(cGap(14)));
+
+        col.addView(cNote(t("desc.sessionadminWarn",
+                "边界（写死在代码里）：① 删除 = 移到 <dshHome>/sessions-deleted/（回收站），不是 rm；"
+              + "② 回收站在 sessions/ 之外，内核扫不到、不会被当成会话加载；"
+              + "③ 只动 sessions/ 与回收站这两棵树，越界一律拒绝；"
+              + "④ 每次删除 / 恢复 / 彻底删都写一条自愈账本。")), cTop(cGap(12)));
+    }
+
+
+
+    /** 会话列表里的一行。 */
+    /**
+     * 会话列表里的一行：标题 / 元信息 / 右列「删除」（红字 + ›），整行可点。
+     * 点下去是**确认框**（把会话名、大小、行数、会做什么原样摆出来），不会直接删。
+     */
+    private View conAdminRow(final SessionAdmin.SessionInfo si) {
+        String meta = si.sizeText() + " · " + si.lines + " 行 · " + si.timeText()
+                + (si.badFrames > 0 ? (" · ⚠ " + si.badFrames + " 个坏数据块") : "");
+        return cCardRow(cCut(si.displayTitle(), 40), meta,
+                t("btn.session.delete", "删除"), cRed(), true, new View.OnClickListener() {
+            @Override public void onClick(View x) { conAdminConfirmTrash(si); }
+        });
+    }
+
+    /** 「上次操作」结论卡（会话管理 / 回收站共用；没操作过就返回 null，调用方要判空）。 */
+    private View conLastOpCard() {
+        SessionAdmin.OpResult last = conAdminLastOp;
+        if (last == null) return null;
+        LinearLayout box = cCardBox();
+        box.addView(cCardRow(t("status.lastOp", "上次操作"), cCut(last.headline(), 90),
+                last.ok ? t("status.done", "完成") : t("status.failed", "失败"),
+                last.ok ? cGreen() : cRed(), false, null));
+        return box;
+    }
+
+
+    /** 回收站页。 */
+    /** 回收站页（v1.19.6：统一版式）。 */
+    /** 回收站页（v1.19.6：统一版式）。 */
+    /** 回收站页（v1.19.6：统一版式）。 */
+    private void renderConsoleSessionTrash() {
+        LinearLayout col = consoleBody;
+        col.addView(conBackRow(t("card.sessiontrash", "回收站")));
+        col.addView(cNote(t("desc.sessiontrashPage",
+                "删掉的会话先放在这里（在 sessions/ 之外，内核看不到它们）。"
+              + "可以「恢复」回原位；确认不要了再「彻底删除」—— 那一步不可恢复。")), cTop(cGap(8)));
+
+        View lastOp = conLastOpCard();
+        if (lastOp != null) col.addView(lastOp, cTop(cGap(14)));
+
+        if (conAdminBusy) {
+            col.addView(cText("正在读取…（只读）", 12f, cText(), true), cTop(cGap(12)));
+            return;
+        }
+        SessionAdmin.TrashResult t = conAdminTrash;
+        if (t == null) {
+            col.addView(cNote(t("desc.sessiontrashIdle",
+                    "还没有读取过回收站。点下面的「读取回收站」。")), cTop(cGap(12)));
+        } else {
+            col.addView(cGrpTitle(t("title.grpTrashList", "回收站里的会话")), cTop(cGap(16)));
+            LinearLayout box = cCardBox();
+            if (!t.ok) {
+                box.addView(cCardRow(t("status.readFailed", "读取失败"), cCut(t.error, 80), "",
+                        cRed(), false, null));
+            } else if (t.entries.isEmpty()) {
+                box.addView(cCardRow(t("status.trashEmpty", "回收站是空的"),
+                        t("desc.trashEmptyHint", "删掉的会话会先出现在这里"), "", false, null));
+            } else {
+                for (int i = 0; i < t.entries.size(); i++) {
+                    if (i > 0) box.addView(cCardSep());
+                    box.addView(conAdminTrashRow(t.entries.get(i)));
+                }
+            }
+            col.addView(box, cTop(cGap(8)));
+            col.addView(cNote(t.ok ? t.headline() : cCut(t.error, 120)), cTop(cGap(8)));
+        }
+
+        LinearLayout acts = new LinearLayout(this);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        Button load = cButton(t("btn.session.loadTrash", "读取回收站"), t == null);
+        load.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) { conAdminLoad(); } });
+        acts.addView(load, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button back = cButton(t("btn.session.backAdmin", "回会话管理"), false);
+        back.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View x) { consolePage = PAGE_SESSION_ADMIN; renderConsole(); }
+        });
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        blp.leftMargin = dp(8);
+        acts.addView(back, blp);
+        col.addView(acts, cTop(cGap(14)));
+
+        // 维护：不可逆的那一步单独成组、离手远（与日志页「清空日志」同一规格）
+        if (t != null && t.ok && t.count > 0) {
+            col.addView(cGrpTitle(t("title.grpTrashCare", "维护")), cTop(cGap(20)));
+            LinearLayout box2 = cCardBox();
+            box2.addView(cCardRow(t("btn.session.purgeAll", "清空回收站")
+                            + "（" + t.count + " 条 · " + SessionAdmin.human(t.totalBytes) + "）",
+                    t("desc.sessionPurgeAll", "把回收站里的会话一次性真正删掉，删完找不回来"),
+                    t("btn.session.purgeAllShort", "清空"), cRed(), true, new View.OnClickListener() {
+                @Override public void onClick(View x) { conAdminConfirmPurgeAll(); }
+            }));
+            col.addView(box2, cTop(cGap(8)));
+        }
+        col.addView(cNote(t("desc.sessiontrashWarn",
+                "「彻底删除」会真的从磁盘删掉，不可恢复 —— 所以它只在这里提供，且每次都要单独确认。")), cTop(cGap(12)));
+    }
+
+
+
+
+    /** 回收站列表里的一行。 */
+    /**
+     * 回收站列表里的一行：左列标题 / 元信息，右列两个小按钮 ——「恢复」（实心主操作）
+     * 与「彻底删除」（红字，点了还要过红框确认）。
+     */
+    private View conAdminTrashRow(final SessionAdmin.TrashInfo ti) {
+        String sub = ti.sizeText() + " · " + ti.timeText()
+                + (ti.slug.length() > 0 ? (" · 原位置 " + ti.slug) : "");
+        LinearLayout btns = new LinearLayout(this);
+        btns.setOrientation(LinearLayout.HORIZONTAL);
+        btns.setGravity(Gravity.CENTER_VERTICAL);
+        Button rs = cButton(t("btn.session.restore", "恢复"), true);
+        rs.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        rs.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View x) { conAdminConfirmRestore(ti); }
+        });
+        btns.addView(rs);
+        Button pg = cButton(t("btn.session.purge", "彻底删除"), false);
+        pg.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        pg.setTextColor(cRed());
+        pg.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View x) { conAdminConfirmPurge(ti); }
+        });
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        plp.leftMargin = dp(6);
+        btns.addView(pg, plp);
+        return cCardRowWith(cCut(ti.displayTitle(), 22), sub, btns);
+    }
+
+
+    /** 删除确认（红框）：明说"只是移到回收站、能恢复"。 */
+    private void conAdminConfirmTrash(final SessionAdmin.SessionInfo si) {
+        conDialogDanger("删除这个会话？",
+                si.displayTitle() + "\n\n"
+              + si.sizeText() + " · " + si.lines + " 行 · 最后活动 " + si.timeText() + "\n\n"
+              + "会做什么：把它移到回收站（<dshHome>/sessions-deleted/），随时能在「回收站」里恢复。\n"
+              + "不会做什么：不碰别的会话，不碰用户数据里的其它东西。",
+                "确认删除（可恢复）",
+                new Runnable() { @Override public void run() { conAdminDoTrash(si); } },
+                "取消");
+    }
+
+    private void conAdminDoTrash(final SessionAdmin.SessionInfo si) {
+        conAdminOp("trash", "正在删除（移到回收站）…", new Runnable() { @Override public void run() {
+            conAdminLastOp = SessionAdmin.trash(MainActivity.this, payloadDir(), new File(payloadDir(), "dshhome"), si.dir);
+            if (conAdminLastOp.ok) {
+                conLedgerWrite("session-trash", "{\"session\":\"" + conJsonEsc(si.id) + "\",\"title\":\""
+                        + conJsonEsc(si.title) + "\",\"bytes\":" + si.bytes + ",\"moved\":\""
+                        + conJsonEsc(conAdminLastOp.moved) + "\",\"recoverable\":true}");
+                conAdminShowCount = Math.max(30, conAdminShowCount);
+            }
+        }});
+    }
+
+    private void conAdminConfirmRestore(final SessionAdmin.TrashInfo ti) {
+        conDialog("恢复这个会话？",
+                ti.displayTitle() + "\n\n" + ti.sizeText() + " · 删除于 " + ti.timeText() + "\n\n"
+              + "会把它放回「原来那条路径」（原位置：" + (ti.slug.length() > 0 ? ti.slug : "未知") + "）。",
+                "恢复", new Runnable() { @Override public void run() {
+                    conAdminOp("restore", "正在恢复…", new Runnable() { @Override public void run() {
+                        conAdminLastOp = SessionAdmin.restore(MainActivity.this, payloadDir(), new File(payloadDir(), "dshhome"), ti.dir);
+                        if (conAdminLastOp.ok) {
+                            conLedgerWrite("session-restore", "{\"entry\":\"" + conJsonEsc(ti.entry) + "\",\"restoredTo\":\""
+                                    + conJsonEsc(conAdminLastOp.restoredTo) + "\"}");
+                        }
+                    }});
+                } }, "取消");
+    }
+
+    private void conAdminConfirmPurge(final SessionAdmin.TrashInfo ti) {
+        conDialogDanger("彻底删除这个会话？",
+                ti.displayTitle() + "\n\n" + ti.sizeText() + "\n\n"
+              + "这一步不可恢复 —— 会真的从磁盘上删掉它，回收站里也不会再有。",
+                "彻底删除", new Runnable() { @Override public void run() {
+                    conAdminOp("purge", "正在彻底删除…", new Runnable() { @Override public void run() {
+                        conAdminLastOp = SessionAdmin.purge(MainActivity.this, payloadDir(), new File(payloadDir(), "dshhome"), ti.dir);
+                        if (conAdminLastOp.ok) {
+                            conLedgerWrite("session-purge", "{\"entry\":\"" + conJsonEsc(ti.entry) + "\",\"bytes\":"
+                                    + conAdminLastOp.bytes + ",\"recoverable\":false}");
+                        }
+                    }});
+                } }, "取消");
+    }
+
+    private void conAdminConfirmPurgeAll() {
+        final SessionAdmin.TrashResult t = conAdminTrash;
+        final int n = t == null ? 0 : t.count;
+        final long bytes = t == null ? 0 : t.totalBytes;
+        conDialogDanger("清空回收站？",
+                "会真的删掉回收站里全部 " + n + " 条会话（" + SessionAdmin.human(bytes) + "）。\n\n"
+              + "这一步不可恢复，删完就找不回来了。当前正在用的会话不受影响。",
+                "确认清空", new Runnable() { @Override public void run() {
+                    conAdminOp("purge-all", "正在清空回收站…", new Runnable() { @Override public void run() {
+                        conAdminLastOp = SessionAdmin.purgeAll(MainActivity.this, payloadDir(), new File(payloadDir(), "dshhome"));
+                        if (conAdminLastOp.ok) {
+                            conLedgerWrite("session-purge-all", "{\"entries\":" + conAdminLastOp.entries
+                                    + ",\"bytes\":" + conAdminLastOp.bytes + ",\"recoverable\":false}");
+                        }
+                    }});
+                } }, "取消");
+    }
+
+    /** 跑一个会话管理操作（后台线程 + 完成后重绘）；operation 里只做"调脚本 + 记账本"。 */
+    private void conAdminOp(final String what, String busyText, final Runnable operation) {
+        if (conAdminBusy) { conToast("上一个操作还没结束"); return; }
+        conAdminBusy = true;
+        conToast(busyText);
+        renderConsole();
+        new Thread(new Runnable() { @Override public void run() {
+            try { operation.run(); } catch (Throwable t) { Log.w(TAG, "session-admin " + what, t); }
+            ui.post(new Runnable() { @Override public void run() {
+                conAdminBusy = false;
+                // ⚠ 操作成功后必须**重新读**列表与回收站：只 renderConsole() 会用旧数据渲染，
+                //   表现为「删了但条数没变 / 回收站计数不更新」（真机实测踩到）。
+                if (conAdminLastOp != null && conAdminLastOp.ok) {
+                    conToast(conAdminLastOp.headline());
+                    conAdminLoad();
+                } else {
+                    renderConsole();
+                    if (conAdminLastOp != null) conToast(conAdminLastOp.headline());
+                }
+            }});
+        }}, "dsh-session-admin-" + what).start();
+    }
+
+    private String conShortId(String id) {
+        if (id == null) return "";
+        return id.length() <= 16 ? id : id.substring(0, 16) + "…";
+    }
+
+    /** 最小的 JSON 字符串转义（写账本用；不引依赖）。 */
+    private String conJsonEsc(String s) {
+        if (s == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '"' || c == '\\') sb.append('\\').append(c);
+            else if (c == '\n') sb.append("\\n");
+            else if (c == '\r') sb.append("\\r");
+            else if (c == '\t') sb.append("\\t");
+            else if (c < 0x20) sb.append(' ');
+            else sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    /** 会话列表里的一行（可点 → 详情）。 */
+    /** 有问题的会话：一行（会话 id / 症状 / 右列体积行数），整行可点 → 详情弹窗。 */
+    private View conSessionRow(final SessionHeal.SessionInfo si) {
+        return cCardRow(conShortId(si.id), si.summary(),
+                si.sizeText() + " · " + si.lines + " 行", cSub(), true,
+                new View.OnClickListener() {
+                    @Override public void onClick(View x) { conSessionDetail(si); }
+                });
+    }
+
+
+    /** 扫描会话（后台线程；全程只读）。 */
+    private void conSessionScan() {
+        if (conSessionScanning || conSessionHealingId != null) return;
+        conSessionScanning = true;
+        conSessionLastHeal = null;
+        conToast("正在扫描会话（只读，不改任何东西）…");
+        renderConsole();
+        final File payload = payloadDir();
+        final File dshHome = new File(payload, "dshhome");
+        new Thread(new Runnable() { @Override public void run() {
+            final SessionHeal.AuditResult r = SessionHeal.audit(MainActivity.this, payload, dshHome);
+            ui.post(new Runnable() { @Override public void run() {
+                conSessionScanning = false;
+                conSessionAudit = r;
+                consolePage = PAGE_SESSION_HEAL;
+                renderConsole();
+                conToast(r.headline());
+            }});
+        }}, "dsh-session-scan").start();
+    }
+
+    /** 会话修复页。 */
+    /** 会话修复页（v1.19.6：统一版式 —— 结论卡在上 + 行式列表 + 操作区）。 */
+    private void renderConsoleSessionHeal() {
+        LinearLayout col = consoleBody;
+        col.addView(conBackRow(t("card.sessionheal", "会话修复")));
+        col.addView(cNote(t("desc.sessionhealPage",
+                "坏附件（比如内容已经损坏的图片）一旦写进会话历史，之后每次发消息都会重新读它、"
+              + "每次都以同样方式失败，整条会话就只能放弃。"
+              + "这里只做一件事：把坏掉的那一条消息里的附件换成一行文字说明，会话的正文、上下文与顺序一字不动。"
+              + "扫描是只读的；真正改写前会让你确认，并且先把原文件备份一份。")), cTop(cGap(8)));
+
+        SessionHeal.HealResult last = conSessionLastHeal;
+        if (last != null) {
+            boolean good = last.ok && last.applied;
+            String sub = cCut(last.headline(), 90)
+                    + (last.backup != null && last.backup.length() > 0
+                        ? ("；原文件已备份到同目录 " + new File(last.backup).getName()) : "");
+            LinearLayout lb = cCardBox();
+            lb.addView(cCardRow(t("status.lastHeal", "上次修复"), sub,
+                    good ? t("status.done", "完成")
+                         : (last.ok ? t("status.noChange", "无改动") : t("status.failed", "失败")),
+                    good ? cGreen() : (last.ok ? cSub() : cRed()), false, null));
+            col.addView(lb, cTop(cGap(14)));
+        }
+
+        if (conSessionHealingId != null) {
+            col.addView(cText("正在修复…（先备份，再只降级坏引用，最后复检）", 12f, cText(), true), cTop(cGap(12)));
+            return;
+        }
+        if (conSessionScanning) {
+            col.addView(cText("正在扫描会话…（只读）", 12f, cText(), true), cTop(cGap(12)));
+            return;
+        }
+
+        SessionHeal.AuditResult r = conSessionAudit;
+        if (r == null) {
+            col.addView(cNote(t("desc.sessionhealIdle",
+                    "还没有扫描过。点下面的「扫描会话」开始 —— 扫描全程只读。")), cTop(cGap(12)));
+        } else if (!r.ok) {
+            col.addView(cGrpTitle(t("title.grpSessionBad", "扫描结果")), cTop(cGap(16)));
+            LinearLayout box = cCardBox();
+            box.addView(cCardRow(t("status.scanFailed", "扫描失败"), cCut(r.error, 80), "",
+                    cRed(), false, null));
+            col.addView(box, cTop(cGap(8)));
+        } else {
+            java.util.List<SessionHeal.SessionInfo> bad = r.problemSessions();
+            // 结论在上：一张卡说清"扫了多少、坏了几条"，下面才是列表
+            LinearLayout c0 = cCardBox();
+            c0.addView(cText(r.headline(), 13f, bad.isEmpty() ? cGreen() : cRed(), true), cTop(cGap(12)));
+            c0.addView(cText(bad.isEmpty()
+                            ? t("desc.noBadSession", "所有会话的附件引用都能对上实体文件、内容也完整 —— 不需要修什么。")
+                            : t("desc.sessionBadHint", "点一条查看它坏在哪、再决定要不要修（只会动你点的这一条）："),
+                    11f, cSub(), false), cTop(cGap(6)));
+            c0.addView(new View(this), new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(8)));
+            col.addView(c0, cTop(cGap(12)));
+
+            if (!bad.isEmpty()) {
+                col.addView(cGrpTitle(t("title.grpSessionBadList", "有问题的会话")), cTop(cGap(16)));
+                LinearLayout box = cCardBox();
+                for (int i = 0; i < bad.size(); i++) {
+                    if (i > 0) box.addView(cCardSep());
+                    box.addView(conSessionRow(bad.get(i)));
+                }
+                col.addView(box, cTop(cGap(8)));
+            }
+            int normal = r.sessionCount - r.badSessionCount;
+            if (normal > 0) {
+                col.addView(cNote("另有 " + normal + " " + t("desc.sessionNormalOther",
+                        "条会话没有发现问题（未在下面列出）。")), cTop(cGap(10)));
+            }
+        }
+
+        Button scan = cButton(r == null ? t("btn.session.scan", "扫描会话")
+                : t("btn.session.rescan", "重新扫描"), r == null);
+        scan.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View x) { conSessionScan(); }
+        });
+        col.addView(scan, cTop(cGap(14)));
+
+        col.addView(cNote(t("desc.sessionhealWarn",
+                "边界（写死在代码里）：① 只处理你点选的那一条，没有「批量修复」这种东西；"
+              + "② 引擎在跑时不允许改写（内核可能正在写同一条会话），要先停止引擎；"
+              + "③ 改写前把原文件备份成 <会话文件>.corrupt-<时间>；"
+              + "④ 修完立刻复检：坏引用必须归零、行数与 JSON 合法性必须不变，否则如实报「部分完成」。")), cTop(cGap(12)));
+    }
+
+
+    /** 详情弹窗：把「会改什么」原样摆出来，再让用户去确认。 */
+    private void conSessionDetail(final SessionHeal.SessionInfo si) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("会话 ").append(si.id).append("\n");
+        sb.append(si.sizeText()).append(" · ").append(si.lines).append(" 行 · ")
+          .append(si.frames).append(" 个数据块\n\n");
+        sb.append("将把下面 ").append(si.badCount).append(" 处引用换成一行文字说明")
+          .append("（保留文件名与尺寸，不删消息、不动其他内容）：\n");
+        int shown = Math.min(si.bad.size(), 8);
+        for (int i = 0; i < shown; i++) {
+            sb.append("· ").append(si.bad.get(i).describe()).append("\n");
+        }
+        if (si.bad.size() > shown) sb.append("· …另外 ").append(si.bad.size() - shown).append(" 处同类问题\n");
+        sb.append("\n改写前会把原文件备份成同目录的 .corrupt-<时间>；")
+          .append("修完立刻复检：坏引用必须归零、行数与 JSON 合法性不变。");
+        conDialog("会话 " + conShortId(si.id), sb.toString(), "我明白，去确认", new Runnable() {
+            @Override public void run() { conSessionHealConfirm(si); }
+        }, "取消");
+    }
+
+    /** 引擎在跑时不允许改写会话（内核可能正在写同一条）。 */
+    private boolean conSessionHealBlockedByEngine() {
+        if (!conEngineRunning()) return false;
+        conDialog("先停止引擎",
+                "修复要改写会话文件，而引擎正在运行 —— 它可能同时在写同一条会话。\n\n"
+              + "请先回主控台点「休息一下」（停止引擎），再回来修复。"
+              + "这样做是为了不让一次修复把正在使用的会话写坏。",
+                "知道了", null, null);
+        return true;
+    }
+
+    /** 红框确认：真正会写盘的那一步（与主题动作同规格）。 */
+    private void conSessionHealConfirm(final SessionHeal.SessionInfo si) {
+        if (conSessionHealBlockedByEngine()) return;
+        StringBuilder sb = new StringBuilder();
+        sb.append("动作：只降级这一条会话里的坏附件引用（").append(si.badCount).append(" 处）\n");
+        sb.append("会话：").append(si.id).append("\n");
+        sb.append("位置：").append(si.file).append("\n\n");
+        sb.append("会做什么：\n");
+        sb.append("1. 先把原文件复制成 <会话文件>.corrupt-<时间>（失败就中止，一个字都不改）；\n");
+        sb.append("2. 只把那些坏掉的附件块换成文字说明（形如「【附件不可用】…」），其余字节原样保留；\n");
+        sb.append("3. 立刻复检：坏引用必须归零、行数与 JSON 合法性必须不变；\n");
+        sb.append("4. 写一条自愈账本（含动作清单与前后字节数）。\n\n");
+        sb.append("不会做什么：不删消息、不动别的会话、不批量扫描用户数据。");
+        conDialogDanger("只降级这条会话的坏附件", sb.toString(), "确认修复（先备份）", new Runnable() {
+            @Override public void run() { conSessionHealRun(si); }
+        }, "取消");
+    }
+
+    /** 真正执行（已经在上一步确认过）。 */
+    private void conSessionHealRun(final SessionHeal.SessionInfo si) {
+        if (conSessionHealingId != null) { conToast("已经有一个修复在跑"); return; }
+        if (conSessionHealBlockedByEngine()) return;
+        conSessionHealingId = si.id;
+        conToast("正在修复（先备份，再只降级坏引用）…");
+        renderConsole();
+        final File payload = payloadDir();
+        final File dshHome = new File(payload, "dshhome");
+        new Thread(new Runnable() { @Override public void run() {
+            final SessionHeal.HealResult hr = SessionHeal.heal(MainActivity.this, payload, dshHome, si.file, true);
+            try {
+                conLedgerWrite("session-heal", conSessionHealLedgerJson(si, hr));
+            } catch (Throwable ignored) {}
+            ui.post(new Runnable() { @Override public void run() {
+                conSessionHealingId = null;
+                conSessionLastHeal = hr;
+                consolePage = PAGE_SESSION_HEAL;
+                renderConsole();
+                StringBuilder sb = new StringBuilder();
+                sb.append(hr.headline()).append("\n");
+                if (hr.backup != null && hr.backup.length() > 0) {
+                    sb.append("\n原文件已备份：").append(new File(hr.backup).getName());
+                }
+                if (hr.applied) {
+                    sb.append("\n复检：坏引用 ").append(hr.badRefsAfter)
+                      .append(" · 行数 ").append(hr.linesBefore).append(" → ").append(hr.linesAfter)
+                      .append(" · JSON 损坏 ").append(hr.jsonBadAfter);
+                }
+                if (hr.refused != null && hr.refused.length() > 0) sb.append("\n\n").append(hr.refused);
+                conDialog(hr.ok ? "修复完成" : "修复结果", sb.toString(), "好", null, null);
+            }});
+        }}, "dsh-session-heal").start();
+    }
+
+    /** 写进自愈账本的内容（症状 → 判据 → 动作 → 前后字节 → 结果）。 */
+    private String conSessionHealLedgerJson(SessionHeal.SessionInfo si, SessionHeal.HealResult hr) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"trigger\":\"console\",\"kind\":\"session-attachment-degrade\",");
+        sb.append("\"symptom\":\"会话历史里有坏附件引用（每次请求都会复现）\",");
+        sb.append("\"session\":\"").append(conJsonEsc(si.id)).append("\",");
+        sb.append("\"sessionFile\":\"").append(conJsonEsc(si.file)).append("\",");
+        sb.append("\"badRefsBefore\":").append(si.badCount).append(",");
+        sb.append("\"attRefs\":").append(si.attRefs).append(",");
+        sb.append("\"ok\":").append(hr.ok).append(",");
+        sb.append("\"applied\":").append(hr.applied).append(",");
+        sb.append("\"refused\":\"").append(conJsonEsc(hr.refused)).append("\",");
+        sb.append("\"verdict\":\"").append(conJsonEsc(hr.verdict)).append("\",");
+        sb.append("\"backup\":\"").append(conJsonEsc(hr.backup)).append("\",");
+        sb.append("\"framesRewritten\":").append(hr.framesRewritten).append(",");
+        sb.append("\"bytesBefore\":").append(hr.bytesBefore).append(",");
+        sb.append("\"bytesAfter\":").append(hr.bytesAfter).append(",");
+        sb.append("\"badRefsAfter\":").append(hr.badRefsAfter).append(",");
+        sb.append("\"linesBefore\":").append(hr.linesBefore).append(",");
+        sb.append("\"linesAfter\":").append(hr.linesAfter).append(",");
+        sb.append("\"verifiedBy\":\"session-heal.mjs 复检：坏引用归零 + 行数与 JSON 合法性不变\",");
+        StringBuilder acts = new StringBuilder("[");
+        for (int i = 0; i < hr.actions.size() && i < 50; i++) {
+            if (i > 0) acts.append(",");
+            acts.append("\"").append(conJsonEsc(hr.actions.get(i))).append("\"");
+        }
+        acts.append("]");
+        sb.append("\"actions\":").append(acts);
+        sb.append("}");
+        return sb.toString();
+    }
+
+    /** 跑自检（后台线程；全量校验要算 sha256，绝不能在主线程做）。 */
+    private void conRunSelfCheck(final boolean quick) {
+        if (conSelfCheckRunning) return;
+        conSelfCheckRunning = true;
+        conSelfCheckResult = null;
+        conSelfCheckProgress[0] = 0;
+        conSelfCheckProgress[1] = 0;
+        conSelfCheckPhase = quick ? "比对大小" : "校验内容（sha256）";
+        conSelfCheckCancel = false;
+        conSelfCheckStart = System.currentTimeMillis();
+        conToast(quick ? "开始快速自检（只比大小）…" : "开始全量校验（逐个 sha256，可能要 1~3 分钟）…");
+        renderConsole();
+        // 进度刷新：后台只写数据，这里按 ~400ms 节流重绘（不刷屏、也不拖慢校验）
+        final Runnable ticker = new Runnable() {
+            @Override public void run() {
+                if (!conSelfCheckRunning) return;
+                if (conSelfCheckCancel) return;
+                if (consoleVisible && consolePage == PAGE_SELFCHECK) renderConsole();
+                ui.postDelayed(this, 400);
+            }
+        };
+        ui.postDelayed(ticker, 400);
+        final File root = conKernelRoot();
+        new Thread(new Runnable() { @Override public void run() {
+            KernelSelfCheck.Result r = null;
+            try {
+                r = KernelSelfCheck.run(MainActivity.this, root, quick, new KernelSelfCheck.Progress() {
+                    @Override public void onProgress(String phase, int done, int total) {
+                        conSelfCheckProgress[0] = done;
+                        if (total > 0) conSelfCheckProgress[1] = total;
+                        if (phase != null && phase.length() > 0) conSelfCheckPhase = phase;
+                    }
+                    @Override public boolean cancelled() { return conSelfCheckCancel; }
+                });
+            } catch (Throwable t) {
+                r = new KernelSelfCheck.Result();
+                r.verdict = "fail";
+                r.headline = "自检抛异常：" + t;
+            }
+            final KernelSelfCheck.Result fr = r;
+            // 账本：自检结果本身就是证据（依据什么判断、结论是什么）
+            try {
+                conLedgerWrite("selfcheck", "{\"trigger\":\"console\",\"result\":" + fr.toLedgerJson(quick ? "quick" : "full", String.valueOf(root)) + "}");
+            } catch (Throwable ignored) {}
+            conSelfCheckRunning = false;
+            conSelfCheckResult = fr;
+            ui.post(new Runnable() { @Override public void run() {
+                consolePage = PAGE_SELFCHECK;
+                renderConsole();
+                conToast(uiPlain("自检完成：" + fr.verdict + "（缺失 " + fr.missing + " / 不符 " + fr.mismatch + "）"));
+            }});
+        }}, "dsh-selfcheck").start();
+    }
+
+    /** 看账本：弹窗列出最近几条（自绘弹窗，与既有风格一致）。 */
+    private void conShowLedger() {
+        try {
+            File[] fs = conHealLedgerDir().listFiles();
+            if (fs == null || fs.length == 0) { conToast("账本还空着：跑一次自检就会写下第一条"); return; }
+            java.util.Arrays.sort(fs, new java.util.Comparator<File>() {
+                @Override public int compare(File a, File b) { return Long.compare(b.lastModified(), a.lastModified()); }
+            });
+            java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US);
+            StringBuilder sb = new StringBuilder();
+            int shown = 0;
+            for (int i = 0; i < fs.length && shown < 10; i++) {
+                sb.append("· ").append(f.format(new java.util.Date(fs[i].lastModified()))).append("  ").append(fs[i].getName()).append("\n");
+                shown++;
+            }
+            sb.append("\n共 ").append(fs.length).append(" 条。目录：/sdcard/").append(pkgRoot()).append("/heal-ledger/");
+            conDialog("自愈账本（最近 " + shown + " 条）", sb.toString(), "好", null, null);
+        } catch (Throwable t) {
+            conToast("账本读取失败：" + t.getMessage());
+        }
+    }
+
+    /** 配置快照（白名单文件的只读副本）—— 唯一会写盘的动作，所以走确认框。 */
+    private void conSnapshotConfigConfirm() {
+        conDialog("配置快照",
+                "把内核配置里最容易被改坏、也最需要能回退的几个文件「另存一份副本」（不动原文件）：\n\n"
+              + "· dshhome/profiles/web/cordis.patch.yml（插件树/开关）\n"
+              + "· dshhome/profiles/web/package.json（插件注册表）\n"
+              + "· dshhome/settings.yaml（界面设置）\n\n"
+              + "存到 /sdcard/" + pkgRoot() + "/heal-ledger/config-snapshot-<时间>/，并写一条账本。",
+                "建立快照",
+                new Runnable() { @Override public void run() { conSnapshotConfigNow(); } },
+                "取消");
+    }
+
+    private void conSnapshotConfigNow() {
+        try {
+            if (dshrootDir == null) { conToast("内核树还没就位，先解压"); return; }
+            File dshhome = new File(dshrootDir.getParentFile(), "dshhome");
+            if (!dshhome.isDirectory()) { conToast("找不到 dshhome： " + dshhome); return; }
+            java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US);
+            File dir = new File(conHealLedgerDir(), "config-snapshot-" + f.format(new java.util.Date()));
+            dir.mkdirs();
+            String[] rels = {
+                    "profiles/web/cordis.patch.yml",
+                    "profiles/web/package.json",
+                    "settings.yaml",
+            };
+            StringBuilder items = new StringBuilder("[");
+            int n = 0;
+            for (int i = 0; i < rels.length; i++) {
+                File src = new File(dshhome, rels[i]);
+                if (!src.isFile()) continue;
+                String sha = sha256Of(src);
+                File dst = new File(dir, rels[i].replace('/', '_'));
+                java.io.FileInputStream in = new java.io.FileInputStream(src);
+                java.io.FileOutputStream out = new java.io.FileOutputStream(dst);
+                byte[] buf = new byte[16384];
+                int k;
+                while ((k = in.read(buf)) > 0) out.write(buf, 0, k);
+                in.close();
+                out.close();
+                if (n > 0) items.append(",");
+                items.append("{\"path\":\"").append(rels[i]).append("\",\"bytes\":").append(src.length())
+                     .append(",\"sha256\":\"").append(sha).append("\"}");
+                n++;
+            }
+            items.append("]");
+            conLedgerWrite("config-snapshot", "{\"dir\":\"" + dir.getName() + "\",\"files\":" + items + "}");
+            conToast("已建立配置快照（" + n + " 个文件）→ " + dir.getName());
+            renderConsole();
+        } catch (Throwable t) {
+            conToast("快照失败：" + t.getMessage());
+        }
+    }
+
+    private void renderConsoleLog() {
+        LinearLayout col = consoleBody;
+        col.addView(conBackRow(t("card.log", "日志")));
+        col.addView(cNote(t("desc.logPage",
+                "「查看」直接看末尾 200 行；「分享」调用系统分享（QQ / 微信 / 邮件…都能选），"
+              + "正文里带完整日志路径与末尾 400 行。")), cTop(cGap(8)));
+
+        col.addView(cGrpTitle(t("title.grpLogFile", "日志文件")), cTop(cGap(16)));
+        LinearLayout box = cCardBox();
+        box.addView(cCardRow(t("btn.log.view", "查看日志"), conLogSummary(), "", true, new View.OnClickListener() {
+            @Override public void onClick(View x) { conViewLog(); }
+        }));
+        col.addView(box, cTop(cGap(8)));
+
+        LinearLayout acts = new LinearLayout(this);
+        acts.setOrientation(LinearLayout.HORIZONTAL);
+        Button e = cButton(t("btn.log.share", "分享"), true);
+        e.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) { conShareLog(); } });
+        acts.addView(e, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button v = cButton(t("btn.log.view", "查看日志"), false);
+        v.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View x) { conViewLog(); } });
+        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        vlp.leftMargin = dp(8);
+        acts.addView(v, vlp);
+        col.addView(acts, cTop(cGap(12)));
+
+        // v1.19.6：清空日志是**不可逆**的，按统一版式单独成块、离手远（原来紧跟在操作区下面一行）
+        col.addView(cGrpTitle(t("title.grpLogCare", "维护")), cTop(cGap(20)));
+        LinearLayout box2 = cCardBox();
+        box2.addView(cCardRow(t("btn.log.clear", "清空日志"),
+                t("desc.logClear", "只清日志，不影响正在运行的引擎；之后的新日志会继续写入"),
+                t("btn.log.clearShort", "清空"), cRed(), true, new View.OnClickListener() {
+            @Override public void onClick(View x) { conClearLog(); }
+        }));
+        col.addView(box2, cTop(cGap(8)));
     }
 
     private File conLogFile() { return new File(getFilesDir(), "dsh-web.log"); }
@@ -9549,7 +11947,10 @@ public class MainActivity extends Activity {
             tv.setTypeface(android.graphics.Typeface.MONOSPACE);
             tv.setTextIsSelectable(true);
             ScrollView sv = new ScrollView(this);
-            sv.setBackground(cShape(isDark() ? 0xFF0F1524 : 0xFFF2F4F8, 0, 0, 6));
+            // v1.19.6 修复：这里原来用 isDark()（系统偏好），而正文文字走的是主题色 ——
+            // 主题写 appearance.dark:"dark" 而手机是浅色时，就是"浅底 + 浅字"，正文看不见。
+            // 同文件另外两处同样的写法（主题诊断 L4922 / …L5872）本来就是 conDark()，属漏改。
+            sv.setBackground(cShape(conDark() ? 0xFF0F1524 : 0xFFF2F4F8, 0, 0, 6));
             sv.setPadding(dp(12), dp(12), dp(12), dp(12));
             sv.addView(tv);
             sv.setLayoutParams(new LinearLayout.LayoutParams(
@@ -9581,7 +11982,7 @@ public class MainActivity extends Activity {
         } catch (Throwable t) { return "日志读取失败：" + t.getMessage(); }
     }
 
-    /** v1.13：以**文件**形式分享日志（原来是纯文字）。
+    /** v1.13：以文件形式分享日志（原来是纯文字）。
      * 准备好 dsh-web.log + 诊断文件 → 拷到 cache/share → 用 LogShareProvider 的 content:// URI 发出去。 */
     private void conShareLog() {
         conToast("正在准备日志文件…");
@@ -9695,9 +12096,9 @@ public class MainActivity extends Activity {
     //   dsh: failed to parse overlay <...>/profiles/web/cordis.patch.yml: YAMLException: ...
     // 而「修它」又必须先把引擎跑起来（Web UI 与 AI 都靠引擎）—— 形成死结。
     //
-    // 安全模式：把 profile 的**用户层**（可能被写坏的那些）整体旁置到旁边的
+    // 安全模式：把 profile 的「用户层」（可能被写坏的那些）整体旁置到旁边的
     // web.userlayer-<时间>/，再从 APK 里恢复出厂 profile 文件。
-    // 用户数据（sessions / storages / .credentials.yaml / settings.yaml / 工作区绑定）**一律不动**。
+    // 用户数据（sessions / storages / .credentials.yaml / settings.yaml / 工作区绑定）「一律不动」。
     // 引擎跑起来后，AI 可以直接读旁置目录里的坏文件去定位问题；修好后「退出安全模式」还回去。
 
     /** profile 目录（web）。 */
@@ -9883,11 +12284,19 @@ public class MainActivity extends Activity {
     /** 要导出/还原的用户数据根（相对 payload/dshhome）。 */
     /** 导出备份时被跳过的文件数（断链 / 读不了）——不静默，导出结果里如实报出来。 */
     private int backupSkipped = 0;
+    /** 本次导入里属于附件的条目数（旧备份没有这一块 → 导入后提示去跑一次「会话修复」）。 */
+    private int backupImportedAttachments = 0;
+    /** 本次导入里属于「App 私有工作区」（files/ 前缀）的条目数。 */
+    private int backupWorkspaceFiles = 0;
     /** v1.17.9 内核树自愈：本次全量同步清掉的孤儿文件数（控制台会如实提示）。 */
     private volatile int lastHealOrphans = 0;
 
+    // ⚠ v1.19.4：必须含 "attachments" —— 会话历史里存的是附件**引用**（sha256 指向
+    //   <dshhome>/attachments/v1/objects/…），实体不跟着走的话，「导出 → 清数据 → 导入」
+    //   之后每一条带图的会话都会变成「附件实体不存在」、每次请求都失败
+    //   （正是「会话修复」要治的那种病；备份功能不该批量制造它）。
     private static final String[] BACKUP_ROOTS = {
-            "sessions", "storages", ".credentials.yaml", "settings.yaml",
+            "sessions", "storages", "attachments", ".credentials.yaml", "settings.yaml",
             "settings.yaml.imported", "cordis.patch.yml", ".anonymous-user-id"
     };
 
@@ -9950,6 +12359,11 @@ public class MainActivity extends Activity {
                 if (!src.exists()) continue;
                 n += zipAdd(zos, src, "dshhome/profiles/web/" + name, buf);
             }
+            // v1.19.4：App 私有目录里的「工作区」—— **AI 的默认工作目录就是 <filesDir>**
+            // （真实会话里记录的 cwd 是 /data/user/0/<pkg>/files），它在 payload 之外，
+            // 原来的白名单一个字都没覆盖到 → 「导出 → 清数据 / 换机 → 导入」会把 AI 写在那里的东西全丢掉。
+            // 排除 payload（内核树 + dshhome，dshhome 已单独备份）与 tools（随包脚本，可重建）。
+            n += zipAddFilesExcept(zos, getFilesDir(), "files", buf);
         } finally { try { zos.close(); } catch (Throwable ignored) {} }
         return n;
     }
@@ -9961,6 +12375,26 @@ public class MainActivity extends Activity {
         for (String k : BACKUP_PREF_I) { sb.append("I\t").append(k).append('\t').append(p.getInt(k, 0)).append('\n'); }
         for (String k : BACKUP_PREF_B) { sb.append("B\t").append(k).append('\t').append(p.getBoolean(k, false)).append('\n'); }
         return sb.toString();
+    }
+
+    /**
+     * 把 <filesDir> 下**除 payload / tools 之外**的内容写进 zip（entry 前缀 files/）。
+     * 为什么要单列一个方法：这两个子目录一个是被单独备份的内核+用户数据、一个是随包脚本，都不该重复进包。
+     * @returns 写入的文件数。
+     */
+    private int zipAddFilesExcept(java.util.zip.ZipOutputStream zos, File dir, String prefix, byte[] buf) throws Exception {
+        int n = 0;
+        File[] kids = dir.listFiles();
+        if (kids == null) return 0;
+        java.util.Arrays.sort(kids, new java.util.Comparator<File>() {
+            @Override public int compare(File a, File b) { return a.getName().compareTo(b.getName()); }
+        });
+        for (File k : kids) {
+            String name = k.getName();
+            if ("payload".equals(name) || "tools".equals(name)) continue;
+            n += zipAdd(zos, k, prefix + "/" + name, buf);
+        }
+        return n;
     }
 
     private void zipAddBytes(java.util.zip.ZipOutputStream zos, String name, byte[] data) throws Exception {
@@ -10043,8 +12477,15 @@ public class MainActivity extends Activity {
                 return;
             }
             final int n = files;
+            final int attN = backupImportedAttachments;
+            final int wsN = backupWorkspaceFiles;
             ui.post(new Runnable() { @Override public void run() {
-                conToast("已导入 " + n + " 个文件，正在重启引擎…");
+                String extra = attN > 0
+                        ? "（含 " + attN + " 个附件实体"
+                        : "（这份备份里没有附件实体 —— 若会话里的图片打不开，去「会话修复」跑一次扫描，"
+                          + "它只会把坏掉的那几条消息降级成文字";
+                extra += (wsN > 0 ? "；含 " + wsN + " 个工作区文件" : "；没有工作区文件") + "）";
+                conToast("已导入 " + n + " 个文件" + extra + "，正在重启引擎…");
                 refreshConsole();
                 engineStoppedByUser = false; engineStartAborted = false;
                 conEngineClick();
@@ -10058,6 +12499,8 @@ public class MainActivity extends Activity {
         byte[] buf = new byte[64 * 1024];
         int n = 0;
         boolean sawManifest = false;
+        backupImportedAttachments = 0;
+        backupWorkspaceFiles = 0;
         InputStream raw = getContentResolver().openInputStream(uri);
         if (raw == null) throw new IOException("无法读取所选文件");
         ZipInputStream zis = new ZipInputStream(raw);
@@ -10071,6 +12514,20 @@ public class MainActivity extends Activity {
                     java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
                     int r; while ((r = zis.read(buf)) > 0) bos.write(buf, 0, r);
                     applyBackupPrefs(new String(bos.toByteArray(), "UTF-8"));
+                    zis.closeEntry();
+                    continue;
+                }
+                if (name.startsWith("dshhome/attachments/")) backupImportedAttachments++;
+                if (name.startsWith("files/")) {
+                    // App 私有目录里的工作区（AI 的默认工作目录）：写回 <filesDir>/<相对路径>
+                    File out = new File(getFilesDir(), name.substring("files/".length()));
+                    File parent = out.getParentFile();
+                    if (parent != null && !parent.exists() && !parent.mkdirs()) throw new IOException("mkdir failed: " + parent);
+                    FileOutputStream fos = new FileOutputStream(out);
+                    try { int r; while ((r = zis.read(buf)) > 0) fos.write(buf, 0, r); }
+                    finally { fos.close(); }
+                    backupWorkspaceFiles++;
+                    n++;
                     zis.closeEntry();
                     continue;
                 }

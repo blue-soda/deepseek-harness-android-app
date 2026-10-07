@@ -21,9 +21,9 @@ IMG_EXT = (".png", ".jpg", ".jpeg", ".webp")
 
 COLOR_RE = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 COLOR_KEYS = ("bg", "card", "text", "sub", "line", "accent", "green", "red", "track")
-CARD_IDS = ("extract", "engine", "rescue", "actions", "perm", "plugins", "log", "update", "theme")
+CARD_IDS = ("extract", "engine", "rescue", "actions", "browser", "perm", "plugins", "log", "update", "theme", "selfcheck")
 # 不可移除：救援面
-KEEP_CARDS = ("rescue", "theme")
+KEEP_CARDS = ("rescue", "theme", "selfcheck")  # 隐藏了就没法自救的三个入口
 NODE_TYPES = ("row", "column", "card", "text", "button", "image", "spacer", "divider", "builtin")
 BUILTIN_IDS = (
     "extract.block", "extract.status", "extract.detail",
@@ -46,7 +46,14 @@ errors, warnings, notes = [], [], []
 
 def err(path, msg): errors.append({"path": path, "msg": msg})
 def warn(path, msg): warnings.append({"path": path, "msg": msg})
-def note(msg): notes.append(msg)
+def note(msg, msg2=None):
+    # v1.19.6 修：历史上这里只收一个参数，但 check_config 里有一处按 err/warn 的签名传了两个
+    # （`$.layout.style`）→ 任何写了 layout.style 的主题包都会让校验器**直接 TypeError 崩掉**
+    # （既不是"通过"也不是"不通过"，而是一段 Traceback）。现在两种签名都收。
+    if msg2 is not None:
+        notes.append(f"{msg}：{msg2}")
+    else:
+        notes.append(msg)
 
 
 def is_hex(v): return isinstance(v, str) and bool(COLOR_RE.match(v))
@@ -188,7 +195,7 @@ def check_config(cfg):
             err("$.layout", "应为对象")
         else:
             for k in lay:
-                if k not in ("order", "hidden", "defaultPage", "detailOpen", "compact", "pages"):
+                if k not in ("order", "hidden", "defaultPage", "detailOpen", "compact", "pages", "style"):
                     err("$.layout", f'未知字段 "{k}"')
             for key in ("order", "hidden"):
                 arr = lay.get(key)
@@ -202,6 +209,13 @@ def check_config(cfg):
                         warn(f"$.layout.hidden[{i}]", f'"{cid}" 是救援面的一部分，不可移除 → 会被忽略')
             if "defaultPage" in lay and not is_num(lay["defaultPage"], 0, 9):
                 err("$.layout.defaultPage", "应为 0~9 的整数")
+            sty = lay.get("style")
+            if sty is not None and sty not in ("classic", "simple"):
+                err("$.layout.style", f'只能是 "classic" 或 "simple"（当前 {sty!r}）')
+            elif sty == "classic":
+                # v1.19.6：界面上不再提供风格开关，改配置文件是**唯一**的切换方式
+                note('$.layout.style', 'classic = 旧的卡片平铺界面；v1.19.6 起界面上已无风格按钮，'
+                                       '要改回去只能删掉这一行（或改成 "simple"）')
             pgs = lay.get("pages")
             if pgs is not None:
                 if not isinstance(pgs, list) or not pgs:

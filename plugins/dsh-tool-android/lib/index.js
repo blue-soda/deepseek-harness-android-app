@@ -80,7 +80,14 @@ function appRequest(path, params) {
       ? "?" + Object.entries(params).map(([k, v]) =>
           encodeURIComponent(k) + "=" + encodeURIComponent(v)).join("&")
       : "";
-    const req = httpGet({ host: "127.0.0.1", port: appPort(), path: path + qs, timeout: 8000 }, (res) => {
+    const req = httpGet({
+      host: "127.0.0.1",
+      port: appPort(),
+      path: path + qs,
+      timeout: 8000,
+      // v1.18.0：App 侧本地服务要校验调用方
+      headers: { "X-DSH-Token": process.env.APP_LOCAL_TOKEN || "" }
+    }, (res) => {
       let data = "";
       res.setEncoding("utf8");
       res.on("data", (c) => { data += c; if (data.length > 65536) req.destroy(); });
@@ -113,7 +120,9 @@ function appPost(path, obj, timeoutMs) {
       timeout: timeoutMs || 8000,
       headers: {
         "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(payload)
+        "Content-Length": Buffer.byteLength(payload),
+        // v1.18.0：本地服务鉴权令牌
+        "X-DSH-Token": process.env.APP_LOCAL_TOKEN || ""
       }
     }, (res) => {
       let data = "";
