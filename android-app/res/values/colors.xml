@@ -36,4 +36,9 @@
     <color name="panel_bg">#E61A2140</color>
     <!-- 应用图标（dsh-desktop.ico）自适应图标的背景色：纯白，与图像自身底色一致 -->
     <color name="ic_launcher_background">#FFFFFF</color>
+
+    <!-- v1.21：壳的「淡色按钮 / 选中态」底色与描边（浅色主题）。
+         用户反馈：原来用「强调色混白」得到的浅色偏紫；这里改用浅蓝为基色，只叠一点点强调色。 -->
+    <color name="shell_tint_light">#E8F1FE</color>
+    <color name="shell_tint_stroke_light">#C7DAFB</color>
 </resources>

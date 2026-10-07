@@ -5971,6 +5971,18 @@ public class MainActivity extends Activity {
         return Color.argb(255, r, g, bl);
     }
 
+    /** v1.21（用户反馈）：浅色下原来用「强调色混白」得到的淡色偏紫；改成以浅蓝为基色、只叠一点点强调色。 */
+    private int shellTintFill() {
+        if (conDark()) return blendColor(cAccent(), cCard(), 0.24f);
+        return blendColor(cAccent(), getColor(R.color.shell_tint_light), 0.10f);
+    }
+
+    /** v1.21：与 {@link #shellTintFill()} 搭配的描边色。 */
+    private int shellTintStroke() {
+        if (conDark()) return blendColor(cAccent(), cCard(), 0.38f);
+        return getColor(R.color.shell_tint_stroke_light);
+    }
+
     /** 圆角形状（替代系统 Button/ProgressBar 自带背景，避免 ColorOS 上灰底、裁字、颜色不对）。 */
     private android.graphics.drawable.GradientDrawable cShape(int fill, int stroke, int strokeW, int radius) {
         android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
@@ -6622,10 +6634,8 @@ public class MainActivity extends Activity {
             b.setPadding(dp(12), dp(9), dp(12), dp(9));
             // v1.21：选中态也用淡色 tonal（与 cButton 同一套），不再用实心强调色块
             b.setTextColor(on ? cAccent() : cSub());
-            b.setBackground(cShape(
-                    on ? blendColor(cAccent(), cCard(), conDark() ? 0.24f : 0.14f) : cTrack(),
-                    on ? blendColor(cAccent(), cCard(), conDark() ? 0.38f : 0.22f) : cLine(),
-                    1, 10));
+            b.setBackground(cShape(on ? shellTintFill() : cTrack(),
+                    on ? shellTintStroke() : cLine(), 1, 10));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
             if (i > 0) lp.leftMargin = dp(8);
@@ -6658,12 +6668,9 @@ public class MainActivity extends Activity {
         // · 主按钮 = 强调色按比例混进卡片底色（浅色 14% / 深色 24%），文字用强调色 + 淡描边；
         // · 次按钮 = 纯文字按钮（无填充、无描边），文字压到次级色。
         // 整屏因此不再出现大块饱和蓝，深浅两套都更轻。
-        boolean dark = conDark();
         if (primary) {
-            int fill = blendColor(cAccent(), cCard(), dark ? 0.24f : 0.14f);
-            int stroke = blendColor(cAccent(), cCard(), dark ? 0.38f : 0.22f);
             b.setTextColor(cAccent());
-            b.setBackground(cShape(fill, stroke, 1, 10));
+            b.setBackground(cShape(shellTintFill(), shellTintStroke(), 1, 10));
         } else {
             b.setTextColor(cSub());
             b.setBackground(cShape(0x00000000, 0x00000000, 0, 10));
@@ -9900,7 +9907,10 @@ public class MainActivity extends Activity {
 
     // ---------- 权限页 ----------
     private String conPermSummary() {
-        String[] ids = {"storage", "notify", "overlay", "battery", "root", "shizuku", "a11y", "applist", "install"};
+        // v1.21（用户反馈）：这里原来只有 9 项，而首启引导有 11 页 —— 两处口径不一致。
+        // 现在把引导里出现、权限页缺的三项补齐：存储权限（旧版 Android）、修改系统设置、使用情况访问。
+        String[] ids = {"legacy", "storage", "settings", "usage", "notify", "overlay", "battery",
+                "root", "shizuku", "a11y", "applist", "install"};
         int ok = 0;
         for (int i = 0; i < ids.length; i++) if (conPermOk(ids[i])) ok++;
         return "已授权 " + ok + " / " + ids.length;
@@ -9926,6 +9936,26 @@ public class MainActivity extends Activity {
             if ("a11y".equals(id)) return conA11yEnabled();
             if ("applist".equals(id)) return conAppListOk();
             if ("install".equals(id)) return Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls();
+            // ↓ v1.21（用户反馈）：补齐"引导页有、权限页原先没有"的三项，两处口径一致
+            if ("legacy".equals(id)) {          // 存储权限：Android 10 及以下才是独立权限
+                if (Build.VERSION.SDK_INT >= 30) return true;   // 11+ 由「所有文件访问」统一覆盖
+                return checkSelfPermission("android.permission.READ_EXTERNAL_STORAGE") == PackageManager.PERMISSION_GRANTED
+                    && checkSelfPermission("android.permission.WRITE_EXTERNAL_STORAGE") == PackageManager.PERMISSION_GRANTED;
+            }
+            if ("settings".equals(id)) return Build.VERSION.SDK_INT < 23 || Settings.System.canWrite(this);
+            if ("usage".equals(id)) {
+                android.app.AppOpsManager ops = (android.app.AppOpsManager) getSystemService(APP_OPS_SERVICE);
+                if (ops == null) return false;
+                int mode;
+                if (Build.VERSION.SDK_INT >= 29) {
+                    mode = ops.unsafeCheckOpNoThrow(android.app.AppOpsManager.OPSTR_GET_USAGE_STATS,
+                            android.os.Process.myUid(), getPackageName());
+                } else {
+                    mode = ops.checkOpNoThrow(android.app.AppOpsManager.OPSTR_GET_USAGE_STATS,
+                            android.os.Process.myUid(), getPackageName());
+                }
+                return mode == android.app.AppOpsManager.MODE_ALLOWED;
+            }
         } catch (Throwable t) { return false; }
         return false;
     }
@@ -10028,9 +10058,14 @@ public class MainActivity extends Activity {
 
         col.addView(cGrpTitle(t("title.grpPermBasic", "基本权限")), cTop(cGap(16)));
         LinearLayout c1 = cCardBox();
+        // v1.21（用户反馈）：权限页原来只有 9 项、引导页有 11 页 —— 口径不一致。
+        // 这里按**引导页的顺序**补齐三项：存储权限（旧版 Android）/ 修改系统设置 / 使用情况访问。
+        addPermRow(c1, "存储权限", "读写手机文件（Android 10 及以下需要；11+ 由上面「所有文件访问」覆盖）", "legacy");
         addPermRow(c1, "所有文件访问", "读写 /sdcard，AI 才能碰你的文件", "storage");
         addPermRow(c1, "通知", "AI 发通知 / 提醒", "notify");
         addPermRow(c1, "悬浮窗", "黑鲸鱼悬浮窗 / 虚拟屏预览", "overlay");
+        addPermRow(c1, "修改系统设置", "AI 调音量 / 亮度 / 铃声这类系统开关", "settings");
+        addPermRow(c1, "使用情况访问", "AI 查「今天用了多久某个 App」", "usage");
         addPermRow(c1, "电池优化", "设为「不限制」，否则切后台引擎会被杀", "battery");
         col.addView(c1, cTop(cGap(8)));
 
@@ -10170,6 +10205,20 @@ public class MainActivity extends Activity {
                 }
                 return;
             }
+            // ↓ v1.21：与引导页同样的三项目标页
+            if ("legacy".equals(id)) {
+                if (Build.VERSION.SDK_INT >= 30) { conToast("Android 11 及以上由「所有文件访问」统一管理"); return; }
+                requestPermissions(new String[]{
+                        "android.permission.READ_EXTERNAL_STORAGE",
+                        "android.permission.WRITE_EXTERNAL_STORAGE"}, REQ_STORAGE);
+                return;
+            }
+            if ("settings".equals(id)) {
+                if (Build.VERSION.SDK_INT < 23) { conToast("本机系统无需单独授权"); return; }
+                openSystemSetting(Settings.ACTION_MANAGE_WRITE_SETTINGS);
+                return;
+            }
+            if ("usage".equals(id)) { openSystemSetting(Settings.ACTION_USAGE_ACCESS_SETTINGS); return; }
         } catch (Throwable t) {
             conToast("打不开系统页：" + t.getMessage());
         }
