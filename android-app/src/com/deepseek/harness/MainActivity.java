@@ -3770,8 +3770,11 @@ public class MainActivity extends Activity {
                         // v1.19：免特权启动应用（launcher Intent；不走 Su/Shizuku）
                         respBody = handleAppRequest(body.toString());
                     } else if (path.startsWith("/openurl")) {
-                        // v1.22：免特权打开 URL / 深链（ACTION_VIEW；不走 Su/Shizuku）
+                        // v1.22：免特权打开 URL / 深链 / 通用 Intent（不走 Su/Shizuku）
                         respBody = handleOpenUrlRequest(body.toString());
+                    } else if (path.startsWith("/apk")) {
+                        // v1.22：免特权查看 / 解包已安装应用的 APK（PackageManager + java.util.zip）
+                        respBody = handleApkRequest(body.toString());
                     } else if (path.startsWith("/overlay")) {
                         respBody = handleOverlayRequest(path, body.toString());
                     } else if (path.startsWith("/status")) {
@@ -3953,6 +3956,121 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * POST /apk {"action":"path|list|extract","package":"…","entry":"…","prefix":"…","out_dir":"…","limit":N,"token":"…"}
+     * v1.22 新增，**免特权**（PackageManager 给 sourceDir；java.util.zip.ZipFile 读包内条目）。
+     *
+     * 为什么放 App 侧：① Java 自带 ZipFile，不依赖设备上有没有 unzip；
+     * ② 复盘里那位 agent 是手搓 `pm path` + `unzip` 才挖到 APK 里的 JS bundle 与接口表 —— 这是
+     *    高价值的侦查入口，值得一等公民化（列条目 / 解单个文件 / 按前缀批量解）。
+     * 安全边界：只读已安装应用自己的 APK；解包必须给 out_dir（且限制在我们能写的位置）；
+     *          条目数有上限，避免把巨型 APK 全量拉出来。
+     */
+    private String handleApkRequest(String raw) {
+        try {
+            if (!localTokenOk(raw)) return jsonErr("token 校验失败（该接口仅限本应用引擎调用）");
+            String action = jsonField(raw, "action").trim();
+            if (action.isEmpty()) action = "path";
+            String pkg = jsonField(raw, "package").trim();
+            if (pkg.isEmpty()) return jsonErr("缺少 package 参数（可用 android_apps 查包名）");
+            android.content.pm.ApplicationInfo ai;
+            try {
+                ai = getPackageManager().getApplicationInfo(pkg, 0);
+            } catch (Throwable t) {
+                return jsonErr("找不到该应用：" + pkg);
+            }
+            String apk = ai.sourceDir;
+            org.json.JSONObject o = new org.json.JSONObject();
+            if ("path".equals(action)) {
+                o.put("ok", true);
+                o.put("package", pkg);
+                o.put("apk", apk);
+                o.put("sizeBytes", new java.io.File(apk).length());
+                o.put("label", String.valueOf(getPackageManager().getApplicationLabel(ai)));
+                return o.toString();
+            }
+            if (!"list".equals(action) && !"extract".equals(action)) {
+                return jsonErr("action 需要 path / list / extract");
+            }
+            int limit = 2000;
+            try { String s = jsonField(raw, "limit").trim(); if (!s.isEmpty()) limit = Math.min(20000, Math.max(1, Integer.parseInt(s))); } catch (Throwable ignored) {}
+            if ("list".equals(action)) {
+                java.util.zip.ZipFile zf = new java.util.zip.ZipFile(apk);
+                org.json.JSONArray arr = new org.json.JSONArray();
+                StringBuilder flat = new StringBuilder();
+                int n = 0;
+                try {
+                    java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zf.entries();
+                    while (en.hasMoreElements() && n < limit) {
+                        java.util.zip.ZipEntry e = en.nextElement();
+                        n++;
+                        org.json.JSONObject it = new org.json.JSONObject();
+                        it.put("name", e.getName());
+                        it.put("size", e.getSize());
+                        if (n <= 300) arr.put(it);           // 结构化最多 300 条，其余用扁平文本给
+                        flat.append(e.getName()).append("  ").append(e.getSize()).append('\n');
+                    }
+                } finally { zf.close(); }
+                o.put("ok", true);
+                o.put("package", pkg);
+                o.put("apk", apk);
+                o.put("total", n);
+                o.put("truncated", n >= limit);
+                o.put("entries", arr);
+                String s = flat.toString();
+                o.put("entriesText", s.length() > 60000 ? s.substring(0, 60000) : s);
+                o.put("hint", "用 action=extract + entry=<包内路径> 取出单个文件；JS bundle / 接口表通常在 assets/ 下。");
+                return o.toString();
+            }
+            // extract
+            String entry = jsonField(raw, "entry").trim();
+            String prefix = jsonField(raw, "prefix").trim();
+            if (entry.isEmpty() && prefix.isEmpty()) return jsonErr("extract 需要 entry（单个包内路径）或 prefix（前缀，如 assets/）");
+            String outDir = jsonField(raw, "out_dir").trim();
+            if (outDir.isEmpty()) outDir = new java.io.File(getFilesDir(), "apk-extract").getAbsolutePath();
+            java.io.File dir = new java.io.File(outDir);
+            if (!dir.exists() && !dir.mkdirs()) return jsonErr("无法创建输出目录：" + outDir);
+            java.util.zip.ZipFile zf = new java.util.zip.ZipFile(apk);
+            org.json.JSONArray files = new org.json.JSONArray();
+            int copied = 0;
+            int totalBytes = 0;
+            try {
+                java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zf.entries();
+                while (en.hasMoreElements() && copied < 200) {
+                    java.util.zip.ZipEntry e = en.nextElement();
+                    if (e.isDirectory()) continue;
+                    boolean match = !entry.isEmpty() ? e.getName().equals(entry) : e.getName().startsWith(prefix);
+                    if (!match) continue;
+                    // 防目录穿越：条目名里不允许 ..，且目标必须落在 dir 内
+                    String name = e.getName().replace("..", "_");
+                    java.io.File out = new java.io.File(dir, name);
+                    if (!out.getAbsolutePath().startsWith(dir.getAbsolutePath())) continue;
+                    java.io.File parent = out.getParentFile();
+                    if (parent != null && !parent.exists()) parent.mkdirs();
+                    java.io.InputStream in = zf.getInputStream(e);
+                    java.io.FileOutputStream fos = new java.io.FileOutputStream(out);
+                    byte[] buf = new byte[8192];
+                    int r;
+                    try {
+                        while ((r = in.read(buf)) > 0) { fos.write(buf, 0, r); totalBytes += r; }
+                    } finally { try { in.close(); } catch (Throwable ignored) {} try { fos.close(); } catch (Throwable ignored) {} }
+                    files.put(out.getAbsolutePath());
+                    copied++;
+                }
+            } finally { zf.close(); }
+            o.put("ok", copied > 0);
+            o.put("package", pkg);
+            o.put("outDir", dir.getAbsolutePath());
+            o.put("files", files);
+            o.put("copied", copied);
+            o.put("bytes", totalBytes);
+            if (copied == 0) o.put("error", "APK 里没有匹配「" + (entry.isEmpty() ? prefix : entry) + "」的条目（先用 action=list 看清单）");
+            return o.toString();
+        } catch (Throwable t) {
+            return jsonErr("APK 操作失败：" + t.getMessage());
+        }
+    }
+
+    /**
      * POST /openurl {"url":"…","package":"…"(可选),"token":"…"} —— 用系统默认应用打开 URL / 深链。
      * v1.22 新增，免特权（ACTION_VIEW 不需要任何权限）。为什么值得单开一个接口：
      * 让 AI「开浏览器 → 点地址栏 → 输入网址 → 提交」实测要 15+ 步，且 Chromium 无障碍下
@@ -3962,21 +4080,51 @@ public class MainActivity extends Activity {
         try {
             if (!localTokenOk(raw)) return jsonErr("token 校验失败（该接口仅限本应用引擎调用）");
             String url = jsonField(raw, "url").trim();
-            if (url.isEmpty()) return jsonErr("缺少 url 参数");
+            // v1.22：扩展成通用 Intent 发起器（复盘 §5 的 android_open_intent）：
+            //   action 省略或 view → ACTION_VIEW + data=url；否则用给定 action，data/type/extras 均可带。
+            String action = jsonField(raw, "action").trim();
+            if (url.isEmpty() && action.isEmpty()) return jsonErr("缺少 url 参数（或 action）");
             String pkg = jsonField(raw, "package").trim();
-            Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            String type = jsonField(raw, "type").trim();
+            Intent i;
+            if (action.isEmpty() || "view".equalsIgnoreCase(action) || "android.intent.action.VIEW".equalsIgnoreCase(action)) {
+                if (url.isEmpty()) return jsonErr("action=view 需要 url 参数");
+                i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            } else {
+                i = new Intent(action);
+                if (!url.isEmpty()) i.setData(android.net.Uri.parse(url));
+            }
+            if (!type.isEmpty()) i.setType(type);
+            // extras：可选 JSON 对象（值支持字符串 / 整数 / 布尔）
+            try {
+                org.json.JSONObject body = new org.json.JSONObject(raw.isEmpty() ? "{}" : raw);
+                org.json.JSONObject ex = body.optJSONObject("extras");
+                if (ex != null) {
+                    java.util.Iterator<String> it = ex.keys();
+                    while (it.hasNext()) {
+                        String k = it.next();
+                        Object val = ex.get(k);
+                        if (val instanceof Integer) i.putExtra(k, (Integer) val);
+                        else if (val instanceof Boolean) i.putExtra(k, (Boolean) val);
+                        else if (val instanceof Double) i.putExtra(k, (Double) val);
+                        else i.putExtra(k, String.valueOf(val));
+                    }
+                }
+            } catch (Throwable ignored) {}
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
             if (!pkg.isEmpty()) i.setPackage(pkg);
             // 先探测接收者：没有就如实报错（否则 startActivity 抛 ActivityNotFoundException，提示不明确）
             android.content.pm.ResolveInfo ri = getPackageManager().resolveActivity(i, 0);
             if (ri == null || ri.activityInfo == null) {
-                return jsonErr("没有可处理该链接的应用"
-                        + (pkg.isEmpty() ? "" : "（指定的 " + pkg + " 未安装或不支持）") + "：" + url);
+                return jsonErr("没有可处理该 Intent 的应用"
+                        + (pkg.isEmpty() ? "" : "（指定的 " + pkg + " 未安装或不支持）")
+                        + "：" + (url.isEmpty() ? action : url));
             }
             startActivity(i);
             org.json.JSONObject o = new org.json.JSONObject();
             o.put("ok", true);
-            o.put("url", url);
+            if (!url.isEmpty()) o.put("url", url);
+            if (!action.isEmpty()) o.put("action", action);
             o.put("resolved", ri.activityInfo.packageName);
             if (!pkg.isEmpty()) o.put("package", pkg);
             return o.toString();

@@ -593,7 +593,9 @@ function apply(ctx) {
       fx: { type: "number", description: "分数 x 坐标（0~1，相对屏幕宽度比例；推荐，避免截图缩放误差）" },
       fy: { type: "number", description: "分数 y 坐标（0~1，相对屏幕高度比例；推荐，避免截图缩放误差）" },
       ix: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 x 像素（工具会自动换算回屏幕坐标，免手算）" },
-      iy: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 y 像素" }
+      iy: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 y 像素" },
+      expect_text: { type: "string", description: "**可选但强烈建议**：点击后应出现的文字。给了它，工具会在点完后轮询控件树确认它真的出现了，并回 verified=true/false —— 专治「操作成功但没生效」（WebView 里尤其常见）" },
+      expect_timeout_ms: { type: "number", description: "expect_text 最多等多久（默认 4000）" }
     },
     output: {
       schema: {
@@ -604,6 +606,8 @@ function apply(ctx) {
           error: { type: "string" },
           found: { type: "boolean" },
           method: { type: "string" },
+          verified: { type: "boolean" },
+          expected: { type: "string" },
           warning: { type: "string" },
           hint: { type: "string" }
         }
@@ -630,16 +634,42 @@ function apply(ctx) {
       const raw = await a11yRequest("/tap", params, 8000);
       const v = parseResult(raw);
       if (!v.ok) return { ok: false, error: v.error || GUIDE_TEXT };
+      // v1.22（复盘 P1）：可选「期望校验」—— 点完轮询控件树，确认 expect_text 真的出现了。
+      //   复盘里"操作成功但什么都没发生"是最高频的坑（尤其 WebView），这里把它变成可判定的返回值。
+      let verified;
+      let verifyHint = "";
+      const expect = args.expect_text === undefined ? "" : String(args.expect_text);
+      if (expect) {
+        const timeout = Math.max(200, Math.min(15000, Number(args.expect_timeout_ms) || 4000));
+        const t0 = Date.now();
+        verified = false;
+        for (;;) {
+          const d = await dumpNodes();
+          if (d && (d.nodes || []).some((n) =>
+            (typeof n.text === "string" && n.text.indexOf(expect) >= 0)
+            || (typeof n.desc === "string" && n.desc.indexOf(expect) >= 0))) { verified = true; break; }
+          if (Date.now() - t0 >= timeout) break;
+          await new Promise((r) => setTimeout(r, 350));
+        }
+        if (!verified) {
+          verifyHint = "点击后等了 " + Math.round((Date.now() - t0)) + "ms 仍没看到「" + expect + "」："
+            + "这一下**很可能没生效**（WebView/网页按钮常忽略无障碍 ACTION_CLICK）。"
+            + "可试：改用坐标点击（fx/fy）或 android_gesture 的 tap 笔；或先 android_screen_diff 看界面到底变没变。";
+        }
+      }
       return {
-        ok: v.found !== false,
+        // 给了 expect_text 时，ok 表示"点了**且**生效了"，不再只看"点了"（复盘的核心诉求）
+        ok: v.found !== false && (!expect || verified === true),
         found: v.found === true,
         method: typeof v.method === "string" ? v.method : "",
+        ...(expect ? { verified: verified === true, expected: expect } : {}),
         ...(warning ? { warning } : {}),
         // v1.19（真机对话实测）：WebView/网页按钮上无障碍 ACTION_CLICK 常被忽略（返回成功但界面无变化）。
         // 如实提示替代路径，别让模型把"点了没反应"当成自己坐标算错。
-        ...(v.found === true && v.method === "node-text" && !warning
+        ...(v.found === true && v.method === "node-text" && !warning && !verifyHint
           ? { hint: "若界面没有变化：WebView/网页按钮经常忽略无障碍 ACTION_CLICK。改用坐标点击（fx/fy）或 android_gesture 的 tap 笔通常有效。" }
           : {}),
+        ...(verifyHint ? { hint: verifyHint } : {}),
         ...(v.found === false && v.error ? { error: v.error } : {})
       };
     }
@@ -1773,6 +1803,96 @@ function apply(ctx) {
         removedText: removedAll.slice(0, limit).map(label).join(" | "),
         nodeCount: curKeys.length,
         ...(before === null ? { hint: "这是本次会话第一次读取控件树，没有基准可比；之后再用本工具就能看出变化。" } : {})
+      };
+    }
+  }));
+
+  // v1.22（P1）：滚动直到某段文字出现（替代「scroll + screen」反复手试）
+  ctx.tools.register(defineTool({
+    name: "android_scroll_to",
+    description:
+      "反复滚动屏幕直到某段文字出现（可指定方向与最大次数）。用于长列表 / 长页面里找目标。" +
+      "每滚一次读一次控件树（**不截图**），找到就回 found=true 及其位置；滚满次数仍没有就如实回 found=false。" +
+      "比「自己 scroll 几次 + 每次 android_see 看一眼」又快又省内存。",
+    parameters: {
+      text: { type: "string", required: true, description: "要找的文字（包含匹配）" },
+      direction: { type: "string", description: "down（默认，向下翻）/ up / left / right" },
+      max_scrolls: { type: "number", description: "最多滚几次（默认 10，上限 50）" }
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          ok: { type: "boolean", required: true },
+          error: { type: "string" },
+          found: { type: "boolean" },
+          scrolls: { type: "number" },
+          waitedMs: { type: "number" },
+          matchText: { type: "string" },
+          matchX: { type: "number" },
+          matchY: { type: "number" },
+          clickable: { type: "boolean" },
+          hint: { type: "string" }
+        }
+      },
+      render(_a, v) {
+        v = renderValue(v);
+        if (!v.ok && v.found !== false) return renderResult(v);
+        if (!v.found) {
+          return [{ type: "text", text: "滚了 " + (v.scrolls || 0) + " 次仍未找到「" + (v.error || "") + "」"
+            + (v.hint ? "\n建议: " + v.hint : "") }];
+        }
+        return [{ type: "text", text: "滚 " + (v.scrolls || 0) + " 次后找到「" + v.matchText + "」@(" + v.matchX + "," + v.matchY + ")"
+          + (v.clickable ? " · 可点击" : "") }];
+      }
+    },
+    async execute(args) {
+      const needle = args.text === undefined ? "" : String(args.text);
+      if (!needle) return { ok: false, error: "android_scroll_to 需要 text 参数" };
+      const dirRaw = String(args.direction || "down").toLowerCase();
+      const dir = ["up", "down", "left", "right"].includes(dirRaw) ? dirRaw : "down";
+      const maxScrolls = Math.max(1, Math.min(50, Number(args.max_scrolls) || 10));
+      const t0 = Date.now();
+      let scrolls = 0;
+      let lastNodes = 0;
+      const look = async () => {
+        const d = await dumpNodes();
+        if (!d) return null;
+        lastNodes = (d.nodes || []).length;
+        return (d.nodes || []).find((n) =>
+          (typeof n.text === "string" && n.text.indexOf(needle) >= 0)
+          || (typeof n.desc === "string" && n.desc.indexOf(needle) >= 0)) || null;
+      };
+      let hit = await look();
+      while (!hit && scrolls < maxScrolls) {
+        await a11yRequest("/scroll", { direction: dir }, 8000);
+        scrolls++;
+        await new Promise((r) => setTimeout(r, 450));
+        hit = await look();
+      }
+      if (!hit) {
+        return {
+          ok: true,
+          found: false,
+          error: needle,
+          scrolls,
+          waitedMs: Date.now() - t0,
+          hint: lastNodes === 0
+            ? "全程读不到控件树：无障碍可能没开或刚闪断（先用 android_a11y_status 看状态）。"
+            : "滚了 " + scrolls + " 次仍未出现该文字：可能不在可滚动区域里，或它是图片/图标（无障碍读不到文字）。"
+              + "可加大 max_scrolls，或先用 android_screen 看看列表里实际文案。"
+        };
+      }
+      return {
+        ok: true,
+        found: true,
+        scrolls,
+        waitedMs: Date.now() - t0,
+        matchText: (hit.text || hit.desc || ""),
+        matchX: hit.x || 0,
+        matchY: hit.y || 0,
+        clickable: hit.clickable === true
       };
     }
   }));
