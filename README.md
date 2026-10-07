@@ -4,25 +4,27 @@
 > **https://github.com/blue-soda/deepseek-harness-android-app/tree/master**
 > 请切换到 `master` 查看最新说明、构建方式与安装包（Releases 也发布自 master）。
 
+
 > 把 DeepSeek Harness（DSH）打包成**可直接安装的 Android APK**：装上就能用，还能让 AI **免 Root 操作手机**。
 >
-> 本仓库是 [woaiys3/deepseek-harness-android-app](https://github.com/woaiys3/deepseek-harness-android-app) 的社区分支，在其之上做了形象与体验上的改动（改动都在 `master` 分支）。
+> 本仓库是 [woaiys3/deepseek-harness-android-app](https://github.com/woaiys3/deepseek-harness-android-app) 的社区分支：**已合并上游 v1.19.0**（带来 AI 浏览器、内核自检 / 自修复、控制台「一切皆自定义」、会话管理与回收站、会话级自愈等能力），并在其之上做界面与体验改动、以及面向「AI 真机操作」的工具增强。
 
 ## 🐟 与上游的区别
 
 | 方面 | 我们做了什么 |
 |---|---|
 | 🐟 **卡通大肥鱼形象** | 悬浮球与头像换成**卡通大肥鱼**全身立绘，配套应用图标与启动页 |
-| 🫧 **实用悬浮窗** | 小人常驻屏幕边缘（可拖动、靠边半藏），头顶**状态气泡**：`思考中…` / `正在 <工具>…` / `正在向用户提问...` / `任务已完成` / `会话已结束` / `下班啦` / `摸鱼中…`；点开面板有「打开 / 控制台 / 退出」（退出为两步确认）。气泡与面板**不会挤动小人** |
-| ⚡ **启动体验** | 进 App **不必先等引擎起来**（界面先可用），引导期间后台预热运行环境；慢启动时**继续等待**而不是判失败；默认工作区开箱可用 |
+| 🫧 **实用悬浮窗** | 小人常驻屏幕边缘（可拖动、靠边半藏），头顶**状态气泡**：`思考中…` / `正在 <工具>…` / `正在向用户提问...` / `任务已完成` / `会话已结束` / `下班啦` / `摸鱼中…`；面板有「打开 / 控制台 / 退出」 |
 | 🔐 **remote 插件登录体验** | 点「DS 登录」**直接打开系统浏览器**完成授权，回到 App 后**自动刷新状态** |
 | 🖥️ **终端可用** | 打包 Android 预编译的 **node-pty** 并换用**真 bash**，终端端到端可用（DSH rcfile 生效） |
-| 🧰 **工具优化** | 免特权列出/启动应用（`android_apps` / `android_launch`）；区域截图与坐标契约；能力探测、输入提示与防呆 |
+| 🎨 **UI 优化** | 控制台 / 引导页 / 启动页跟随同一套深浅色，并与 DSH 页面同色调 |
+| 🧰 **工具增强** | 按安卓 Agent 真机实测反馈持续优化工具逻辑与工具描述，并补齐缺失能力（免特权手机操作：手势注入与多指、输入一次调用、不截图的界面查找 / 等待 / 对比、打开网址与深链、查看与解出 APK、读日志）|
+| 🧩 **内置自开发技能** | 随包带 `dsh-self-customization` 技能，让 AI 知道「该怎么改自己」（附源码仓库与社区签名说明） |
 | 🔌 **预装 remote 插件** | 默认内置 **[ds-harness-remote](https://github.com/blue-soda/ds-harness-remote/)**（npm 发布版），安装后即可用远程访问，不必手动装插件 |
 
 ## 📦 安装
 
-下载本仓库 [Releases](https://github.com/blue-soda/deepseek-harness-android-app/releases)（发布自 `master` 分支）：
+下载本仓库 [Releases](https://github.com/blue-soda/deepseek-harness-android-app/releases)：
 
 - **`DeepSeekHarness-community-<版本>-arm64.apk`** —— 社区构建（包名 `com.deepseek.harness.community`，与上游各变体**可共存**）
 - 要求：**arm64 真机**、Android 7.0（API 24）及以上
@@ -49,8 +51,7 @@ bash tools/build-apk.sh --variant community
 ```
 
 需要 `android.jar` 与 JDK；社区版使用仓库内的**公开密钥** `android-app/community.jks`。
-详见 **`master` 分支**的 [BUILD.md](https://github.com/blue-soda/deepseek-harness-android-app/blob/master/BUILD.md)
-与 [android-app/README.md](https://github.com/blue-soda/deepseek-harness-android-app/blob/master/android-app/README.md)。
+详见 [BUILD.md](BUILD.md) 与 [android-app/README.md](android-app/README.md)。
 
 ## 🙏 致谢与许可
 
