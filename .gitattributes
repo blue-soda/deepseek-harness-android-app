@@ -9,8 +9,12 @@
 * text=auto eol=lf
 
 # 需要"字节级一致"的补丁快照：不做任何转换
-dsh-patches/overlay/** -text
-dsh-patches/overlay-*/** -text
+# ⚠ 只写 -text 不够 —— 上面的 `* text=auto eol=lf` 已经把 eol 设成 lf，
+#   而 -text 只清 text 属性，eol 仍会让 git 在检出时转换行尾（实测会把 overlay 里
+#   上游自带的 CRLF 文件（AWS/Anthropic SDK 等 172 个）改成 LF，与内核树不再一致）。
+#   所以必须同时 -eol。
+dsh-patches/overlay/** -text -eol
+dsh-patches/overlay-*/** -text -eol
 
 # 设备/主机上要执行的脚本与源码
 *.sh   text eol=lf
