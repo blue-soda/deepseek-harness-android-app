@@ -41,6 +41,48 @@ let lastShot = { hash: "", seq: 0, at: 0 };
  */
 let lastCrop = null;   // { cropX, cropY, cropW, cropH, scaleX, scaleY, imageW, imageH, at }
 
+// ============================================================================
+// v1.22 内存前置守卫（真机 Agent 复盘的事故对策）
+//   事故链：可用内存低 → 高频全屏截图（每张 ~10MB 位图缓冲）→ 系统回收/重启无障碍服务（"闪断"）
+//          → 之后 tap/scroll/type 全部失败 → 模型把失败当成功、甚至误报"已杀进程"。
+//   策略：① 截图前读 /proc/meminfo；
+//        ② 内存紧张时**拒绝全屏截图**（必须给 select/region 才放行，区域图只有几十 KB）；
+//        ③ 限制每分钟全屏截图张数，超了也拒绝并指向更省的替代路径。
+//   注意：/proc/meminfo 是**全机**视图（不受 App cgroup 隔离），这正是我们要看的量。
+// ============================================================================
+
+const FULL_SHOT_MIN_AVAIL_KB = 400 * 1024;   // 可用内存 < 400MB：拒绝全屏截图
+const FULL_SHOT_WARN_AVAIL_KB = 700 * 1024;  // 可用内存 < 700MB：放行但明确告警
+const FULL_SHOT_BUDGET_PER_MIN = 12;         // 每分钟全屏截图上限
+let fullShotTimes = [];
+
+/** 读 /proc/meminfo，返回 { totalKb, availKb, freeKb }；读不到返回 null。 */
+async function readMem() {
+  try {
+    const txt = await readFile("/proc/meminfo", "utf8");
+    const pick = (k) => {
+      const m = txt.match(new RegExp("^" + k + ":\\s+(\\d+)", "m"));
+      return m ? parseInt(m[1], 10) : 0;
+    };
+    const total = pick("MemTotal");
+    if (!total) return null;
+    let avail = pick("MemAvailable");
+    if (!avail) avail = pick("MemFree") + pick("Cached");   // 老内核没有 MemAvailable
+    return { totalKb: total, availKb: avail, freeKb: pick("MemFree") };
+  } catch (e) {
+    return null;
+  }
+}
+
+const mbOf = (kb) => Math.round((kb || 0) / 1024);
+
+/** 全屏截图预算是否已超（顺带清掉一分钟前的记录）。 */
+function fullShotBudgetExceeded() {
+  const now = Date.now();
+  fullShotTimes = fullShotTimes.filter((t) => now - t < 60000);
+  return fullShotTimes.length >= FULL_SHOT_BUDGET_PER_MIN;
+}
+
 /** 把 /screenshot 的返回值记成 lastCrop（整屏也记，公式统一）。 */
 function rememberCrop(v) {
   const num = (x, d) => (typeof x === "number" && isFinite(x) ? x : d);
@@ -729,6 +771,30 @@ function apply(ctx) {
         else if (args.region !== undefined && String(args.region).length > 0) params.region = String(args.region);
         if (args.selectIndex !== undefined) params.selectIndex = String(Number(args.selectIndex));
         if (args.pad !== undefined) params.pad = String(Number(args.pad));
+        // v1.22：内存前置守卫 —— 全屏截图（没给 select/region）容易把系统推向失控；
+        // 区域截图只有几十 KB，任何时候都放行。
+        const isFullShot = !params.select && !params.region;
+        let mem = null;
+        if (isFullShot) {
+          mem = await readMem();
+          if (mem && mem.availKb < FULL_SHOT_MIN_AVAIL_KB) {
+            return {
+              ok: false,
+              error: "可用内存过低（" + mbOf(mem.availKb) + "MB / 共 " + mbOf(mem.totalKb)
+                + "MB），已拒绝全屏截图以免触发系统回收（App 与无障碍服务可能被重启，之后点击/输入会全部失败）。"
+                + "请改用区域截图：android_see(select=\"界面上的文字\") 或 android_see(region=\"x,y,w,h\")，"
+                + "或用 android_screen 读控件树（最省内存）。"
+            };
+          }
+          if (fullShotBudgetExceeded()) {
+            return {
+              ok: false,
+              error: "全屏截图过于频繁（每分钟上限 " + FULL_SHOT_BUDGET_PER_MIN + " 张），已拒绝。"
+                + "请优先用 android_see(select=…) / android_see(region=…) 做区域截图，"
+                + "或 android_screen 读控件树；需要等界面变化时不要反复整屏截图。"
+            };
+          }
+        }
         const raw = await a11yRequest("/screenshot", Object.keys(params).length ? params : undefined, 20000);
         const v = parseResult(raw);
         if (!v.ok || !v.path) {
@@ -764,7 +830,13 @@ function apply(ctx) {
           const staleAfterInput = sameAsPrevious && inputEventSeq > prev.seq;
           lastShot = { hash, seq: inputEventSeq, at };
           rememberCrop(v);   // A6：记录裁剪几何（整屏也记，换算公式统一）
+          if (isFullShot) fullShotTimes.push(at);   // v1.22：全屏截图计入预算
           const hints = [];
+          if (isFullShot && mem && mem.availKb < FULL_SHOT_WARN_AVAIL_KB) {
+            hints.push("可用内存偏低（" + mbOf(mem.availKb) + "MB / 共 " + mbOf(mem.totalKb)
+              + "MB）：继续高频全屏截图可能导致系统回收 App 与无障碍服务（之后再点击/输入会失败）。"
+              + "后续优先用 android_see(select=…) / android_see(region=…) 做区域截图。");
+          }
           if (typeof v.hint === "string" && v.hint) hints.push(v.hint);
           if (staleAfterInput) {
             hints.push("与上一次截图内容完全相同，但期间发生过输入操作：截图可能未刷新或操作未生效，建议重新截图确认（或先用 android_screen 看节点是否变化）。");
@@ -1135,6 +1207,70 @@ function apply(ctx) {
   // 放在无障碍插件里是有意的——dsh-tool-android 在无特权时整体不注册，
   // 能力探测若放在那里就会"无特权时恰好消失"，正是最需要它的时候没有。
   // ==========================================================================
+  // v1.22：内存体检（真机 Agent 复盘要求的前置守卫项）
+  ctx.tools.register(defineTool({
+    name: "android_mem_status",
+    description:
+      "查看本机内存状况（读 /proc/meminfo，**全机视图**，不受 App cgroup 隔离）。" +
+      "准备做长时间 / 高频的屏幕操作（尤其反复 android_see 全屏截图）前建议先看一眼：" +
+      "可用内存低于约 400MB 时，高频全屏截图会显著提高系统回收 App 与无障碍服务的概率" +
+      "（表现是无障碍「闪断」、随后 tap/scroll/type 全部失败）。" +
+      "紧张时的替代路径：android_see(select=…) / android_see(region=…) 区域截图，或 android_screen 读控件树。",
+    parameters: {},
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          ok: { type: "boolean", required: true },
+          error: { type: "string" },
+          totalMb: { type: "number" },
+          availMb: { type: "number" },
+          freeMb: { type: "number" },
+          level: { type: "string" },
+          recentFullShots: { type: "number" },
+          fullShotBudgetPerMin: { type: "number" },
+          hint: { type: "string" }
+        }
+      },
+      render(_a, v) {
+        v = renderValue(v);
+        if (!v.ok) return renderResult(v);
+        const lines = [
+          "本机内存：" + v.availMb + "MB 可用 / 共 " + v.totalMb + "MB（MemFree " + v.freeMb + "MB）· 等级：" + v.level,
+          "最近一分钟全屏截图：" + v.recentFullShots + " / " + v.fullShotBudgetPerMin + " 张（超限会被拒绝）"
+        ];
+        if (v.hint) lines.push("", "建议: " + v.hint);
+        return [{ type: "text", text: lines.join("\n") }];
+      }
+    },
+    async execute() {
+      const mem = await readMem();
+      if (!mem) return { ok: false, error: "读取 /proc/meminfo 失败（部分系统会限制）" };
+      const now = Date.now();
+      fullShotTimes = fullShotTimes.filter((t) => now - t < 60000);
+      const level = mem.availKb < FULL_SHOT_MIN_AVAIL_KB ? "紧张"
+        : (mem.availKb < FULL_SHOT_WARN_AVAIL_KB ? "偏低" : "充足");
+      const hints = [];
+      if (level === "紧张") {
+        hints.push("可用内存紧张：**不要**做全屏截图（会被本插件直接拒绝），改用 android_see(select=/region=) 区域截图"
+          + "或 android_screen 读控件树；若已出现工具大面积失败，先停下、让 App 回前台，等系统回收内存后再继续。");
+      } else if (level === "偏低") {
+        hints.push("可用内存偏低：接下来优先区域截图，避免连续整屏截图。");
+      }
+      return {
+        ok: true,
+        totalMb: mbOf(mem.totalKb),
+        availMb: mbOf(mem.availKb),
+        freeMb: mbOf(mem.freeKb),
+        level,
+        recentFullShots: fullShotTimes.length,
+        fullShotBudgetPerMin: FULL_SHOT_BUDGET_PER_MIN,
+        ...(hints.length ? { hint: hints.join(" ") } : {})
+      };
+    }
+  }));
+
   ctx.tools.register(defineTool({
     name: "android_capabilities",
     description:
@@ -1159,6 +1295,9 @@ function apply(ctx) {
           canLaunchApps: { type: "boolean" },
           vscreenBridge: { type: "boolean" },
           appId: { type: "string" },
+          memAvailMb: { type: "number" },
+          memLevel: { type: "string" },
+          recentFullShots: { type: "number" },
           hint: { type: "string" }
         }
       },
@@ -1174,7 +1313,9 @@ function apply(ctx) {
           "  系统操作(装机/改设置/模拟输入 android_input·android_package…): " + yn(v.canSystemOps),
           "  列应用/启动应用(android_apps·android_launch): " + yn(v.canListApps) + (v.canListApps ? "（免特权；后台启动受 Android 10+ 限制）" : ""),
           "  特权方式启动/停止应用(android_app): " + yn(v.canLaunchApps),
-          "  虚拟屏服务(android_vscreen_*): " + yn(v.vscreenBridge) + (v.vscreenBridge ? "" : "（打开一次 App 会自动拉起；整个虚拟屏功能还必须有 Shizuku/root）")
+          "  虚拟屏服务(android_vscreen_*): " + yn(v.vscreenBridge) + (v.vscreenBridge ? "" : "（打开一次 App 会自动拉起；整个虚拟屏功能还必须有 Shizuku/root）"),
+          "  内存(android_mem_status): " + (v.memAvailMb || 0) + "MB 可用 · " + (v.memLevel || "?")
+            + "（最近一分钟全屏截图 " + (v.recentFullShots || 0) + " 张）"
         ];
         if (v.hint) lines.push("", "建议: " + v.hint);
         return [{ type: "text", text: lines.join("\n") }];
@@ -1206,6 +1347,20 @@ function apply(ctx) {
       });
       const hints = [];
       if (!a11yRunning) hints.push("开启无障碍（系统设置 → 无障碍 → DeepSeek Harness 屏幕助手）后，android_screen/android_tap/android_type/android_see 才可用。");
+      // v1.22：内存状况一并报出，并据此给截图策略（全屏截图是内存杀手）
+      const mem = await readMem();
+      const memLevel = !mem ? "未知"
+        : (mem.availKb < FULL_SHOT_MIN_AVAIL_KB ? "紧张"
+          : (mem.availKb < FULL_SHOT_WARN_AVAIL_KB ? "偏低" : "充足"));
+      if (memLevel === "紧张") {
+        hints.push("可用内存紧张（" + mbOf(mem.availKb) + "MB）：**不要**用 android_see 全屏截图（会被拒绝），"
+          + "改用 android_see(select=文字) / android_see(region=x,y,w,h) 区域截图或 android_screen 读控件树；"
+          + "否则容易触发系统回收 App 与无障碍服务，之后点击/输入会成片失败。");
+      } else if (memLevel === "偏低") {
+        hints.push("可用内存偏低（" + mbOf(mem.availKb) + "MB）：优先区域截图（android_see 的 select/region 参数），避免连续整屏截图。");
+      }
+      hints.push("截图省内存的姿势：android_see(select=\"界面上的文字\") 或 region=\"x,y,w,h\"（区域图几十 KB），"
+        + "比整屏截图（每张 2~4MB、位图缓冲 ~10MB）省得多；需要大量读界面时优先 android_screen 读控件树。");
       if (!privileged) hints.push("未授予 Shizuku/root：特权工具（android_input/android_package/android_app/android_setting/android_screenshot）不会出现在工具列表；中文输入请用 android_paste_text，截图请用 android_see。");
       hints.push("列应用/启动应用**不需要特权**：用 android_apps 列（走 PackageManager），用 android_launch(package=…) 启动；"
         + "注意 Android 10+ 后台启动 Activity 有限制，App 在前台时最稳；要指定 activity 或在虚拟屏启动仍需 Shizuku/root。");
@@ -1223,6 +1378,13 @@ function apply(ctx) {
         canLaunchApps: true,
         vscreenBridge,
         appId: hostAppId(),
+        memAvailMb: mem ? mbOf(mem.availKb) : 0,
+        memLevel,
+        recentFullShots: (() => {
+          const now = Date.now();
+          fullShotTimes = fullShotTimes.filter((t) => now - t < 60000);
+          return fullShotTimes.length;
+        })(),
         ...(hints.length ? { hint: hints.join(" ") } : {})
       };
     }

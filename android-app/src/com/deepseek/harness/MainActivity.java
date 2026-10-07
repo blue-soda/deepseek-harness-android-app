@@ -3619,6 +3619,9 @@ public class MainActivity extends Activity {
                     } else if (path.startsWith("/app")) {
                         // v1.19：免特权启动应用（launcher Intent；不走 Su/Shizuku）
                         respBody = handleAppRequest(body.toString());
+                    } else if (path.startsWith("/openurl")) {
+                        // v1.22：免特权打开 URL / 深链（ACTION_VIEW；不走 Su/Shizuku）
+                        respBody = handleOpenUrlRequest(body.toString());
                     } else if (path.startsWith("/overlay")) {
                         respBody = handleOverlayRequest(path, body.toString());
                     } else if (path.startsWith("/status")) {
@@ -3762,6 +3765,40 @@ public class MainActivity extends Activity {
         } catch (Throwable t) {
             return jsonErr("启动失败：" + t.getMessage()
                     + "（Android 10+ 后台启动 Activity 可能被系统拦截：可先把 App 切到前台再试，或授权 Shizuku/root 走 am start）");
+        }
+    }
+
+    /**
+     * POST /openurl {"url":"…","package":"…"(可选),"token":"…"} —— 用系统默认应用打开 URL / 深链。
+     * v1.22 新增，免特权（ACTION_VIEW 不需要任何权限）。为什么值得单开一个接口：
+     * 让 AI「开浏览器 → 点地址栏 → 输入网址 → 提交」实测要 15+ 步，且 Chromium 无障碍下
+     * setText 一律 false、粘贴被输入法吃掉、输入法的「确定」只收键盘不导航 —— 一条 Intent 直达即可。
+     */
+    private String handleOpenUrlRequest(String raw) {
+        try {
+            if (!localTokenOk(raw)) return jsonErr("token 校验失败（该接口仅限本应用引擎调用）");
+            String url = jsonField(raw, "url").trim();
+            if (url.isEmpty()) return jsonErr("缺少 url 参数");
+            String pkg = jsonField(raw, "package").trim();
+            Intent i = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            if (!pkg.isEmpty()) i.setPackage(pkg);
+            // 先探测接收者：没有就如实报错（否则 startActivity 抛 ActivityNotFoundException，提示不明确）
+            android.content.pm.ResolveInfo ri = getPackageManager().resolveActivity(i, 0);
+            if (ri == null || ri.activityInfo == null) {
+                return jsonErr("没有可处理该链接的应用"
+                        + (pkg.isEmpty() ? "" : "（指定的 " + pkg + " 未安装或不支持）") + "：" + url);
+            }
+            startActivity(i);
+            org.json.JSONObject o = new org.json.JSONObject();
+            o.put("ok", true);
+            o.put("url", url);
+            o.put("resolved", ri.activityInfo.packageName);
+            if (!pkg.isEmpty()) o.put("package", pkg);
+            return o.toString();
+        } catch (Throwable t) {
+            return jsonErr("打开失败：" + t.getMessage()
+                    + "（Android 10+ 后台启动 Activity 可能被系统拦截：可先把 App 切到前台再试）");
         }
     }
 
