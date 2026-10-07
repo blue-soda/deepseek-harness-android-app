@@ -499,6 +499,22 @@ L1（DSH 设置页诊断面板）与 L2（本机资产救援页）暂不做，�
 
 **复现**：见 `tools/boot-timing/README.md`（4 条命令：推工具 → 跑 plain/hooks/profhooks → 拉产物 → `analyze.py`）。
 
+**谁最贵（把空档归因到它前面那个模块所属的包；近似）**：
+
+| 包 | 文件 | 体积 | 归属耗时 |
+|---|---|---|---|
+| `@mixmark-io/domino` | 52 | 533 KB | **2,545 ms** |
+| `brotli` | 10 | **804 KB** | **2,367 ms** |
+| `@deepseek-ai/dsh-cmdline` | 1 | 7 KB | 2,137 ms（自身很小 → 多半是别处异步工作被算到它头上，待查） |
+| `node:internal` / `node:crypto` | – | – | 1,712 / 1,417 ms（含 OpenSSL 初始化） |
+| `dsh-agent-preset-registry` | 2 | 83 KB | 934 ms |
+| `picomatch` / `mime-types` / `otlp-exporter-base` / `commander` / `semver` | 6-46 | 6-123 KB | 300-820 ms |
+
+⇒ **最值得先做的两件小事**：①把 `brotli` 与 `@mixmark-io/domino` 改成**懒加载**（真要解压/转 HTML 时再
+`import()`），模拟器口径合计 ~4.9 s，真机预计省 1-2 s；②单独查 `dsh-cmdline` 前后那 2.1 s 空档
+（引擎日志里有 `[dsh-remote] Codex App Server communication failed` 这类启动期探测，值得确认是否在阻塞）。
+模块加载时间分布（十分位）`79 15 296 270 202 153 26 369 55 54` 说明加载与编译交替进行，没有单一停顿点。
+
 ### 十六、悬浮窗 agent 状态气泡（v1.21 需求 2）
 
 用户诉求：让 DSH 做屏幕控制类任务时不必靠猜判断是否结束 —— 在小人上方加一个小气泡，

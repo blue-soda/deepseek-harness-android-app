@@ -103,6 +103,34 @@ def report_hooks(rows: list[dict]) -> None:
     big = sum(g for g, _, _ in gaps if g >= 50)
     print(f"  ≥50ms 的空档合计 {big} ms（这些就是模块加载之外的 CPU 工作）")
 
+    # 归属：把每个空档算到"它前面那个模块所属的包"头上。
+    # 近似（空档也可能来自更早模块的异步初始化），但足以给出"谁最贵"的排序。
+    attrib = defaultdict(lambda: {"gap": 0.0, "n": 0, "bytes": 0})
+    for dt, prev, _cur in zip([g for g, _, _ in gaps], [p for _, p, _ in gaps], [c for _, _, c in gaps]):
+        a = attrib[pkg_of(prev)]
+        if dt >= 20:            # 小于 20ms 的抖动不计
+            a["gap"] += dt
+    for r in files:
+        k = pkg_of(r["url"])
+        attrib[k]["n"] += 1
+        attrib[k]["bytes"] += r["bytes"]
+
+    print("\n== 谁最贵：按「空档归属」排序的 Top 20（≈该包引入的解析/编译/初始化时间）==")
+    print(f"  {'包':<40}{'文件':>5}{'KB':>8}{'归属ms':>9}")
+    for name, a in sorted(attrib.items(), key=lambda kv: -kv[1]["gap"])[:20]:
+        if a["gap"] <= 0:
+            continue
+        print(f"  {name:<40}{a['n']:>5}{a['bytes']/1024:>8.0f}{a['gap']:>9.0f}")
+
+    # 进度分布：模块加载在时间轴上的分布（判断前重后重）
+    span = max(1, t1 - t0)
+    buckets = [0] * 10
+    for r in rows:
+        idx = min(9, int((r["t"] - t0) / span * 10))
+        buckets[idx] += 1
+    print("\n== 模块加载的时间分布（十分位，看启动是前重还是后重）==")
+    print("  " + "  ".join(f"{b:>4}" for b in buckets))
+
 
 # ---------- CPU profile ----------
 

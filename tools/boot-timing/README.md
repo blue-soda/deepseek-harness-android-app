@@ -64,3 +64,27 @@ CPU profile（36 s 采样）分类：cordis + cordis-plugin-loader ≈ **6.4 s**
 所以①裁插件/profile（少 import 少挂载）最直接；②把第三方依赖打成一个文件收益有限；
 ③V8 快照架构上不可行（见 CHANGES）；④清 `.ts`/`.md` 只影响安装体积。
 另外模拟器是 arm64 经 ndk_translation 翻译执行，CPU 成本被放大，真机需复核。
+
+## 谁最贵（按"空档归属"排序，Top 10）
+
+把每个空档算到它**前面那个模块所属的包**头上（近似：空档也可能来自更早模块的异步初始化）：
+
+| 包 | 文件数 | 体积 | 归属耗时 |
+|---|---|---|---|
+| `@mixmark-io/domino` | 52 | 533 KB | **2,545 ms** |
+| `brotli` | 10 | **804 KB** | **2,367 ms** |
+| `@deepseek-ai/dsh-cmdline` | 1 | 7 KB | 2,137 ms（可疑：自身很小，多半是别处的异步工作被算到它头上） |
+| `node:internal` | – | – | 1,712 ms |
+| `node:crypto` | – | – | 1,417 ms（OpenSSL 初始化，翻译执行下更贵） |
+| `@deepseek-ai/dsh-agent-preset-registry` | 2 | 83 KB | 934 ms |
+| `picomatch` / `mime-types` / `otlp-exporter-base` / `commander` / `semver` | 6-46 | 6-123 KB | 300-820 ms |
+
+**最值得做的两件小事**（下一轮可验证）：
+1. **`brotli`（804 KB）与 `@mixmark-io/domino`（533 KB）改成懒加载**（真要解压/转 HTML 时再 `import()`）
+   —— 这两个是启动期最大的静态依赖，按模拟器口径合计 ~4.9 s；真机预计省 1-2 s。
+2. **`@deepseek-ai/dsh-cmdline` 那 2.1 s 空档要单独查**：它自己只有 7 KB，八成是别处的异步初始化
+   （引擎日志里能看到 `[dsh-remote] Codex App Server communication failed` 这类启动期探测）。
+
+模块加载的时间分布（十分位）：`79 15 296 270 202 153 26 369 55 54` —— 加载分散在整个启动过程中，
+20-50% 与 70-80% 各有一个高峰，说明"插件挂载"与"主线程编译"是交替进行的，没有单一可优化的停顿点。
+
