@@ -4,6 +4,7 @@ import { TerminalPolicy, TERMINAL_CALLS, TERMINAL_STREAMS } from './terminal-pol
 import { harnessSessionGeneration } from './harness-version.js';
 import { listRemoteDirectory } from './remote-directory-browser.js';
 import { RpcError } from './rpc-router.js';
+import { collectRpcAttachments } from './rpc-binary-attachments.js';
 const endpointSchema = z.string().min(1).max(128).regex(/^(?:\$events(?:\/result)?|[A-Za-z0-9_$.-]+\/[A-Za-z0-9_$.-]+)$/);
 const callSchema = z.object({ endpoint: endpointSchema, payload: z.unknown() }).strict();
 const streamOpenSchema = z.object({
@@ -147,7 +148,17 @@ export class HarnessRemoteBridge {
         this.terminal = terminal;
         this.codexWorkspace = codexWorkspace;
     }
+    /**
+     * Answer one remote Gateway call.
+     *
+     * Bytes have to leave in DSH's own form: this result is JSON-encoded on its way to the client, and a
+     * \`Uint8Array\` would arrive there as \`{"0":…}\` and fail the generated schema (the image-preview
+     * failure). Tagging here, hydrating on the client, keeps one convention on both sides.
+     */
     async call(input) {
+        return collectRpcAttachments(await this.dispatchCall(input));
+    }
+    async dispatchCall(input) {
         const params = callSchema.parse(input);
         this.assertAllowed(params.endpoint);
         if (TERMINAL_STREAMS.has(params.endpoint))
@@ -387,7 +398,7 @@ export class HarnessRemoteBridge {
                 await this.publish('harness.remote.frame', {
                     streamId,
                     hasValue: true,
-                    ...(value === undefined ? {} : { value }),
+                    ...(value === undefined ? {} : { value: collectRpcAttachments(value) }),
                 });
             }
             if (signal.aborted)

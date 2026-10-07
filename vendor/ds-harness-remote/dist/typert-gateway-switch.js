@@ -1,3 +1,4 @@
+import { decodeByteValue } from './rpc-binary-attachments.js';
 const REMOTE_COMMAND_METHODS = ['execute', 'list'];
 const LOCAL_ONLY_NAMESPACES = new Set(['dynamicCordisRunner']);
 /**
@@ -88,21 +89,53 @@ export class TypertGatewaySwitch {
         if (this.installed)
             return;
         this.runtime.invoke = request => this.selectInvoke(request);
-        if (this.originalStream !== undefined) {
-            this.runtime.stream = request => !this.routesToRemote(endpointOf(request))
-                ? this.localStream(request)
-                : this.withLocalFallback(endpointOf(request), () => this.remoteTarget.open(endpointOf(request), { args: request.args }, request.signal ?? new AbortController().signal), () => this.localStream(request));
+        // The carriers this switch was installed in front of. A target that owns only part of the endpoint
+        // space - the command namespace in an rc.2 window, where the ApiProxy switch owns the data plane - must
+        // pass every other endpoint down to them. Answering one here sends it to the local shell instead of the
+        // peer: that is how workspaceFiles/readBytes came back in a shape the native schema rejects.
+        // Keep the receiver: the local dispatcher is an object method that reads its own fields, and calling
+        // it unbound failed with a missing invokeRpc on an undefined receiver - which broke every local call
+        // whenever this switch forwarded instead of answering itself.
+        const previousStream = this.runtime.stream?.bind(this.runtime);
+        const previousDispatch = this.runtime.dispatchRpc?.bind(this.runtime);
+        const previousOpen = this.runtime.openWireStream;
+        // Forwarding is for a window whose data plane belongs to another carrier while the peer is up. With
+        // no reachable peer the shell must work locally - forwarding there reached a carrier that cannot
+        // serve it and every local call failed with a missing invokeRpc on an undefined carrier.
+        const forwards = (endpoint) => (this.remoteTarget === undefined && this.remoteAvailability() && !isLocalOnlyEndpoint(endpoint));
+        if (previousStream !== undefined) {
+            this.runtime.stream = request => forwards(endpointOf(request))
+                ? previousStream(request)
+                : !this.routesToRemote(endpointOf(request))
+                    ? this.localStream(request)
+                    : this.withLocalFallback(endpointOf(request), () => this.remoteTarget.open(endpointOf(request), { args: request.args }, request.signal ?? new AbortController().signal), () => this.localStream(request));
         }
-        if (this.originalDispatch !== undefined) {
-            this.runtime.dispatchRpc = (endpoint, payload, signal) => !this.routesToRemote(endpoint)
-                ? this.localDispatch(endpoint, payload, signal)
-                : this.withLocalFallback(endpoint, () => Promise.resolve(this.remoteTarget.dispatch(endpoint, payload, signal)), () => this.localDispatch(endpoint, payload, signal));
+        if (previousDispatch !== undefined) {
+            this.runtime.dispatchRpc = (endpoint, payload, signal) => forwards(endpoint)
+                ? Promise.resolve(previousDispatch(endpoint, payload, signal)).catch(error => {
+                    // Without a remote target the shell has to work locally, and a failing local call is otherwise
+                    // invisible: the fallback exists precisely so the user can keep working.
+                    console.warn('[dsh-remote] local call failed with no remote target selected', {
+                        endpoint,
+                        code: typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : undefined,
+                        message: error instanceof Error ? error.message : String(error),
+                    });
+                    throw error;
+                })
+                : !this.routesToRemote(endpoint)
+                    ? this.localDispatch(endpoint, payload, signal)
+                    : this.withLocalFallback(endpoint, () => Promise.resolve(this.remoteTarget.dispatch(endpoint, payload, signal)), () => this.localDispatch(endpoint, payload, signal)).then(result => normalizeByteResult(endpoint, result));
         }
-        if (this.originalOpen !== undefined) {
-            const open = this.originalOpen;
+        if (previousOpen !== undefined) {
+            const open = previousOpen;
             const rc1 = usesRc1Arity(open);
             this.runtime.openWireStream = (...callArgs) => {
                 const endpoint = callArgs[0];
+                if (forwards(endpoint)) {
+                    return rc1
+                        ? Reflect.apply(open, this.runtime, callArgs)
+                        : open.call(this.runtime, endpoint, callArgs[1], callArgs[2]);
+                }
                 if (!this.routesToRemote(endpoint)) {
                     return rc1
                         ? Reflect.apply(open, this.runtime, callArgs)
@@ -183,7 +216,9 @@ export class TypertGatewaySwitch {
             // failed", the locale plugin failed with it, and 48 entries never activated.
             // Serve locally when the peer does not implement the endpoint, or when it went
             // away mid-call; a business error still propagates.
-            return this.remoteTarget.invoke(request).catch(error => {
+            return this.remoteTarget.invoke(request)
+                .then(result => normalizeByteResult(endpointOf(request), result))
+                .catch(error => {
                 if (!localFallbackAllowed(endpointOf(request), error))
                     throw error;
                 console.warn(`[dsh-remote] serving ${endpointOf(request)} locally: the peer did not answer it`, error);
@@ -363,5 +398,51 @@ const UNANSWERED_BY_PEER_CODES = new Set([
 ]);
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+/**
+ * Endpoints whose canonical result carries bytes, which the CodeX projection answers with base64.
+ *
+ * The native UI validates \`workspaceFiles/readBytes\` against a generated schema that requires a real
+ * \`Uint8Array\`, while the CodeX workspace projection returns base64 for its own consumers - reaching that
+ * schema as \`expected "Uint8Array", path: ["data"]\`, the image-preview failure. Normalising at the local
+ * carrier's exit keeps the projection's own wire unchanged and only fixes what the local shell receives.
+ *
+ * @param endpoint - endpoint the result belongs to.
+ * @param result - the peer's result.
+ * @returns the result with byte-valued fields restored to \`Uint8Array\`.
+ */
+/** Shapes only: what a byte field looks like where it crosses a seam (never the content). */
+function describeBytes(data) {
+    return {
+        dataIsBytes: data instanceof Uint8Array,
+        dataType: typeof data,
+        dataKeys: typeof data === 'object' && data !== null ? Object.keys(data).length : 0,
+        preview: typeof data === 'string' ? data.slice(0, 12) : undefined,
+    };
+}
+function normalizeByteResult(endpoint, result) {
+    if (endpoint !== 'workspaceFiles/readBytes')
+        return result;
+    if (typeof result !== 'object' || result === null || Array.isArray(result))
+        return result;
+    const value = result.value;
+    if (typeof value !== 'object' || value === null || Array.isArray(value))
+        return result;
+    const data = value.data;
+    console.warn('[dsh-remote] workspaceFiles/readBytes at the switch exit', describeBytes(data));
+    if (data instanceof Uint8Array)
+        return result;
+    const bytes = decodeByteValue(data);
+    // Shapes only; never the content itself. This is the seam that faces the local shell.
+    console.warn('[dsh-remote] workspace probe', {
+        where: 'switch.exit',
+        endpoint,
+        dataType: typeof data,
+        dataKeys: typeof data === 'object' && data !== null ? Object.keys(data).length : 0,
+        decoded: bytes !== undefined,
+    });
+    if (bytes === undefined)
+        return result;
+    return { ...result, value: { ...value, data: bytes } };
 }
 //# sourceMappingURL=typert-gateway-switch.js.map

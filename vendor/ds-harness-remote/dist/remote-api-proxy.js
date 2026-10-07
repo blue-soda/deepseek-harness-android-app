@@ -1,4 +1,5 @@
 import { RemoteClientError } from '@dsh-remote/client-core';
+import { decodeByteValue, hydrateRpcAttachments } from './rpc-binary-attachments.js';
 import { HARNESS_API_TRANSFER_CHUNK_BYTES, MAX_HARNESS_API_TRANSFER_BYTES, } from '@dsh-remote/protocol';
 import { uuidV7 } from './ids.js';
 const DIRECT_API_CALL_BYTES = 2 * 1024 * 1024;
@@ -112,7 +113,10 @@ export class RemoteHarnessApiProxy {
         if (String(response.rpcId) !== String(request.rpcId) || typeof response.result !== 'object' || response.result === null) {
             throw new Error('The remote Host returned an invalid Harness API response.');
         }
-        const normalized = normalizeLegacyResponse(method, response);
+        // The Host sends bytes beside the result (see collectRpcAttachments); DSH's own connection layer
+        // would copy them back before validation, so restore them here.
+        const hydrated = { ...response, result: hydrateRpcAttachments(response.result) };
+        const normalized = normalizeLegacyResponse(method, normalizeByteResult(method, hydrated));
         return this.normalizeLegacyWelcomeSettings(method, params.payload, normalized);
     }
     normalizeLegacyWelcomeSettings(method, payload, response) {
@@ -396,5 +400,52 @@ function base64ToBytes(value) {
         throw new Error('The remote Host returned a non-canonical Harness API transfer chunk.');
     }
     return bytes;
+}
+/**
+ * \`workspaceFiles.readBytes\` must reach the native UI as a \`Uint8Array\`.
+ *
+ * The CodeX workspace projection answers it with base64 for its own consumers, and the generated schema
+ * on the native side rejects that with \`expected "Uint8Array", path: ["data"]\`. This carrier uses the
+ * dotted method name, so the check is separate from the Typert one. A shape warning (type and key count
+ * only) makes a value that still cannot be decoded identifiable instead of invisible.
+ *
+ * @param method - ApiProxy method name.
+ * @param response - the peer's response.
+ * @returns the response with byte-valued fields restored.
+ */
+/** Shapes only: what a byte field looks like where it crosses a seam (never the content). */
+function describeBytes(data) {
+    return {
+        dataIsBytes: data instanceof Uint8Array,
+        dataType: typeof data,
+        dataKeys: typeof data === 'object' && data !== null ? Object.keys(data).length : 0,
+        preview: typeof data === 'string' ? data.slice(0, 12) : undefined,
+    };
+}
+function normalizeByteResult(method, response) {
+    if (method !== 'workspaceFiles.readBytes')
+        return response;
+    const result = response.result;
+    if (result === undefined || result.ok !== true)
+        return response;
+    const value = result.value;
+    if (typeof value !== 'object' || value === null || Array.isArray(value))
+        return response;
+    const data = value.data;
+    console.warn('[dsh-remote] workspaceFiles/readBytes at the ApiProxy exit', describeBytes(data));
+    if (data instanceof Uint8Array)
+        return response;
+    const bytes = decodeByteValue(data);
+    // Shapes only; never the content itself. This is the seam that faces the local shell.
+    console.warn('[dsh-remote] workspace probe', {
+        where: 'apiproxy.exit',
+        endpoint: method,
+        dataType: typeof data,
+        dataKeys: typeof data === 'object' && data !== null ? Object.keys(data).length : 0,
+        decoded: bytes !== undefined,
+    });
+    if (bytes === undefined)
+        return response;
+    return { ...response, result: { ...result, value: { ...value, data: bytes } } };
 }
 //# sourceMappingURL=remote-api-proxy.js.map

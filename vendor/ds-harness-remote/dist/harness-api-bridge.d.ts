@@ -43,7 +43,9 @@ export declare class HarnessApiBridge {
     private readonly host;
     private readonly answer;
     constructor(api: ApiProxy, publish: PublishFrame, maxStreams?: number, logger?: SafeLogger | undefined, typertGateway?: TypertGatewayLike, harnessVersion?: string | undefined);
+    /** Answer one ApiProxy call, sending bytes in the form DSH's own connection layer expects. */
     call(input: unknown): Promise<RpcResponse<unknown>>;
+    private dispatchCall;
     private callDirectoryFallback;
     private describeFallback;
     openTransfer(input: unknown): {

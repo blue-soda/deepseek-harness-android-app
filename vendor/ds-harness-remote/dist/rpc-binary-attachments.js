@@ -86,4 +86,57 @@ function decodeBase64(value) {
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+/**
+ * Mirror of the same wire form for our own Host half.
+ *
+ * A native Remote call leaves the Host through this plugin's tunnel, which JSON-encodes whatever the
+ * Gateway returned. DSH rehydrates its own result before the Host plugin sees it, so the bytes arrive
+ * as a real \`Uint8Array\` again - and \`JSON.stringify\` turns that into \`{"0":137,"1":80,…}\`, a shape no
+ * generated schema accepts. Sending DSH's own form instead (a placeholder plus \`attachments\`) keeps one
+ * convention on both sides of the tunnel and lets \`hydrateRpcAttachments\` put the bytes back. A result
+ * without bytes is returned untouched, and tagging twice changes nothing.
+ *
+ * @param result - Gateway result about to be JSON-encoded for the client.
+ * @returns the same result, or one carrying byte attachments.
+ */
+export function collectRpcAttachments(result) {
+    if (!isRecord(result) || !Object.hasOwn(result, 'value'))
+        return result;
+    const attachments = [];
+    const value = replaceBytes(result.value, [], attachments);
+    if (attachments.length === 0)
+        return result;
+    return { ...result, value, attachments };
+}
+function replaceBytes(value, path, attachments) {
+    if (value instanceof Uint8Array) {
+        attachments.push({ path: [...path], bytes: encodeBase64(value) });
+        // The placeholder has to stay assignable at the same path; hydration overwrites it.
+        return null;
+    }
+    if (Array.isArray(value))
+        return value.map((item, index) => replaceBytes(item, [...path, index], attachments));
+    if (!isRecord(value))
+        return value;
+    const clone = {};
+    for (const [key, item] of Object.entries(value))
+        clone[key] = replaceBytes(item, [...path, key], attachments);
+    return clone;
+}
+function encodeBase64(bytes) {
+    let binary = '';
+    for (let offset = 0; offset < bytes.byteLength; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return btoa(binary);
+}
+/** Decode one byte value in any shape a JSON hop can produce, or undefined when it is not bytes. */
+export function decodeByteValue(value) {
+    try {
+        return decodeAttachmentBytes(value);
+    }
+    catch {
+        return undefined;
+    }
+}
 //# sourceMappingURL=rpc-binary-attachments.js.map

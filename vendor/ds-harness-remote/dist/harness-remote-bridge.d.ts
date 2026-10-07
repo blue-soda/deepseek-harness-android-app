@@ -18,7 +18,15 @@ export declare class HarnessRemoteBridge {
     private readonly incomingTransfers;
     private readonly outgoingTransfers;
     constructor(gateway: LocalTypertGateway, publish: PublishRemoteFrame, logger?: SafeLogger | undefined, harnessVersion?: string | undefined, terminal?: TerminalPolicy, codexWorkspace?: CodexWorkspaceBridge | undefined);
+    /**
+     * Answer one remote Gateway call.
+     *
+     * Bytes have to leave in DSH's own form: this result is JSON-encoded on its way to the client, and a
+     * \`Uint8Array\` would arrive there as \`{"0":…}\` and fail the generated schema (the image-preview
+     * failure). Tagging here, hydrating on the client, keeps one convention on both sides.
+     */
     call(input: unknown): Promise<TypertRpcResult>;
+    private dispatchCall;
     private directoryList;
     openTransfer(input: unknown): {
         opened: true;

@@ -1,5 +1,6 @@
 import { CodexRemoteClient, deriveCodexCwdWorkspaces, projectCodexThread, } from '@dsh-remote/client-core';
 import { codexPermissionPresetFromResponse } from './permissions.js';
+import { decodeByteValue } from '../rpc-binary-attachments.js';
 import { CODEX_HISTORY_MAX_MESSAGES } from './method-policy.js';
 import { collectImageBlocks, contentBlocks, isCanonicalBase64, toolOutputImageBlocks, } from './codex-image-codec.js';
 const CODEX_SESSION_PREFIX = 'codex:';
@@ -141,7 +142,7 @@ export class CodexVirtualHarness {
             if (isHostWorkspaceEndpoint(endpoint)) {
                 if (this.hostCarrier === undefined)
                     return fail('method-not-found', `CodeX virtual Harness does not implement ${endpoint}.`);
-                return await this.hostCarrier.dispatch(endpoint, payload, signal);
+                return normalizeByteResult(endpoint, await this.hostCarrier.dispatch(endpoint, payload, signal));
             }
             const args = carrierArgs(payload);
             switch (endpoint) {
@@ -2612,5 +2613,38 @@ class AsyncValueQueue {
             yield next.value;
         }
     }
+}
+/**
+ * Restore bytes the codeX-facing carriers answer as base64.
+ *
+ * The remote bridge prefers the CodeX workspace projection for a CodeX session, and that projection
+ * answers \`workspaceFiles/readBytes\` with base64 for its own consumers. The native UI validates the
+ * same result against a generated schema that requires a real \`Uint8Array\`, so the base64 string fails
+ * there with \`expected "Uint8Array", path: ["data"]\` and the image never renders. Normalising here -
+ * the seam that faces the native UI - leaves every other consumer on its own contract.
+ *
+ * @param endpoint - endpoint the result belongs to.
+ * @param result - the carrier's result.
+ * @returns the result with byte-valued fields restored, and a shape warning when they cannot be.
+ */
+function normalizeByteResult(endpoint, result) {
+    if (endpoint !== 'workspaceFiles/readBytes' || !result.ok)
+        return result;
+    const value = result.value;
+    if (typeof value !== 'object' || value === null || Array.isArray(value))
+        return result;
+    const data = value.data;
+    if (data instanceof Uint8Array)
+        return result;
+    const bytes = decodeByteValue(data);
+    if (bytes !== undefined) {
+        return { ...result, value: { ...value, data: bytes } };
+    }
+    // Shapes only; never the content itself.
+    console.warn('[dsh-remote] workspaceFiles/readBytes arrived without usable bytes', {
+        dataType: typeof data,
+        dataKeys: typeof data === 'object' && data !== null && !Array.isArray(data) ? Object.keys(data).length : 0,
+    });
+    return result;
 }
 //# sourceMappingURL=virtual-harness.js.map

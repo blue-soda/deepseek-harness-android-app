@@ -2,6 +2,7 @@ import { HARNESS_API_TRANSFER_CHUNK_BYTES, MAX_ACTIVE_TRANSFERS_PER_DIRECTION, M
 import { z } from 'zod';
 import { harnessSessionGeneration, normalizeHarnessVersion, selectHarnessVersion, } from './harness-version.js';
 import { RpcError } from './rpc-router.js';
+import { collectRpcAttachments } from './rpc-binary-attachments.js';
 import { safeErrorCode } from './safe-error.js';
 import { listRemoteDirectory } from './remote-directory-browser.js';
 import { callSessionHistory } from './harness-api-history.js';
@@ -224,7 +225,16 @@ export class HarnessApiBridge {
         this.host = api.events.host.bind(api.events);
         this.answer = api.respond.bind(api);
     }
+    /** Answer one ApiProxy call, sending bytes in the form DSH's own connection layer expects. */
     async call(input) {
+        const response = await this.dispatchCall(input);
+        const result = response.result;
+        if (result === undefined)
+            return response;
+        const tagged = collectRpcAttachments(result);
+        return tagged === result ? response : { ...response, result: tagged };
+    }
+    async dispatchCall(input) {
         const params = callSchema.parse(input);
         const signal = AbortSignal.timeout(NATIVE_CALL_TIMEOUT_MS);
         const method = this.methods.get(params.method);
