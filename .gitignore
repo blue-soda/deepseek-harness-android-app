@@ -20,3 +20,7 @@ payload.zip
 /.cache/
 # 每次构建生成的信息文件
 *.build-info.txt
+
+# Python 字节码缓存（tools/ 下跑分析脚本会生成，别提交）
+__pycache__/
+*.pyc
