@@ -968,18 +968,19 @@ function apply(ctx) {
     name: "android_say",
     description:
       "让悬浮窗小人头顶气泡显示一句话（给用户看的即时消息，如「稍等，我在查资料」）。" +
-      "长度上限 " + BUBBLE_BUDGET + " 个汉字宽：汉字与全角标点算 1，其它字符（英文/数字/半角标点/emoji）算 0.5，" +
-      "即 20 个汉字或 40 个英文字母封顶。超限直接报错（不硬截），改短后重试。" +
-      "气泡与 agent 状态（思考中…/正在调用…）共用同一位置、会被后续状态顶掉，要常驻传 sticky=true；" +
-      "系统字体被调大时能显示的字更少，App 会按真实宽度再裁（此时 truncated=true）。",
+      "长度上限 " + BUBBLE_BUDGET + " 个汉字宽：汉字与全角标点算 1，其它字符（英文/数字/符号/emoji）算 0.5，" +
+      "即 20 汉字或 40 英文字母封顶；超限直接报错。" +
+      "本次调用会阻塞 ttl 秒（1~600）：气泡显示 ttl 秒后消失，工具正好在它消失时返回 —— " +
+      "想让用户看清就设长些，只打个招呼 3~5 秒够用。" +
+      "气泡与 agent 状态共用同一位置：期间若有别的气泡或状态推送会提前把它顶掉，但调用仍等满 ttl。",
     parameters: {
       text: { type: "string", required: true, description: "要显示的话，合计不超过 " + BUBBLE_BUDGET + " 个汉字宽（汉字算 1、其它字符算 0.5）" },
-      sticky: { type: "boolean", description: "true = 常驻，直到被新状态顶掉或用户点掉。默认 false" },
-      ttl_seconds: { type: "number", description: "非 sticky 时显示多少秒后自动收起。默认 12" }
+      ttl: { type: "number", required: true, description: "气泡显示多少秒（也是本次调用阻塞的秒数）。1~600" }
     },
     output: {
       schema: resultSchema({
         text: { type: "string" },
+        ttlSeconds: { type: "number" },
         cjk: { type: "number" },
         other: { type: "number" },
         cost: { type: "number" },
@@ -990,7 +991,8 @@ function apply(ctx) {
       }),
       render: (_a, value) => {
         if (!value.ok) return renderResult(value);
-        return [{ type: "text", text: "气泡已显示「" + (value.text || "") + "」"
+        return [{ type: "text", text: "气泡「" + (value.text || "") + "」已显示并等待 "
+          + (value.ttlSeconds || 0) + " 秒后消失"
           + "（用量 " + (value.cost || 0) + "/" + (value.budget || BUBBLE_BUDGET) + " 个汉字宽"
           + "：汉字 " + (value.cjk || 0) + " + 其它 " + (value.other || 0) + "）"
           + (value.truncated ? "，被截断" : "")
@@ -1013,10 +1015,16 @@ function apply(ctx) {
           hint: "改短后重试。20 个汉字、40 个英文字母、或 10 个汉字加 20 个字母都算满；细节用 android_screen / android_see 交待。"
         };
       }
-      const body = { token: process.env.APP_LOCAL_TOKEN || "", action: "bubble", text: raw };
-      if (args.sticky === true) body.sticky = "true";
-      const secs = args.ttl_seconds === undefined ? 12 : Math.max(0, Number(args.ttl_seconds) || 0);
-      body.ttl = String(Math.round(secs * 1000));
+      const ttlNum = Number(args.ttl);
+      if (!Number.isFinite(ttlNum) || ttlNum < 1 || ttlNum > 600) {
+        return {
+          ok: false,
+          error: "ttl 需要是 1~600 之间的秒数：本次 " + (args.ttl === undefined ? "未传" : String(args.ttl)),
+          hint: "ttl 既是气泡停留时长，也是本次调用的阻塞时长；一般任务给 3~10 秒，需要用户读完再给长一些。"
+        };
+      }
+      const secs = Math.round(ttlNum);
+      const body = { token: process.env.APP_LOCAL_TOKEN || "", action: "bubble", text: raw, ttl: String(secs * 1000) };
       const r = await appPost("/overlay", body, 8000);
       if (!r.ok) {
         return {
@@ -1025,9 +1033,12 @@ function apply(ctx) {
           hint: "App 没在跑、或悬浮窗没开时无法显示气泡；可先用 android_capabilities 看状态。"
         };
       }
+      // 设计：调用阻塞 ttl 秒 —— 返回的那一刻，气泡正好按 App 侧计时器消失。
+      await new Promise((resolve) => setTimeout(resolve, secs * 1000));
       return {
         ok: true,
         text: r.bubble !== undefined ? String(r.bubble) : raw,
+        ttlSeconds: secs,
         cjk: typeof r.cjk === "number" ? r.cjk : cnt.cjk,
         other: typeof r.ascii === "number" ? r.ascii : cnt.other,
         cost: typeof r.cost === "number" ? r.cost : cnt.cost,
