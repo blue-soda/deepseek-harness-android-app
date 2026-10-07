@@ -468,6 +468,7 @@ public class MainActivity extends Activity {
                         applyStatusBar();
                         if (engineRoot != null) engineRoot.setBackgroundColor(c);
                         if (webView != null) webView.setBackgroundColor(c);
+                        applyShellPalette();   // v1.21：页面换色调 → 壳（引导页/控制台/系统栏）跟着换
                     }});
                 }
 
@@ -625,7 +626,7 @@ public class MainActivity extends Activity {
 
         statusView = new TextView(this);
         statusView.setText("正在启动 DeepSeek Harness…");
-        statusView.setTextColor(cSub());
+        statusView.setTextColor(cText());   // v1.21（UI 统一）：主状态用主文字色，副提示才用 cSub()
         statusView.setTextSize(TypedValue.COMPLEX_UNIT_PX, getResources().getDimension(R.dimen.text_body));
         statusView.setGravity(Gravity.CENTER);
         statusView.setPadding(dp(24), dp(12), dp(24), dp(12));
@@ -1130,10 +1131,10 @@ public class MainActivity extends Activity {
         box.addView(statusView, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        // v1.21：小圆环（主题蓝、直径 30dp）+ 一行副提示。
+        // v1.21：小圆环（直径 30dp）+ 一行副提示。
         // 原来这里是 260×6dp 的横向进度条（用户："下方还有个很丑的类似进度条的东西在动"）。
-        android.content.res.ColorStateList tint = android.content.res.ColorStateList.valueOf(Color.parseColor("#4d6bfe"));
-        progressBar.setIndeterminateTintList(tint);
+        // v1.21（UI 统一）：颜色改走 cAccent() —— 原来写死 #4d6bfe，既不跟主题包也不跟深浅色走。
+        progressBar.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(cAccent()));
         LinearLayout.LayoutParams pbp = new LinearLayout.LayoutParams(dp(30), dp(30));
         pbp.topMargin = dp(20);
         pbp.gravity = Gravity.CENTER_HORIZONTAL;
@@ -1157,6 +1158,8 @@ public class MainActivity extends Activity {
         root.addView(box, bp);
 
         setContentView(root);
+        // v1.21（UI 统一）：启动页也把系统栏刷成壳底色 —— 否则从引导页切过来时状态栏会留上一页的颜色。
+        applySystemBars(chromeBg());
     }
 
     /** v1.21：悬浮窗面板「完全退出」进行中 —— 期间不让界面/服务被重新拉起。 */
@@ -1589,6 +1592,7 @@ public class MainActivity extends Activity {
                         applyStatusBar();
                         if (engineRoot != null) engineRoot.setBackgroundColor(c);
                         if (webView != null) webView.setBackgroundColor(c);
+                        applyShellPalette();   // v1.21：页面换色调 → 壳跟着换
                     }
                 });
         } catch (Throwable ignored) {}
@@ -1686,7 +1690,13 @@ public class MainActivity extends Activity {
     }
     // v1.17.4：这 9 个 c*() 是控制台配色的「唯一出口」，主题包只在这里覆盖；
     // 没配置 / 该项没写时返回的仍是原来那套内置色（视觉与旧版一致）。
-    private int cBg() { return conColor("bg", getColor(conDark() ? R.color.shell_bg_dark : R.color.shell_bg_light)); }
+    private int cBg() {
+        // v1.21：DSH 页面底色已知时，壳底色**直接跟随它** —— 这是"壳与页面同一色调"的关键；
+        // 主题里显式写过的 bg 仍然优先（conColor 内部保证"显式写过的值永远优先"）。
+        int def = pageBgColor != 0 ? pageBgColor
+                : getColor(conDark() ? R.color.shell_bg_dark : R.color.shell_bg_light);
+        return conColor("bg", def);
+    }
     private int cCard() { return conCardsAlpha(conColor("card", getColor(conDark() ? R.color.shell_card_dark : R.color.shell_card_light))); }
     private int cText() { return conColor("text", getColor(conDark() ? R.color.text_on_dark : R.color.text_on_light)); }
     private int cSub() { return conColor("sub", getColor(conDark() ? R.color.sub_on_dark : R.color.sub_on_light)); }
@@ -1913,6 +1923,10 @@ public class MainActivity extends Activity {
     private final java.util.ArrayList<GuidePage> guidePages = new java.util.ArrayList<GuidePage>();
     private int guideIndex = 0;                 // 当前页（== guidePages.size() 时是最后的完成页）
     private LinearLayout guideBody = null;      // 页面内容区（每页重建）
+    private LinearLayout guideRoot = null;      // v1.21：引导页最外层容器（深浅色切换时要整页刷新底色）
+    // v1.21（UI 统一）：引导页顶部细进度条（轨道 + 强调色填充，跟随壳调色板）
+    private LinearLayout guideProgressTrack = null;
+    private View guideProgressFill = null, guideProgressSpacer = null;
     private TextView guideDots = null;          // 顶部进度文字（第 X / N 步）
     private Button guidePrevBtn = null, guideNextBtn = null;
     private TextView guideSkipBtn = null;
@@ -2095,6 +2109,7 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(cBg());
+        guideRoot = root;   // v1.21：记下来，深浅色切换时整页刷新
 
         // 顶部：品牌标题 + 进度
         LinearLayout head = new LinearLayout(this);
@@ -2111,6 +2126,21 @@ public class MainActivity extends Activity {
         headTitle.setTypeface(null, android.graphics.Typeface.BOLD);
         headTitle.setPadding(0, dp(6), 0, 0);
         head.addView(headTitle);
+
+        // v1.21（UI 统一）：细进度条 —— "还要几步"一眼可见；轨道/填充都走壳调色板，
+        // 深色浅色自动适配（原来是纯文字"第 X / N 步"，看不出还剩多少）。
+        guideProgressTrack = new LinearLayout(this);
+        guideProgressTrack.setOrientation(LinearLayout.HORIZONTAL);
+        guideProgressTrack.setBackgroundColor(cTrack());
+        guideProgressFill = new View(this);
+        guideProgressFill.setBackgroundColor(cAccent());
+        guideProgressSpacer = new View(this);
+        guideProgressTrack.addView(guideProgressFill, new LinearLayout.LayoutParams(0, dp(3), 1f));
+        guideProgressTrack.addView(guideProgressSpacer, new LinearLayout.LayoutParams(0, dp(3), 1f));
+        LinearLayout.LayoutParams trackLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(3));
+        trackLp.topMargin = dp(12);
+        head.addView(guideProgressTrack, trackLp);
         root.addView(head);
 
         // 中间：每页内容（滚动）
@@ -2202,6 +2232,18 @@ public class MainActivity extends Activity {
         guideSkipBtn.setVisibility(finishPage ? View.GONE : View.VISIBLE);
         guideSkipBtn.setText(guideIndex == guidePages.size() - 1 ? "跳过" : "跳过这页");
 
+        // v1.21（UI 统一）：细进度条跟着步数走（完成页 = 满格）
+        if (guideProgressFill != null && guideProgressSpacer != null) {
+            float done = finishPage ? total : (guideIndex + 1f);
+            float rest = Math.max(total - done, 0.0001f);
+            LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(0, dp(3));
+            flp.weight = Math.max(done, 0.0001f);
+            LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0, dp(3));
+            slp.weight = rest;
+            guideProgressFill.setLayoutParams(flp);
+            guideProgressSpacer.setLayoutParams(slp);
+        }
+
         if (finishPage) {
             TextView t = new TextView(this);
             t.setText("配置完成");
@@ -2236,6 +2278,18 @@ public class MainActivity extends Activity {
                 onWorkspaceRowClick();
             }});
             guideBody.addView(wsRow);
+
+            // v1.21（UI 统一）：完成页给一行「界面外观」—— 首次使用时就能选深浅色，
+            // 与 DSH 页面色调对齐（跟随页面 = 默认，跟随实测页面底色）。
+            LinearLayout schemeWrap = new LinearLayout(this);
+            schemeWrap.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams swLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            swLp.topMargin = dp(12);
+            schemeWrap.setLayoutParams(swLp);
+            schemeWrap.addView(shellSchemeRow());
+            guideBody.addView(schemeWrap);
+
             refreshAllStatuses();
             return;
         }
@@ -2258,16 +2312,26 @@ public class MainActivity extends Activity {
         d.setLineSpacing(dp(3), 1f);
         guideBody.addView(d, cTop(dp(10)));
 
+        // v1.21（UI 统一）：状态 + 授权按钮收进**一张卡片**（与控制台卡片同款圆角/描边/底色），
+        // 页面从"标题 + 散落文字 + 裸按钮"变成"标题 + 卡片"，三个原生页面观感一致。
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(16), dp(16), dp(16));
+        card.setBackground(cShape(cCard(), cLine(), 1, 12));
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        cardLp.topMargin = dp(16);
+        card.setLayoutParams(cardLp);
+
         // 状态行（挂进 permRows，onResume / Shizuku 事件回来时 refreshAllStatuses 会统一刷新）
         LinearLayout stRow = new LinearLayout(this);
         stRow.setOrientation(LinearLayout.HORIZONTAL);
         stRow.setGravity(Gravity.CENTER_VERTICAL);
-        stRow.setPadding(0, dp(18), 0, 0);
         stRow.addView(cText("当前状态：", 13f, cSub(), false));
         TextView status = new TextView(this);
         status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         stRow.addView(status);
-        guideBody.addView(stRow);
+        card.addView(stRow);
         PermRow pr = new PermRow();
         pr.status = status;
         pr.provider = pg.provider;
@@ -2283,7 +2347,8 @@ public class MainActivity extends Activity {
         }});
         act.setEnabled(!granted);
         if (granted) act.setText("已授权 ✓");
-        guideBody.addView(act);
+        card.addView(act);
+        guideBody.addView(card);
         guideActionBtn = act;
 
         refreshAllStatuses();
@@ -5909,10 +5974,90 @@ public class MainActivity extends Activity {
     // 设计稿：tmp-diag/v1173/console-theme-design.md（§7.6 第 1 轮）
     // 规范/校验器：release-src/console-theme/（同一套规则，改一处必须同步另一处）
 
-    /** 控制台配色方案：appearance.dark 显式指定时以它为准，缺省（follow）跟随 App 主题。 */
+    /**
+     * 壳的配色方案：`appearance.dark` 显式指定时以它为准；缺省（follow）跟随**壳的深浅色**
+     * （见 {@link #shellDark()}：用户选择 > DSH 页面实测底色 > 系统）。
+     */
     private boolean conDark() {
         ConsoleTheme t = conTheme;
-        return t == null ? isDark() : t.prefersDark(isDark());
+        return t == null ? shellDark() : t.prefersDark(shellDark());
+    }
+
+    // ==================== v1.21：壳级界面外观（控制台 / 引导页 / 启动等待页共用）====================
+
+    /** v1.21：用户在控制台或引导页选的界面外观（follow / light / dark）。 */
+    private static final String KEY_UI_SCHEME = "ui_scheme";
+
+    /** 读界面外观偏好；未设置或异常一律 follow。 */
+    private String uiSchemePref() {
+        try {
+            String s = getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_UI_SCHEME, "follow");
+            return (s == null || s.isEmpty()) ? "follow" : s;
+        } catch (Throwable t) {
+            return "follow";
+        }
+    }
+
+    /** 写界面外观偏好，并立刻把壳（状态栏 / 当前页面 / 控制台）刷成新方案。 */
+    private void setUiScheme(String scheme) {
+        try {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .putString(KEY_UI_SCHEME, scheme).apply();
+        } catch (Throwable ignored) {}
+        applyShellPalette();
+        refreshConsole();
+    }
+
+    /**
+     * v1.21：**壳的深浅色判定** —— 三源合一，优先级从高到低：
+     *
+     * ① 用户显式选择（light / dark）—— 用户意图最高；
+     * ② DSH 页面**实测底色**（{@link #pageBgColor}）—— 让壳与网页"同一个色调"：
+     *    网页是深色主题时壳也深色，哪怕系统是浅色；反之亦然；
+     * ③ 系统深浅色（{@link #isDark()}）—— 页面底色还没测到时的兜底。
+     *
+     * 修掉的割裂：以前只看系统，于是"系统浅色 + DSH 用深色主题"时，
+     * 启动页/引导页/控制台是亮色，一切到主界面就是深色页面，观感断层。
+     */
+    private boolean shellDark() {
+        String p = uiSchemePref();
+        if ("dark".equals(p)) return true;
+        if ("light".equals(p)) return false;
+        int bg = pageBgColor;
+        if (bg != 0) return conIsDarkColor(bg);
+        return isDark();
+    }
+
+    /** 把壳配色应用到"当前可见的那一层"（启动页 / 引导页 / 控制台）+ 系统栏。 */
+    private void applyShellPalette() {
+        try {
+            int bg = chromeBg();
+            applySystemBars(bg);
+            // 启动等待页：文字/圆环/底色都按新方案重刷（换色随时可能发生在启动过程中）
+            if (splashBrand != null) splashBrand.setTextColor(cText());
+            if (statusView != null) statusView.setTextColor(cText());
+            if (splashHint != null) splashHint.setTextColor(cSub());
+            if (progressBar != null) {
+                progressBar.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(cAccent()));
+            }
+            if (engineRoot != null && webView != null && engineRoot.getParent() != null) {
+                // 主界面：底色跟随 DSH 页面（pageBgColor 已知时 = 页面色；否则主题底色）
+                engineRoot.setBackgroundColor(pageBgColor != 0 ? pageBgColor : cBg());
+            }
+            // 引导页：整页重建 —— 头部的标题/进度条/底部按钮都是创建时定色的，
+            // 只刷 body 会留下"浅色时创建的灰标题挂在深色底上"这种残留（实测踩到）。
+            if (guideRoot != null && guideRoot.getParent() != null) refreshGuideUi();
+        } catch (Throwable ignored) {}
+    }
+
+    /** 保持当前步数不变，按新配色重建引导页整页。 */
+    private void refreshGuideUi() {
+        int keep = guideIndex;
+        showPermissionScreen();                       // 内部会把 guideIndex 归零
+        try {
+            guideIndex = Math.max(0, Math.min(keep, guidePages.size()));
+            renderGuidePage();
+        } catch (Throwable ignored) {}
     }
 
     /**
@@ -6433,6 +6578,50 @@ public class MainActivity extends Activity {
     }
 
     /** 自绘按钮：内边距固定、单行、超长省略号，不再出现“文字超出按钮”的情况。 */
+    /**
+     * v1.21（UI 统一）：一行「界面外观」三选一 —— 跟随页面 / 浅色 / 深色。
+     *
+     * 引导页完成页与控制台「主题」页共用同一份实现、同一个偏好（{@link #KEY_UI_SCHEME}）。
+     * 点一下立即生效：壳（控制台 / 引导页 / 启动页 + 系统栏）整层换色。
+     */
+    private View shellSchemeRow() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(14), dp(16), dp(14));
+        box.setBackground(cShape(cCard(), cLine(), 1, 12));
+
+        box.addView(cText("界面外观", 15f, cText(), true));
+        box.addView(cText("控制台、引导页、启动页会跟随 DSH 页面的色调；也可以在这里固定成浅色或深色。",
+                12.5f, cSub(), false), cTop(dp(4)));
+
+        final String[] keys = {"follow", "light", "dark"};
+        final String[] labels = {"跟随页面", "浅色", "深色"};
+        final String cur = uiSchemePref();
+        LinearLayout seg = new LinearLayout(this);
+        seg.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < keys.length; i++) {
+            final String key = keys[i];
+            final boolean on = key.equals(cur);
+            TextView b = new TextView(this);
+            b.setText(labels[i]);
+            b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13 * conFontScale());
+            b.setGravity(Gravity.CENTER);
+            b.setPadding(dp(12), dp(9), dp(12), dp(9));
+            b.setTextColor(on ? Color.WHITE : cAccent());
+            b.setBackground(cShape(on ? cAccent() : cTrack(), on ? cAccent() : cLine(), 1, 10));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) lp.leftMargin = dp(8);
+            b.setLayoutParams(lp);
+            b.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) { setUiScheme(key); }
+            });
+            seg.addView(b);
+        }
+        box.addView(seg, cTop(dp(12)));
+        return box;
+    }
+
     private Button cButton(String label, boolean primary) {
         Button b = new Button(this);
         b.setAllCaps(false);
@@ -6454,9 +6643,10 @@ public class MainActivity extends Activity {
         } else {
             // 次按钮：强调色描边 + 强调色文字（之前用灰底，看着像“禁用”）
             b.setTextColor(cAccent());
-            // v1.19.6：走 conDark()（控制台方案），不要用 isDark()（系统偏好）——
-        // 主题指定了 appearance.dark 时两者会相反，底/字就不是一套了。
-        b.setBackground(cShape(conDark() ? 0x1A4D6BFE : 0x144D6BFE, cAccent(), 1, 8));
+            // v1.21（UI 统一）：底色改为**从强调色推导**（只叠透明度），不再写死品牌蓝 0x1A4D6BFE —
+            // 换品牌色或主题包改了 accent 时，按钮底色自动跟着走。
+            int fill = (cAccent() & 0x00FFFFFF) | (conDark() ? 0x1A000000 : 0x14000000);
+            b.setBackground(cShape(fill, cAccent(), 1, 8));
         }
         return b;
     }
@@ -8148,6 +8338,13 @@ public class MainActivity extends Activity {
         a1.addView(rl, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         // 「恢复默认」是可逆的，但仍是"改数据"，按统一版式放到最下面单独一块（见 ④ 维护）。
         col.addView(a1, cTop(cGap(12)));
+
+        // ---------- ①-b 界面外观（壳级深浅色） ----------
+        // v1.21（UI 统一）：与下面的主题包 appearance.dark **不是一回事** ——
+        // 这一项决定"壳"（控制台 / 引导页 / 启动等待页 + 系统栏）的深浅，
+        // 默认「跟随页面」= 跟着 DSH 页面实测底色走，从而与网页同一色调。
+        col.addView(cGrpTitle(t("title.grpShellScheme", "界面外观（壳）")), cTop(cGap(20)));
+        col.addView(shellSchemeRow(), cTop(cGap(8)));
 
         // ---------- ② 导入 / 导出（行式入口） ----------
         col.addView(cGrpTitle(t("title.grpThemeIo", "导入 / 导出")), cTop(cGap(20)));

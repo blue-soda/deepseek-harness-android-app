@@ -20,3 +20,6 @@ payload.zip
 /.cache/
 # 每次构建生成的信息文件
 *.build-info.txt
+
+# 隔离工作区里的编译验证产物（不属于源码）
+.compile-check/
