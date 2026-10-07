@@ -7,7 +7,7 @@
 
 > 把 DeepSeek Harness（DSH）打包成**可直接安装的 Android APK**：装上就能用，还能让 AI **免 Root 操作手机**。
 >
-> 本仓库是 [woaiys3/deepseek-harness-android-app](https://github.com/woaiys3/deepseek-harness-android-app) 的社区分支：**已合并上游 v1.19.0**（带来 AI 浏览器、内核自检 / 自修复、控制台「一切皆自定义」、会话管理与回收站、会话级自愈等能力），并在其之上做界面与体验改动、以及面向「AI 真机操作」的工具增强。
+> 本仓库是 [woaiys3/deepseek-harness-android-app](https://github.com/woaiys3/deepseek-harness-android-app) 的社区分支，在其之上做了形象与体验上的改动。
 
 ## 🐟 与上游的区别
 
