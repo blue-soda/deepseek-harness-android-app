@@ -532,9 +532,7 @@ function apply(ctx) {
   // 应用使用时长（UsageStats：需用户在系统设置授予「使用情况访问」权限）
   ctx.tools.register(defineTool({
     name: "android_usage",
-    description:
-      "查询手机各应用的使用时长（UsageStats）：返回最近 N 天每个应用的前台使用时长（毫秒/分钟），按时长降序。" +
-      "可用于回答「今天/本周哪些应用用得最多」「某应用用了多久」等问题。App 需已授予「使用情况访问」权限。",
+    description: "查询各应用使用时长（UsageStats）：最近 N 天每个应用的前台时长（毫秒/分钟），按时长降序。App 需已授予「使用情况访问」权限。",
     parameters: {
       days: { type: "number", description: "查询最近几天（默认 1，上限 30）" }
     },
@@ -571,9 +569,7 @@ function apply(ctx) {
   // 小鲸鱼悬浮窗控制（含引擎状态显示；需已授予悬浮窗权限）
   ctx.tools.register(defineTool({
     name: "android_overlay",
-    description:
-      "控制 DeepSeek Harness 的小鲸鱼悬浮窗：show=显示悬浮窗（小鲸鱼图标，点击展开引擎状态面板）；" +
-      "hide=隐藏；status=查询悬浮窗与引擎运行状态。需已授予悬浮窗权限。",
+    description: "控制悬浮窗小人：show 显示（点击可展开引擎状态面板）、hide 隐藏、status 查询悬浮窗与引擎状态。需要悬浮窗权限。",
     parameters: {
       action: {
         type: "string", required: true, enum: ["show", "hide", "status"],
@@ -610,10 +606,7 @@ function apply(ctx) {
   // ==========================================================================
   ctx.tools.register(defineTool({
     name: "android_apps",
-    description:
-      "列出手机已安装的应用（包名 / 显示名 / 是否系统应用 / 是否能启动 / 版本号），不需要 root 或 Shizuku。" +
-      "默认按「可启动优先、名称」排序；返回里 total 是匹配总数、count 是本次返回条数，被截断时用 filter 或 limit 收窄。" +
-      "要打开某个应用用 android_launch。",
+    description: "列出已安装应用：包名、显示名、是否系统应用、能否启动、版本号。免 root 与 Shizuku。默认按可启动优先排序；total 是匹配总数、count 是本次返回条数，被截断时用 filter 或 limit 收窄。要打开应用用 android_launch。",
     parameters: {
       filter: { type: "string", description: "按包名或显示名做不区分大小写的关键字过滤（只匹配这两者：搜 wechat 找不到「微信」，得用包名 com.tencent.mm）" },
       third_party_only: { type: "boolean", description: "true 只列第三方应用（排除系统应用）" },
@@ -676,9 +669,7 @@ function apply(ctx) {
 
   ctx.tools.register(defineTool({
     name: "android_launch",
-    description:
-      "启动一个已安装的应用，不需要 root 或 Shizuku。package 用 android_apps 查到的包名。" +
-      "只走应用自身的桌面入口；要指定 activity 或在虚拟屏里启动用 android_app(action=launch)。",
+    description: "启动一个已安装应用，免 root 与 Shizuku；package 用 android_apps 查到的包名。只走应用自身的桌面入口；要指定 activity 或在虚拟屏里启动用 android_app(action=launch)。",
     parameters: {
       package: { type: "string", required: true, description: "要启动的应用包名，如 com.android.settings" }
     },
@@ -717,13 +708,7 @@ function apply(ctx) {
   // 输入法的「确定」只收键盘不导航 —— 这条路基本不可用。一条 Intent 就能直达，且不依赖无障碍。
   ctx.tools.register(defineTool({
     name: "android_open_url",
-    description:
-      "用系统默认应用打开一个 URL 或深链（Intent.ACTION_VIEW），不需要 root 或 Shizuku。" +
-      "要打开网页 / 唤起 App 深链（https://、market://、weixin:// 等），一律优先用本工具，" +
-      "不要走「在浏览器里点地址栏→输入→提交」那条路：实测在 Chromium 无障碍下极不可靠（setText 返回 false、" +
-      "粘贴被输入法吃掉、输入法的确定键只收键盘不导航），且要十几步。" +
-      "返回 ok 只表示 Intent 已发出（系统能不能处理由系统决定，例如没装对应 App 会失败）。" +
-      "若要确认界面真的换了，接着用 android_screen / android_see 读一次当前界面。",
+    description: "用系统默认应用打开 URL 或深链（ACTION_VIEW），免 root 与 Shizuku。打开网页、唤起深链（https://、market://、weixin:// 等）一律优先用它，不要走「在浏览器里点地址栏→输入→提交」：实测 Chromium 无障碍下极不可靠（setText 返回 false、粘贴被输入法吃掉），且要十几步。\n返回 ok 只表示 Intent 已发出，系统能不能处理由系统决定（没装对应 App 会失败）；要确认界面真的换了，接着读一次 android_screen / android_see。",
     parameters: {
       url: { type: "string", required: true, description: "要打开的 URL 或深链，如 https://example.com 或 market://details?id=com.tencent.mm" },
       package: { type: "string", description: "可选：指定交给哪个应用处理（如 com.android.chrome、com.microsoft.emmx）" },
@@ -767,10 +752,7 @@ function apply(ctx) {
   // 与 android_open_url 的区别：可指定 action / type / extras（例如测试"某 App 能不能被深链唤起"）。
   ctx.tools.register(defineTool({
     name: "android_open_intent",
-    description:
-      "发起一个通用 Intent（免特权）：action（默认 view）+ url/data + package（指定由谁处理）+ type + extras。" +
-      "用途：打开网页（等价 android_open_url）、唤起深链（weixin://、alipays://…）、测试某 App 是否响应某 Intent。" +
-      "返回 ok 只表示 Intent 已发出；要确认界面真的换了，接着用 android_screen / android_see。",
+    description: "发起通用 Intent（免特权）：action（默认 view）、url/data、package（指定由谁处理）、type、extras。用于打开网页、唤起深链（weixin://、alipays://）、测试某 App 是否响应某 Intent。返回 ok 只表示 Intent 已发出；要确认界面真的换了，接着读一次 android_screen / android_see。",
     parameters: {
       action: { type: "string", description: "Intent action，如 android.intent.action.VIEW / SEND / DIAL（默认 VIEW）" },
       url: { type: "string", description: "data URI，如 https://… / weixin:// / tel:10086" },
@@ -819,11 +801,7 @@ function apply(ctx) {
   // v1.22（复盘 §5）：免特权查看 / 解包已安装应用的 APK —— 逆向侦查入口（纪律：只读）
   ctx.tools.register(defineTool({
     name: "android_apk_info",
-    description:
-      "查看一个已安装应用的 APK：路径 / 大小 / 应用名，或列出包内条目（action=list）。免特权。" +
-      "用途：逆向侦查（找 JS bundle、接口表、资源、manifest）。" +
-      "复盘里那位 agent 是手搓 `pm path` + `unzip` 才拿到这些 —— 现在一步到位，且不依赖设备有没有 unzip。" +
-      "⚠ 纪律：只读。它读的是别人的安装包（Android 上这是正常性质），但不要用它去改别人的应用。",
+    description: "查看一个已安装应用的 APK：路径、大小、应用名，或列出包内条目（action=list）。免特权。用于逆向侦查（找 JS bundle、接口表、资源、manifest），不需要设备有 unzip。\n只读：读别人的安装包在 Android 上是正常操作，但不要用它去改动他人的应用。",
     parameters: {
       package: { type: "string", required: true, description: "包名（用 android_apps 查）" },
       list: { type: "boolean", description: "true = 附带包内条目清单（默认 false 只回路径/大小）" },
@@ -868,10 +846,7 @@ function apply(ctx) {
 
   ctx.tools.register(defineTool({
     name: "android_apk_extract",
-    description:
-      "从已安装应用的 APK 里取出文件（单个 entry，或按 prefix 批量，如 assets/）。免特权。" +
-      "默认解到应用私有目录（files/apk-extract），也可用 out_dir 指定其它可写路径。" +
-      "取出 JS bundle / 接口表后用 fs 工具读即可。⚠ 只读别人的包，不要改动任何东西。",
+    description: "从已安装应用的 APK 里取出文件（单个 entry，或按 prefix 批量如 assets/），免特权。默认解到应用私有目录 files/apk-extract，可用 out_dir 指定其它可写路径；取出 JS bundle 后用 fs 工具读。只读，不要改动任何东西。",
     parameters: {
       package: { type: "string", required: true, description: "包名" },
       entry: { type: "string", description: "包内完整路径（与 prefix 二选一）" },
@@ -917,11 +892,7 @@ function apply(ctx) {
   // v1.22（复盘 §5）：读本应用自己的 logcat —— 并如实说明系统边界
   ctx.tools.register(defineTool({
     name: "android_logcat",
-    description:
-      "读取日志（`logcat -d`，默认最近 200 行）。免特权，但受系统限制：" +
-      "Android 11+ 起应用只能读到自己（以及自己启动的子进程）的日志，别家 App 的日志看不到 —— " +
-      "这不是工具坏了，是系统隐私策略。要看引擎/插件日志，本工具的 \"DSH\" 关键字过滤通常就够。" +
-      "更全的日志在控制台「日志」页或 files/dsh-web.log（用 fs 工具读）。",
+    description: "读取日志（logcat -d，默认最近 200 行）。免特权，但受系统限制：Android 11+ 起应用只能读到自己的（以及自己启动的子进程的）日志，别家 App 的看不到——这是系统隐私策略，不是工具坏了。看引擎/插件日志时 \"DSH\" 关键字过滤通常就够；更全的日志在控制台「日志」页或 files/dsh-web.log（用 fs 工具读）。",
     parameters: {
       lines: { type: "number", description: "最近多少行（默认 200，上限 2000）" },
       filter: { type: "string", description: "可选关键字过滤（对行做包含匹配）" },

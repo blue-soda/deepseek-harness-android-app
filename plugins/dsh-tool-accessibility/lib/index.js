@@ -403,10 +403,7 @@ function apply(ctx) {
   // 状态查询（始终注册：AI 先查状态，未开启时引导用户去系统设置开启）
   ctx.tools.register(defineTool({
     name: "android_a11y_status",
-    description:
-      "查询 DeepSeek Harness 无障碍服务（屏幕助手）是否已开启，以及当前屏幕焦点应用。" +
-      "无障碍服务开启后，AI 才能读取屏幕内容并替你点击/输入/滚动（android_screen/android_tap 等）。" +
-      "若未开启（running=false），请引导用户：系统设置 → 无障碍 →（已下载的服务/服务）→ 开启「DeepSeek Harness 屏幕助手」。",
+    description: "查询无障碍服务（屏幕助手）是否开启，以及当前焦点应用。未开启时 android_screen / android_tap / android_type 等全部不可用，需引导用户到：系统设置 → 无障碍 → 开启「DeepSeek Harness 屏幕助手」。",
     parameters: {},
     output: {
       schema: {
@@ -506,10 +503,7 @@ function apply(ctx) {
   // 读屏（控件树）
   ctx.tools.register(defineTool({
     name: "android_screen",
-    description:
-      "读取当前屏幕的控件树（无障碍）：返回前台应用包名、屏幕可见控件的文字/描述/坐标/可点击性。" +
-      "坐标是屏幕绝对像素坐标，可直接用于 android_tap 的 x/y。" +
-      "用于回答「屏幕上现在有什么」「帮我找到某某按钮/选项」「当前在哪个界面」。需要已开启无障碍服务。",
+    description: "读取当前屏幕的控件树：前台应用包名，以及可见控件的文字/描述/坐标/可点击性。坐标是屏幕绝对像素，可直接给 android_tap 的 x/y。看不出布局或图片内容时改用 android_see。需要无障碍服务。",
     parameters: {},
     output: {
       schema: {
@@ -581,11 +575,7 @@ function apply(ctx) {
   // 点击
   ctx.tools.register(defineTool({
     name: "android_tap",
-    description:
-      "点击屏幕上的控件。传 text（控件文字，模糊包含匹配，优先可点击项）、desc（内容描述）、x/y（屏幕绝对像素坐标）或 fx/fy（0~1 分数坐标）。" +
-      "优先用 fx/fy 分数坐标（相对屏幕比例）：截图会被模型查看器缩放，用绝对像素容易点偏，分数坐标免疫缩放。" +
-      "至少给一个；同时给了 text 与坐标时按 text 查找优先，找不到再按坐标点。需要已开启无障碍服务。" +
-      "WebView / 网页按钮 / 自绘界面里无障碍点击常被忽略（返回成功但界面没变）：这类目标直接用 fx/fy 坐标，或改用 android_gesture 的 tap 笔。",
+    description: "点击控件或坐标：text（控件文字，模糊包含匹配，优先可点击项）、desc（内容描述）、x/y（屏幕像素）或 fx/fy（0~1 分数坐标）至少给一个。优先用 fx/fy：截图会被缩放，绝对像素容易点偏。同时给 text 与坐标时先按 text 查找。\n网页/WebView/自绘界面的无障碍点击常被忽略（返回成功但界面没变）：这类目标直接用 fx/fy，或改用 android_gesture 的 tap 笔。需要无障碍服务。",
     parameters: {
       text: { type: "string", description: "控件文字（模糊包含匹配）" },
       desc: { type: "string", description: "控件内容描述（模糊包含匹配）" },
@@ -740,12 +730,7 @@ function apply(ctx) {
   // 失败时给出可执行回退路径（而不是让模型自己去猜"为什么没输入进去"）。
   ctx.tools.register(defineTool({
     name: "android_paste_text",
-    description:
-      "把文本通过剪贴板粘贴进当前输入框（推荐用于中文、emoji，以及 WebView/contenteditable 输入框）。" +
-      "内部顺序：写入系统剪贴板 → 让无障碍服务对聚焦的输入框执行粘贴（ACTION_PASTE）。" +
-      "若目标未聚焦，请先用 android_tap 点击输入框并确认软键盘弹出。\n" +
-      "已知限制（如实说明）：ACTION_PASTE 是否生效取决于输入法/应用自身实现，第三方输入法可能只把内容放进候选栏而不提交。" +
-      "失败时本工具会返回回退路径：用 android_see 截图后点击输入法的「粘贴」键（通常在键盘上方一行，屏幕底部约 y≈0.586 一带）。",
+    description: "把文本经剪贴板粘贴进当前输入框（中文、emoji、WebView/contenteditable 首选）：写系统剪贴板后对聚焦的输入框执行 ACTION_PASTE。目标未聚焦时先用 android_tap 点击并确认软键盘弹出。\n是否生效取决于输入法：第三方输入法可能只把内容放进候选栏而不提交。失败时返回的回退路径是 android_see 后点输入法的「粘贴」键（键盘上方一行，屏幕底部约 y≈0.586）。",
     parameters: {
       text: { type: "string", required: true, description: "要粘贴的文本（支持中文）" }
     },
@@ -822,9 +807,7 @@ function apply(ctx) {
   // 滚动
   ctx.tools.register(defineTool({
     name: "android_scroll",
-    description:
-      "在当前可滚动区域滚动屏幕：direction 为 up（向上滚动看更上面内容）/ down / left / right。" +
-      "用于翻页、浏览长列表。需要已开启无障碍服务。",
+    description: "在当前可滚动区域滚动屏幕：direction 为 up / down / left / right。需要无障碍服务。",
     parameters: {
       direction: {
         type: "string", required: true, enum: ["up", "down", "left", "right"],
@@ -1113,11 +1096,7 @@ function apply(ctx) {
   // 滑动
   ctx.tools.register(defineTool({
     name: "android_swipe",
-    description:
-      "在屏幕上从起点滑动到终点（按下→移动→抬起，单指）。" +
-      "参数可用屏幕绝对像素（x1/y1→x2/y2）或分数坐标（fx1/fy1→fx2/fy2，0~1，推荐）。" +
-      "durationMs 控制滑动时长（默认 300ms；慢速拖动可加大到 800~1500ms）。" +
-      "适合翻页、划动列表、游戏内转向/拖动。需要已开启无障碍服务。",
+    description: "从起点滑动到终点（按下→移动→抬起，单指）。坐标用 fx1/fy1→fx2/fy2（0~1，推荐）或 x1/y1→x2/y2 绝对像素；durationMs 默认 300，慢速拖动可给 800~1500。需要无障碍服务。",
     parameters: {
       x1: { type: "number", description: "起点 x（像素）" },
       y1: { type: "number", description: "起点 y（像素）" },
@@ -1169,10 +1148,7 @@ function apply(ctx) {
   // 长按 / 按住指定时长后自动抬起
   ctx.tools.register(defineTool({
     name: "android_hold",
-    description:
-      "在指定位置按住（长按）durationMs 毫秒后自动抬起，也可用 finger 指定手指。" +
-      "需要一直按住不放（延续到后续操作）时，不要用本工具，改用 android_touch action=down（down 后手指保持按住，可跨调用延续）。" +
-      "适合长按图标、游戏蓄力、按住等待等。需要已开启无障碍服务。",
+    description: "在指定位置按住 durationMs 毫秒后自动抬起，可用 finger 指定手指。需要一直按住、延续到后续操作时改用 android_touch 的 action=down。需要无障碍服务。",
     parameters: {
       x: { type: "number", description: "按住 x（像素）" },
       y: { type: "number", description: "按住 y（像素）" },
@@ -1349,9 +1325,7 @@ function apply(ctx) {
   // 触摸状态查询
   ctx.tools.register(defineTool({
     name: "android_touch_status",
-    description:
-      "查询当前按住的手指（虚拟触摸屏状态）。用于确认之前 down 的手指是否还在按住、坐标在哪、按住多久。" +
-      "手指按住超过 30 秒会被自动抬起（安全机制）。需要已开启无障碍服务。",
+    description: "查询当前按住的手指（虚拟触摸屏状态）：编号、坐标、按住时长。手指超过 30 秒会被自动抬起。需要无障碍服务。",
     parameters: {},
     output: {
       schema: {
@@ -1395,13 +1369,7 @@ function apply(ctx) {
   // v1.22（P1）：把「聚焦 → 写文本 → 提交 → 读回自证」做成一个原子工具（真机 Agent 复盘 §4）
   ctx.tools.register(defineTool({
     name: "android_focus_type",
-    description:
-      "把「聚焦输入框 → 写入文本 →（可选）提交 → 读回自证」做成一次调用。" +
-      "为什么需要它：实测在 Chromium/WebView 里，单独用 android_type 会 ACTION_SET_TEXT 返回 false、" +
-      "android_paste_text 的内容容易落进输入法候选条、而输入法的「确定」只是收起键盘并不导航。" +
-      "本工具内部顺序回退：① 无障碍直接写 → ② 写 App 剪贴板再粘贴；提交走 ACTION_IME_ENTER（Android 11+）；" +
-      "每一步都读回控件树自证，并在 steps/verified 里如实说明哪一步生效、哪一步没生效。" +
-      "要打开网址请优先用 android_open_url（比在浏览器里打字可靠得多）。",
+    description: "把「聚焦输入框 → 写入文本 → 可选提交 → 读回自证」做成一次调用。实测在 Chromium/WebView 里，单独用 android_type 会 ACTION_SET_TEXT 返回 false、android_paste_text 易落进输入法候选栏、输入法的确定键只收键盘不导航，所以本工具内部按序回退：无障碍直接写 → 写 App 剪贴板再粘贴；提交走 ACTION_IME_ENTER（Android 11+）；每步都读回控件树自证，并写在 steps/verified 里说明哪步生效。要打开网址请优先用 android_open_url。",
     parameters: {
       text: { type: "string", required: true, description: "要写入的文本（中文 / emoji 均可）" },
       select: { type: "string", description: "目标输入框的文字或提示（按文字找控件并点击聚焦，推荐）" },
@@ -1571,9 +1539,7 @@ function apply(ctx) {
   // v1.22（P1）：等某段文字出现 —— 替代「sleep + 反复截图」
   ctx.tools.register(defineTool({
     name: "android_find_text",
-    description:
-      "在控件树里查找某段文字，并可以等它出现（轮询，不产生任何截图）。" +
-      "点完之后等下一页 / 等按钮可点 / 等提示出现，都用它，比固定 sleep 或反复 android_see 既快又省内存。",
+    description: "在控件树里查找某段文字，并可等它出现（轮询，不截图）。点完等下一页、等按钮可点、等提示出现都用它，比固定 sleep 或反复 android_see 更快也更省内存。",
     parameters: {
       text: { type: "string", required: true, description: "要找的文字（包含匹配）" },
       timeout_ms: { type: "number", description: "最多等多久（默认 5000；给 0 表示只查一次）" },
@@ -1653,9 +1619,7 @@ function apply(ctx) {
   // v1.22（P1）：等界面稳定（控件树指纹）—— 比截图比哈希省内存（不产生位图）
   ctx.tools.register(defineTool({
     name: "android_wait_stable",
-    description:
-      "等界面稳定：轮询控件树指纹，直到连续两次相同（或超时）。用于「等页面加载完再截图/点击」。" +
-      "比「不停地截图比哈希」省内存（不产生任何位图），也不会触发系统的内存回收。",
+    description: "等界面稳定：轮询控件树指纹，直到连续两次相同（或超时）。不产生任何位图，比反复截图比哈希省内存。",
     parameters: {
       timeout_ms: { type: "number", description: "最多等多久（默认 6000）" },
       interval_ms: { type: "number", description: "轮询间隔（默认 500）" },
@@ -1728,11 +1692,7 @@ function apply(ctx) {
   // v1.22（P1）：与「上次看过的界面」做差异 —— 用来确认"刚才那一下到底生效没有"，不产生截图
   ctx.tools.register(defineTool({
     name: "android_screen_diff",
-    description:
-      "对比「与上一次读取控件树相比，界面变了什么」：回新增 / 消失的节点与计数；没变则明确回「无变化」。" +
-      "适用场景：点击 / 输入之后确认是否真的生效（复盘里「操作成功但没生效」是最高频的坑）。" +
-      "不产生任何截图（纯控件树比较），比「再截一张图自己看」既省内存也省 token。" +
-      "比较基准是最近一次读过控件树的操作（android_screen / android_find_text / android_wait_stable / 本工具等）。",
+    description: "对比上一次读控件树以来界面变了什么：回新增/消失的节点与计数，没变则明确回无变化。点击或输入之后确认是否真的生效用它（操作成功但没生效是高频坑）。纯控件树比较、不截图。基准是最近一次读控件树的操作（android_screen / android_find_text / android_wait_stable / 本工具）。",
     parameters: {
       limit: { type: "number", description: "最多各列出多少条新增/消失（默认 20）" }
     },
@@ -1798,10 +1758,7 @@ function apply(ctx) {
   // v1.22（P1）：滚动直到某段文字出现（替代「scroll + screen」反复手试）
   ctx.tools.register(defineTool({
     name: "android_scroll_to",
-    description:
-      "反复滚动屏幕直到某段文字出现（可指定方向与最大次数）。用于长列表 / 长页面里找目标。" +
-      "每滚一次读一次控件树（不截图），找到就回 found=true 及其位置；滚满次数仍没有就如实回 found=false。" +
-      "比「自己 scroll 几次 + 每次 android_see 看一眼」又快又省内存。",
+    description: "反复滚动直到某段文字出现（可指定方向与最大次数），用于长列表/长页面里找目标。每滚一次读一次控件树、不截图；找到回 found=true 及位置，滚满仍未出现如实回 found=false。",
     parameters: {
       text: { type: "string", required: true, description: "要找的文字（包含匹配）" },
       direction: { type: "string", description: "down（默认，向下翻）/ up / left / right" },
@@ -1888,12 +1845,7 @@ function apply(ctx) {
   // v1.22：内存体检（真机 Agent 复盘要求的前置守卫项）
   ctx.tools.register(defineTool({
     name: "android_mem_status",
-    description:
-      "查看本机内存状况（读 /proc/meminfo，全机视图，不受 App cgroup 隔离）。" +
-      "准备做长时间 / 高频的屏幕操作（尤其反复 android_see 全屏截图）前建议先看一眼：" +
-      "可用内存低于约 400MB 时，高频全屏截图会显著提高系统回收 App 与无障碍服务的概率" +
-      "（表现是无障碍「闪断」、随后 tap/scroll/type 全部失败）。" +
-      "紧张时的替代路径：android_see(select=…) / android_see(region=…) 区域截图，或 android_screen 读控件树。",
+    description: "查看全机内存（读 /proc/meminfo，不受 App cgroup 限制）。做长时间或高频屏幕操作前先看一眼：可用内存低于约 400MB 时，高频全屏截图会显著提高系统回收 App 与无障碍服务的概率（表现是无障碍闪断、随后 tap/scroll/type 全部失败）。紧张时改用 android_see 的 select/region 区域截图，或 android_screen 读控件树。",
     parameters: {},
     output: {
       schema: {
@@ -1951,11 +1903,7 @@ function apply(ctx) {
 
   ctx.tools.register(defineTool({
     name: "android_capabilities",
-    description:
-      "一次性查询本机当前可用的 Android 能力（无障碍是否开启、能否截图、Shizuku/root 特权通道、虚拟屏服务是否就绪、" +
-      "能否做需要特权的系统操作如装机/改设置/模拟输入）。" +
-      "开始任何手机操作任务前建议先调用一次，避免逐个工具试错（例如无特权时 android_input/android_package 根本不会出现在工具列表里）。" +
-      "返回每项能力的可用性与不可用时的下一步建议。",
+    description: "一次查询当前可用的 Android 能力：无障碍是否开启、能否截图、Shizuku/root 特权通道、虚拟屏服务是否就绪、能否做需要特权的系统操作。开始手机操作任务前先调一次可避免逐个试错（无特权时 android_input / android_package 等根本不在工具列表里）。返回每项可用性与不可用时的下一步建议。",
     parameters: {},
     output: {
       schema: {

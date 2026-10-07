@@ -300,7 +300,7 @@ function apply(ctx) {
   //    得到"未授权"后就不会反复尝试特权命令；此时文件操作用 fs/bash 工具。
   ctx.tools.register(defineTool({
     name: "shizuku_status",
-    description: "检查特权通道（root/Shizuku）是否可用且已授权。返回是否可用，以及失败时的原因。未授权时文件读写请使用 fs/bash 工具（只需所有文件访问权限），无需特权。",
+    description: "检查特权通道（root/Shizuku）是否可用且已授权，返回可用性与失败原因。未授权时文件读写用 fs/bash 工具（只需所有文件访问权限）。",
     parameters: {},
     output: {
       schema: {
@@ -403,7 +403,7 @@ function apply(ctx) {
   // 始终注册：即使没有 root/Shizuku，只要用户在系统设置里给了通知权限就能发。
   ctx.tools.register(defineTool({
     name: "android_notify",
-    description: "向用户手机发送一条系统通知（标题 + 正文）。只需要通知权限（POST_NOTIFICATIONS），不需要 Shizuku/root。用于：后台任务完成、需要用户关注、长时间任务的进度提醒等。如果返回 ok:false 且提示通知权限未授予，请让用户在系统设置里为本应用开启通知权限后重试。",
+    description: "向手机发送一条系统通知（标题 + 正文）。只需要通知权限（POST_NOTIFICATIONS），不需要 Shizuku/root。返回 ok:false 且提示通知权限未授予时，请让用户在系统设置里为本应用开启通知权限后重试。",
     parameters: {
       title: {
         type: "string",
@@ -542,7 +542,7 @@ function apply(ctx) {
   // 5) 剪贴板（不依赖特权：读写系统剪贴板，无需任何特殊权限）
   ctx.tools.register(defineTool({
     name: "android_clipboard",
-    description: "读写手机剪贴板。不需要 Shizuku/root 和任何特殊权限。action=read 读取当前剪贴板内容；action=write 把 content 写入剪贴板（如 AI 生成代码/文本后让用户粘贴）。",
+    description: "读写手机剪贴板，不需要 Shizuku/root 或任何特殊权限。action=read 读取当前内容；action=write 把 content 写入剪贴板（如生成文本后让用户粘贴）。",
     parameters: {
       action: {
         type: "string", required: true,
