@@ -120,8 +120,10 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * v1.23：把气泡文案裁到上限内，并把**截断后**的真实计数写回 out[0]=中文 / out[1]=其它。
-     * 规则：中文与其它各自限额、互不挤占；一旦某个字符会让它所属那类超限就停止（后面全部丢弃）。
+     * v1.23 第①道闸：按**字数上限**裁剪（中文 ≤ {@link #BUBBLE_MAX_CJK}、其它 ≤ {@link #BUBBLE_MAX_ASCII}，
+     * 两类分开计、互不挤占）。这是可预期、且**写进工具说明**的规则。
+     * 第②道闸（按真实渲染宽度裁）在 OverlayService.fitBubbleWidth —— 因为气泡是那边渲染的、
+     * 字号（fontScale）也是那边生效的（实测：主进程与服务资源字号可能不一致）。
      */
     private static String fitBubbleText(String text, int[] out) {
         if (text == null) text = "";
@@ -143,11 +145,25 @@ public class MainActivity extends Activity {
             sb.appendCodePoint(cp);
             i += n;
         }
+        countBubble(sb.toString(), out);
+        return sb.toString();
+    }
+
+    /** 数一遍中/非中文字符数（与 fitBubbleText 同一口径）。 */
+    private static void countBubble(String s, int[] out) {
+        int cjk = 0;
+        int ascii = 0;
+        if (s != null) {
+            for (int k = 0; k < s.length(); ) {
+                int cp = s.codePointAt(k);
+                if (isCjkCodePoint(cp)) cjk++; else ascii++;
+                k += Character.charCount(cp);
+            }
+        }
         if (out != null && out.length >= 2) {
             out[0] = cjk;
             out[1] = ascii;
         }
-        return sb.toString();
     }
 
     // 官方维护、需随 APK 更新的路径前缀：即使外部 dshroot 已有同名文件也强制覆盖
@@ -4379,7 +4395,12 @@ public class MainActivity extends Activity {
                 // 所以给出明确的字数上限；中文与非中文**分开计**（一个汉字约占两个半角宽）。
                 // 这里**强制执行**（超了按上限截断），并把真实计数回给调用方，好让它如实报告。
                 int[] cnt = new int[2];
-                String fitted = fitBubbleText(text, cnt);
+                String fitted = fitBubbleText(text, cnt);                       // ① 字数上限（写进工具说明的规则）
+                String byWidth = OverlayService.fitBubbleWidth(fitted, 400);    // ② 按气泡真实渲染宽度（字号缩放也不出省略号）
+                if (!byWidth.equals(fitted)) {
+                    fitted = byWidth;
+                    countBubble(fitted, cnt);
+                }
                 boolean truncated = !fitted.equals(text);
                 boolean sticky = "true".equalsIgnoreCase(jsonField(raw, "sticky"));
                 long ttl = 0L;

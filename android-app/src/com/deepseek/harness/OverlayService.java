@@ -1394,6 +1394,45 @@ public class OverlayService extends Service {
         });
     }
 
+    /**
+     * v1.23：按气泡**实际渲染宽度**裁掉放不下的尾巴（在 UI 线程用气泡自己的 Paint 量）。
+     *
+     * 为什么必须在这里而不是在 MainActivity：字体大小（fontScale）是**按进程资源**生效的，
+     * 而气泡由本服务渲染 —— 实测踩过：改了系统字号后主进程已按新字号算，服务的资源还是旧的，
+     * 于是"算出来放得下、屏幕上却出现省略号"（20 个字只显示到第 15 个）。
+     * 从气泡自己的 TextView 取 Paint 与 maxWidth，量出来的宽度与真实渲染必然一致。
+     *
+     * 返回裁剪后的文本；服务没在跑或拿不到气泡时原样返回。
+     */
+    public static String fitBubbleWidth(final String text, final long timeoutMs) {
+        final OverlayService s = instance;
+        if (s == null || text == null || text.isEmpty()) return text;
+        final String[] out = { text };
+        if (s.statusBubble == null) return text;
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        s.handler.post(new Runnable() {
+            @Override public void run() {
+                try {
+                    android.widget.TextView tv = s.statusBubble;
+                    android.text.TextPaint p = tv.getPaint();
+                    int avail = tv.getMaxWidth() > 0 ? tv.getMaxWidth() : s.dp(240);
+                    // 留一点余量：省略号本身也占宽度，且不同 ROM 的字形度量略有差异
+                    avail -= (tv.getPaddingLeft() + tv.getPaddingRight() + s.dp(6));
+                    String t = out[0];
+                    while (t.length() > 0 && p.measureText(t) > avail) {
+                        int cp = t.codePointBefore(t.length());
+                        t = t.substring(0, t.length() - Character.charCount(cp));
+                    }
+                    out[0] = t;
+                } catch (Throwable ignored) {}
+                latch.countDown();
+            }
+        });
+        try { latch.await(Math.max(50L, timeoutMs), java.util.concurrent.TimeUnit.MILLISECONDS); }
+        catch (Throwable ignored) {}
+        return out[0];
+    }
+
     /** 更新悬浮窗状态文字 + 常驻通知（在主线程调用）。 */
     private void updateEngineStatusUi() {
         if (statusText != null) {
