@@ -1140,9 +1140,11 @@ public class MainActivity extends Activity {
         pbp.gravity = Gravity.CENTER_HORIZONTAL;
         box.addView(progressBar, pbp);
 
-        // 副提示：让"要等一会儿"这件事变得可预期（首次/模拟器更慢）
+        // 副提示：让"要等一会儿"这件事变得可预期。
+        // v1.21（用户反馈）：原文案写的是"首次启动需要多等一会儿" —— 不准确，
+        // 事实上**任何时候重新启动引擎都要等**（引擎是独立 node 进程）。改成中性表述。
         splashHint = new TextView(this);
-        splashHint.setText("首次启动需要多等一会儿，之后就快了");
+        splashHint.setText("启动引擎需要一点时间，请稍候");
         splashHint.setTextColor(cSub());
         splashHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
         splashHint.setGravity(Gravity.CENTER);
@@ -2060,7 +2062,7 @@ public class MainActivity extends Activity {
         GuidePage p9 = new GuidePage();
         p9.title = "无障碍服务"; p9.actionLabel = "去开启";
         p9.desc = "这是 AI 能「看见并操作手机界面」的前提：读屏、点按、输入、截图理解"
-                + "（工具 android_screen / tap / type / see），**不需要 root，也不需要 Shizuku**。\n\n"
+                + "（工具 android_screen / tap / type / see），不需要 root，也不需要 Shizuku。\n\n"
                 + "系统不允许弹窗授权，只能在系统设置里手动打开本应用的无障碍服务 —— "
                 + "点下面的按钮会直接跳到那个页面。\n\n"
                 + "想用「帮我点一下」「看看这个界面」这类能力，这一步必须开。";
@@ -2299,14 +2301,14 @@ public class MainActivity extends Activity {
         try { granted = pg.provider.granted(); } catch (Throwable ignored) {}
 
         TextView t = new TextView(this);
-        t.setText(pg.title);
+        t.setText(uiPlain(pg.title));   // v1.21：引导页文案同样不许出现 markdown 记号
         t.setTextColor(cText());
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
         t.setTypeface(null, android.graphics.Typeface.BOLD);
         guideBody.addView(t, cTop(dp(14)));
 
         TextView d = new TextView(this);
-        d.setText(pg.desc);
+        d.setText(uiPlain(pg.desc));    // v1.21：同上，去掉 markdown 记号
         d.setTextColor(cSub());
         d.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         d.setLineSpacing(dp(3), 1f);
@@ -5949,13 +5951,24 @@ public class MainActivity extends Activity {
     // ---------- 通用控件 ----------
     private TextView cText(String s, float sp, int color, boolean bold) {
         TextView t = new TextView(this);
-        t.setText(s);
+        // v1.21（用户要求）：界面文案里**不允许出现 markdown 记号**（`**加粗**`、反引号等会原样显示）。
+        // 这里统一过一道 uiPlain()，主题包 text 层写进来的文案也一并兜住。
+        t.setText(uiPlain(s));
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp * conFontScale());   // v1.17.4：fontScale
         t.setTextColor(color);
         if (bold) t.setTypeface(null, android.graphics.Typeface.BOLD);
         // v1.17.4：mono=true 时日志页整页等宽（日志正文本来就是等宽，这里覆盖页内其余文字）
         if (consolePage == 3 && conMono()) t.setTypeface(android.graphics.Typeface.MONOSPACE);
         return t;
+    }
+
+    /** v1.21（UI 统一）：两色线性混合（a=0 取 bg，a=1 取 fg）。用于按主题色推导"淡色填充"。 */
+    private static int blendColor(int fg, int bg, float a) {
+        float k = Math.max(0f, Math.min(1f, a));
+        int r = (int) (Color.red(fg) * k + Color.red(bg) * (1 - k));
+        int g = (int) (Color.green(fg) * k + Color.green(bg) * (1 - k));
+        int bl = (int) (Color.blue(fg) * k + Color.blue(bg) * (1 - k));
+        return Color.argb(255, r, g, bl);
     }
 
     /** 圆角形状（替代系统 Button/ProgressBar 自带背景，避免 ColorOS 上灰底、裁字、颜色不对）。 */
@@ -6607,8 +6620,12 @@ public class MainActivity extends Activity {
             b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13 * conFontScale());
             b.setGravity(Gravity.CENTER);
             b.setPadding(dp(12), dp(9), dp(12), dp(9));
-            b.setTextColor(on ? Color.WHITE : cAccent());
-            b.setBackground(cShape(on ? cAccent() : cTrack(), on ? cAccent() : cLine(), 1, 10));
+            // v1.21：选中态也用淡色 tonal（与 cButton 同一套），不再用实心强调色块
+            b.setTextColor(on ? cAccent() : cSub());
+            b.setBackground(cShape(
+                    on ? blendColor(cAccent(), cCard(), conDark() ? 0.24f : 0.14f) : cTrack(),
+                    on ? blendColor(cAccent(), cCard(), conDark() ? 0.38f : 0.22f) : cLine(),
+                    1, 10));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
             if (i > 0) lp.leftMargin = dp(8);
@@ -6637,16 +6654,19 @@ public class MainActivity extends Activity {
         b.setMinimumHeight(dp(36));
         b.setPadding(dp(16), dp(9), dp(16), dp(9));
         b.setIncludeFontPadding(false);
+        // v1.21（用户反馈"不喜欢深蓝色按钮"）：按钮改成**淡色 tonal 风格** ——
+        // · 主按钮 = 强调色按比例混进卡片底色（浅色 14% / 深色 24%），文字用强调色 + 淡描边；
+        // · 次按钮 = 纯文字按钮（无填充、无描边），文字压到次级色。
+        // 整屏因此不再出现大块饱和蓝，深浅两套都更轻。
+        boolean dark = conDark();
         if (primary) {
-            b.setTextColor(Color.WHITE);
-            b.setBackground(cShape(cAccent(), cAccent(), 0, 8));
-        } else {
-            // 次按钮：强调色描边 + 强调色文字（之前用灰底，看着像“禁用”）
+            int fill = blendColor(cAccent(), cCard(), dark ? 0.24f : 0.14f);
+            int stroke = blendColor(cAccent(), cCard(), dark ? 0.38f : 0.22f);
             b.setTextColor(cAccent());
-            // v1.21（UI 统一）：底色改为**从强调色推导**（只叠透明度），不再写死品牌蓝 0x1A4D6BFE —
-            // 换品牌色或主题包改了 accent 时，按钮底色自动跟着走。
-            int fill = (cAccent() & 0x00FFFFFF) | (conDark() ? 0x1A000000 : 0x14000000);
-            b.setBackground(cShape(fill, cAccent(), 1, 8));
+            b.setBackground(cShape(fill, stroke, 1, 10));
+        } else {
+            b.setTextColor(cSub());
+            b.setBackground(cShape(0x00000000, 0x00000000, 0, 10));
         }
         return b;
     }
