@@ -1605,7 +1605,9 @@ public class MainActivity extends Activity {
 
     /** 壳的界面底色：优先用页面实测底色，未取到（启动页/控制台）时用主题底色。 */
     private int chromeBg() {
-        if (pageBgColor != 0) return pageBgColor;
+        // v1.24：只有「跟随页面」时才用网页实测底色；显式选了浅色/深色时，系统栏与页面底色
+        // 必须跟着选择走（否则选「浅色」后卡片变白、底色仍是网页的深色）。
+        if ("follow".equals(uiSchemePref()) && pageBgColor != 0) return pageBgColor;
         // v1.17.4：主题可指定状态栏/导航栏底色（缺省 auto = 跟随页面或主题底色）
         ConsoleTheme t = conTheme;
         if (t != null) {
@@ -1762,7 +1764,11 @@ public class MainActivity extends Activity {
     private int cBg() {
         // v1.21：DSH 页面底色已知时，壳底色**直接跟随它** —— 这是"壳与页面同一色调"的关键；
         // 主题里显式写过的 bg 仍然优先（conColor 内部保证"显式写过的值永远优先"）。
-        int def = pageBgColor != 0 ? pageBgColor
+        // v1.24 修正：**只在「跟随页面」时**才用页面实测底色。原实现无条件优先，
+        // 于是用户在 控制台 → 主题 → 界面外观 里选「浅色」后，卡片变白、整页底色却仍是网页的深色
+        // （维护者报的"浅色模式看起来很奇怪，只有引擎运行中这个卡片是白色的"）。
+        boolean follow = "follow".equals(uiSchemePref());
+        int def = (follow && pageBgColor != 0) ? pageBgColor
                 : getColor(conDark() ? R.color.shell_bg_dark : R.color.shell_bg_light);
         return conColor("bg", def);
     }
@@ -2148,7 +2154,12 @@ public class MainActivity extends Activity {
                 + "点下面的按钮会触发系统的授权询问，在这里一次性允许掉，"
                 + "免得用 AI 的时候突然弹框打断你。";
         p10.provider = new StatusProvider() { @Override public boolean granted() {
-            return conAppListOk();
+            // v1.24：本页**不在渲染时现场探测**。原实现在这里调 conAppListOk()，
+            // 也就是 getInstalledApplications() 会在"第 9 页点下一页、第 10 页刚渲染"时
+            // 同步跑在主线程上（重活、还会造成可感知的卡顿）。
+            // 现在只读上次探测结果；真正的探测发生在用户点「去授权」按钮时
+            // （requestAppListAccess：后台线程探测 + toast 结果 + 必要时跳应用详情页）。
+            return lastAppListCount >= 10;
         }};
         p10.action = new View.OnClickListener() { @Override public void onClick(View v) {
             requestAppListAccess();
@@ -2348,16 +2359,8 @@ public class MainActivity extends Activity {
             }});
             guideBody.addView(wsRow);
 
-            // v1.21（UI 统一）：完成页给一行「界面外观」—— 首次使用时就能选深浅色，
-            // 与 DSH 页面色调对齐（跟随页面 = 默认，跟随实测页面底色）。
-            LinearLayout schemeWrap = new LinearLayout(this);
-            schemeWrap.setOrientation(LinearLayout.VERTICAL);
-            LinearLayout.LayoutParams swLp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            swLp.topMargin = dp(12);
-            schemeWrap.setLayoutParams(swLp);
-            schemeWrap.addView(shellSchemeRow());
-            guideBody.addView(schemeWrap);
+            // v1.24：去掉完成页的「界面外观」卡片（维护者要求）——
+            // 深浅色在控制台「主题 → 界面外观」里改即可，首次引导不必塞这一步。
 
             refreshAllStatuses();
             return;
@@ -6306,7 +6309,14 @@ public class MainActivity extends Activity {
                     .putString(KEY_UI_SCHEME, scheme).apply();
         } catch (Throwable ignored) {}
         applyShellPalette();
-        refreshConsole();
+        // v1.24：必须重绘**当前那一页**。原实现只调 refreshConsole()，
+        // 而它第一行就 `consolePage != 0` 直接 return —— 于是在「主题」页点选后，
+        // 选中态（跟随页面 / 浅色 / 深色）不会更新，退出这一页再进来才生效（维护者报的 bug）。
+        if (consoleVisible && consoleBody != null) {
+            try { renderConsole(); } catch (Throwable t) { Log.w(TAG, "setUiScheme: renderConsole failed", t); }
+        } else {
+            refreshConsole();
+        }
     }
 
     /**
