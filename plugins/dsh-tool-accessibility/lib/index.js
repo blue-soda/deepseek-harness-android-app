@@ -30,7 +30,7 @@ const TOOL_GUIDE = [
   "  android_screen 读控件树（最省内存） | android_see 截图给模型看（区域用 select= / region=）",
   "  android_tap 点击（text/desc/fx,fy，或区域图内的 ix,iy） | android_focus_type 聚焦→输入→提交→读回自证",
   "  android_find_text 等文字出现 | android_wait_stable 等界面稳定（控件树指纹，不产生截图）",
-  "  android_scroll 滚动 | android_gesture / swipe / hold / touch / touch_status 手势族",
+  "  android_scroll 滚动 | android_gesture(网页按钮/WebView 点不动时首选) / swipe / hold / touch / touch_status",
   "  android_type 写文本 | android_paste_text 剪贴板粘贴 | android_back / android_home",
   "  android_mem_status 内存体检 | android_a11y_status 无障碍状态（能区分「没开」与「闪断」）",
   "【免特权 · 不需要 root/Shizuku】",
@@ -584,7 +584,8 @@ function apply(ctx) {
     description:
       "点击屏幕上的控件。传 text（控件文字，模糊包含匹配，优先可点击项）、desc（内容描述）、x/y（屏幕绝对像素坐标）或 fx/fy（0~1 分数坐标）。" +
       "优先用 fx/fy 分数坐标（相对屏幕比例）：截图会被模型查看器缩放，用绝对像素容易点偏，分数坐标免疫缩放。" +
-      "至少给一个；同时给了 text 与坐标时按 text 查找优先，找不到再按坐标点。需要已开启无障碍服务。",
+      "至少给一个；同时给了 text 与坐标时按 text 查找优先，找不到再按坐标点。需要已开启无障碍服务。" +
+      "**WebView / 网页按钮 / 自绘界面里无障碍点击常被忽略（返回成功但界面没变）：这类目标直接用 fx/fy 坐标，或改用 android_gesture 的 tap 笔。**",
     parameters: {
       text: { type: "string", description: "控件文字（模糊包含匹配）" },
       desc: { type: "string", description: "控件内容描述（模糊包含匹配）" },
@@ -1260,6 +1261,7 @@ function apply(ctx) {
     name: "android_gesture",
     description:
       "一次执行一组多指手势（底层多笔时间轴，全部同时注入，真多指）。strokes 数组按顺序在时间轴上执行，支持：\n" +
+      "**网页按钮 / WebView / 自绘界面点不动时的首选**（实测无障碍 ACTION_CLICK 常被忽略，而手势注入有效；只要一个点就用 tap 笔）。\n" +
       "- down: 按下并保持 {kind:'down', finger, x/y 或 fx/fy}\n" +
       "- move: 按住的手指滑到新位置 {kind:'move', finger, x/y 或 fx/fy}\n" +
       "- up: 抬起 {kind:'up', finger}\n" +
