@@ -318,6 +318,10 @@ public class OverlayService extends Service {
         // v1.21：正在「完全退出」→ 立刻自停。本服务是 START_STICKY，进程被杀后系统会重建它
         // （悬浮窗又冒出来）；退出期间必须挡住，否则用户会觉得"没关干净"。
         if (MainActivity.shutdownPending(this)) { stopSelf(); return; }
+        // v1.24：恢复「用户/agent 隐藏过」的状态，避免服务被系统重建后悬浮窗自己冒出来
+        try {
+            userHidden = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_USER_HIDDEN, false);
+        } catch (Throwable ignored) {}
         isRunning = true;
         instance = this;
         // v1.21：空闲计时从这里起算（服务刚起来不该立刻显示"摸鱼中…"）
@@ -349,8 +353,15 @@ public class OverlayService extends Service {
         // 通知栏「显示小鲸鱼」：解除用户隐藏并抖一下示意
         if (intent != null && ACTION_SHOW.equals(intent.getAction())) {
             userHidden = false;
+            try { getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_USER_HIDDEN, false).apply(); } catch (Throwable ignored) {}
             applyVisibleNow();
             wiggle();
+        }
+        // v1.24：agent（android_overlay action=hide）隐藏悬浮窗 —— 只置标记、不杀服务（START_STICKY 会被系统重建）
+        if (intent != null && ACTION_HIDE.equals(intent.getAction())) {
+            userHidden = true;
+            try { getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_USER_HIDDEN, true).apply(); } catch (Throwable ignored) {}
+            applyVisibleNow();
         }
         // 允许通过 intent 指定端口（如换端口后重启）
         if (intent != null && intent.hasExtra("port")) {
@@ -361,7 +372,19 @@ public class OverlayService extends Service {
     }
 
     // v1.18（B12）：action 名随变体，避免同一设备上两个变体的悬浮窗互相唤起/干扰
-    private static final String ACTION_SHOW = BuildVariant.APP_ID + ".overlay.SHOW";
+    // v1.24：改成 public —— MainActivity 的 /overlay 路由要用它来显示/隐藏。
+    public static final String ACTION_SHOW = BuildVariant.APP_ID + ".overlay.SHOW";
+    /**
+     * v1.24：agent（android_overlay action=hide）与用户拖底隐藏走同一个「userHidden」标记。
+     *
+     * 原来 hide 只做 `stopService()`，而本服务是 **START_STICKY** —— 进程被杀后系统会把它重建，
+     * 悬浮窗又冒出来；真机自测实测「hide 前后三张截图 sha256 完全相同」就是这个原因。
+     * 同理只 `startService()` 的 show 也无效：服务在跑但 userHidden 仍是 true。
+     * 现在 hide/show 都改成给服务发 action，服务保持存活、只切换 userHidden（并持久化，
+     * 这样服务被系统重建后也不会自己冒出来）。
+     */
+    public static final String ACTION_HIDE = BuildVariant.APP_ID + ".overlay.HIDE";
+    private static final String KEY_USER_HIDDEN = "overlay_user_hidden";
 
     @Override
     public void onDestroy() {

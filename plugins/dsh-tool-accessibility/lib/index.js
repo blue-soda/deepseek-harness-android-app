@@ -37,7 +37,7 @@ const TOOL_GUIDE = [
   "  android_capabilities 本工具（能力总览） | android_apps 列已装应用 | android_launch 启动应用（只走桌面入口）",
   "  android_open_url 打开网址/深链（要开网页一律用它，别在浏览器里打字） | android_screenshot 截图存文件",
   "  android_overlay 悬浮窗开关 | android_usage 应用使用时长 | android_notify 发通知 | android_clipboard 读写剪贴板",
-  "  android_setting_app 打开某个应用的设置页",
+  "  android_setting_app 修改系统设置（Settings.System 写入，必填 key + value）",
   "【需特权 · 未授权时这些工具不会出现在工具列表里】",
   "  android_input 模拟输入（点击/滑动/文本/按键 keyevent） | android_package 装/卸/清数据/授撤权",
   "  android_app 启动或强制停止（可指定 activity，虚拟屏内启动也用它） | android_setting 读写系统设置",
@@ -296,6 +296,34 @@ async function dumpNodes(timeoutMs) {
     return v;
   }
   return null;
+}
+
+/**
+ * 在控件树里挑「最像目标」的那一个命中节点。
+ *
+ * 真机自测暴露的问题：直接用 `nodes.find(text 包含)` 会命中**占位/容器节点**里的同名字样 ——
+ * 例如查 android_open_url 时命中的其实是当前会话里那行工具调用文字（"0 次滚动即命中"）。
+ * 所以这里做三件事：
+ *   ① 丢掉零尺寸节点（占位/宿主节点常常 w/h 为 0，点不到也看不见）；
+ *   ② 可点击的优先（要找多半是为了点它）；
+ *   ③ 同条件下取**面积最小**的（最具体的那个），避免命中铺满全屏的大容器。
+ * @returns {{hit: object|null, count: number}} hit=挑中的节点；count=未过滤前的命中总数（>1 说明有歧义）
+ */
+function pickTextMatch(nodes, needle) {
+  const hits = (nodes || []).filter((n) =>
+    (typeof n.text === "string" && n.text.indexOf(needle) >= 0)
+    || (typeof n.desc === "string" && n.desc.indexOf(needle) >= 0));
+  if (!hits.length) return { hit: null, count: 0 };
+  const sized = hits.filter((n) => (Number(n.w) || 0) > 0 && (Number(n.h) || 0) > 0);
+  const pool = sized.length ? sized : hits;
+  const area = (n) => (Number(n.w) || 0) * (Number(n.h) || 0);
+  const best = pool.slice().sort((a, b) => {
+    const ca = a.clickable === true ? 1 : 0;
+    const cb = b.clickable === true ? 1 : 0;
+    if (ca !== cb) return cb - ca;
+    return area(a) - area(b);
+  })[0];
+  return { hit: best, count: hits.length };
 }
 
 /** 控件树指纹 —— 用于 android_wait_stable（比"截图哈希"省内存得多：不产生任何位图）。 */
@@ -1555,6 +1583,7 @@ function apply(ctx) {
           found: { type: "boolean" },
           waitedMs: { type: "number" },
           nodeCount: { type: "number" },
+          matches: { type: "number" },
           matchText: { type: "string" },
           matchX: { type: "number" },
           matchY: { type: "number" },
@@ -1586,14 +1615,17 @@ function apply(ctx) {
         const v = await dumpNodes();
         if (v) {
           last = v;
-          const hit = (v.nodes || []).find((n) => (typeof n.text === "string" && n.text.indexOf(needle) >= 0)
-            || (typeof n.desc === "string" && n.desc.indexOf(needle) >= 0));
+          // v1.24：改用 pickTextMatch —— 丢掉零尺寸占位节点、优先可点击、取最具体的那个。
+          // 真机自测：原实现会命中会话里那行工具调用文字（"0 次滚动即命中"其实是误命中）。
+          const pick = pickTextMatch(v.nodes, needle);
+          const hit = pick.hit;
           if (hit) {
             return {
               ok: true,
               found: true,
               waitedMs: Date.now() - t0,
               nodeCount: (v.nodes || []).length,
+              matches: pick.count,
               matchText: (hit.text || hit.desc || ""),
               matchX: hit.x || 0, matchY: hit.y || 0, matchW: hit.w || 0, matchH: hit.h || 0,
               clickable: hit.clickable === true
@@ -1805,9 +1837,8 @@ function apply(ctx) {
         const d = await dumpNodes();
         if (!d) return null;
         lastNodes = (d.nodes || []).length;
-        return (d.nodes || []).find((n) =>
-          (typeof n.text === "string" && n.text.indexOf(needle) >= 0)
-          || (typeof n.desc === "string" && n.desc.indexOf(needle) >= 0)) || null;
+        // v1.24：与 android_find_text 用同一套匹配（丢零尺寸占位节点 / 优先可点击 / 取最具体）
+        return pickTextMatch(d.nodes, needle).hit;
       };
       let hit = await look();
       while (!hit && scrolls < maxScrolls) {

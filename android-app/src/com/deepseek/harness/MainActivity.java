@@ -4379,14 +4379,25 @@ public class MainActivity extends Activity {
             }
             if (action.equals("show") || action.equals("toggle")) {
                 if (OverlayService.isRunning) {
-                    if (action.equals("toggle")) { stopOverlayService(); return "{\"ok\":true,\"running\":false}"; }
-                    return "{\"ok\":true,\"running\":true,\"msg\":\"已在运行\"}";
+                    if (action.equals("toggle")) {
+                        sendOverlayAction(OverlayService.ACTION_HIDE);
+                        return "{\"ok\":true,\"running\":true,\"hidden\":true}";
+                    }
+                    // v1.24：服务在跑不代表"看得见"（可能是用户拖底隐藏过）—— 必须显式发 ACTION_SHOW 解除隐藏，
+                    // 否则 show 也是空操作。
+                    sendOverlayAction(OverlayService.ACTION_SHOW);
+                    return "{\"ok\":true,\"running\":true,\"msg\":\"已显示\"}";
                 }
                 startOverlayService();
                 return "{\"ok\":true,\"running\":true}";
             }
             if (action.equals("hide")) {
-                stopOverlayService();
+                // v1.24：不能只 stopService() —— 本服务是 START_STICKY，被系统重建后悬浮窗会自己回来。
+                // 改为发 ACTION_HIDE 置 userHidden（服务保持存活），并用同一标记持久化。
+                if (OverlayService.isRunning) {
+                    sendOverlayAction(OverlayService.ACTION_HIDE);
+                    return "{\"ok\":true,\"running\":true,\"hidden\":true}";
+                }
                 return "{\"ok\":true,\"running\":false}";
             }
             // v1.21（需求 2）：agent 状态气泡。内核侧插件把当前状态 POST 到这里，
@@ -4453,6 +4464,24 @@ public class MainActivity extends Activity {
             stopService(new Intent(this, OverlayService.class));
         } catch (Throwable t) {
             Log.w(TAG, "overlay stop failed", t);
+        }
+    }
+
+    /**
+     * v1.24：给悬浮窗服务发一个 action（显示/隐藏），**不**启动也不停止服务。
+     *
+     * 为什么需要它：OverlayService 是 START_STICKY —— `stopService()` 之后系统会把服务重建，
+     * 悬浮窗随即又出现（真机自测：hide 前后三张截图 sha256 完全相同）；而只 `startService()`
+     * 的 show 也解除不了「用户拖底隐藏」的状态（服务在跑、userHidden 仍是 true）。
+     * 显示/隐藏统一走 userHidden 标记，服务本身一直活着。
+     */
+    private void sendOverlayAction(String action) {
+        try {
+            Intent i = new Intent(this, OverlayService.class);
+            i.setAction(action);
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i);
+        } catch (Throwable t) {
+            Log.w(TAG, "overlay action failed: " + action, t);
         }
     }
 
