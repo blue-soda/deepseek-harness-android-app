@@ -22,7 +22,7 @@ const GUIDE_TEXT =
 /**
  * v1.22：能力清单（静态索引表 + 一句用途）。
  * 为什么需要：真机 Agent 复盘里，他没用到 android_screenshot / android_touch / android_input /
- * android_usage / android_app / android_swipe 等**本来就有**的工具 —— 这是纯粹的发现性问题。
+ * android_usage / android_app / android_swipe 等本来就有的工具 —— 这是纯粹的发现性问题。
  * 诚实说明：本表是静态维护的，可能滞后于实际注册的工具；以工具列表为准，这里只作索引用。
  */
 const TOOL_GUIDE = [
@@ -35,7 +35,7 @@ const TOOL_GUIDE = [
   "  android_mem_status 内存体检 | android_a11y_status 无障碍状态（能区分「没开」与「闪断」）",
   "【免特权 · 不需要 root/Shizuku】",
   "  android_capabilities 本工具（能力总览） | android_apps 列已装应用 | android_launch 启动应用（只走桌面入口）",
-  "  android_open_url 打开网址/深链（**要开网页一律用它**，别在浏览器里打字） | android_screenshot 截图存文件",
+  "  android_open_url 打开网址/深链（要开网页一律用它，别在浏览器里打字） | android_screenshot 截图存文件",
   "  android_overlay 悬浮窗开关 | android_usage 应用使用时长 | android_notify 发通知 | android_clipboard 读写剪贴板",
   "  android_setting_app 打开某个应用的设置页",
   "【需特权 · 未授权时这些工具不会出现在工具列表里】",
@@ -75,9 +75,9 @@ let lastCrop = null;   // { cropX, cropY, cropW, cropH, scaleX, scaleY, imageW, 
 //   事故链：可用内存低 → 高频全屏截图（每张 ~10MB 位图缓冲）→ 系统回收/重启无障碍服务（"闪断"）
 //          → 之后 tap/scroll/type 全部失败 → 模型把失败当成功、甚至误报"已杀进程"。
 //   策略：① 截图前读 /proc/meminfo；
-//        ② 内存紧张时**拒绝全屏截图**（必须给 select/region 才放行，区域图只有几十 KB）；
+//        ② 内存紧张时拒绝全屏截图（必须给 select/region 才放行，区域图只有几十 KB）；
 //        ③ 限制每分钟全屏截图张数，超了也拒绝并指向更省的替代路径。
-//   注意：/proc/meminfo 是**全机**视图（不受 App cgroup 隔离），这正是我们要看的量。
+//   注意：/proc/meminfo 是全机视图（不受 App cgroup 隔离），这正是我们要看的量。
 // ============================================================================
 
 const FULL_SHOT_MIN_AVAIL_KB = 400 * 1024;   // 可用内存 < 400MB：拒绝全屏截图
@@ -257,7 +257,7 @@ function appPost(path, obj, timeoutMs) {
       headers: {
         "Content-Type": "application/json",
         "Content-Length": Buffer.byteLength(payload),
-        // v1.18.0（上游 v1.19.0 合并进来的令牌闸门）：App 侧本地服务校验 **X-DSH-Token 请求头**。
+        // v1.18.0（上游 v1.19.0 合并进来的令牌闸门）：App 侧本地服务校验 X-DSH-Token 请求头。
         // ⚠ 本函数是 v1.22 我新加的（剪贴板回退用），当时只把 token 放在 body 里 —— 合并后 App
         // 走的是头闸门，body token 不再被认，剪贴板回退会被拒。这里补上头（body 也保留，兼容旧壳）。
         "X-DSH-Token": process.env.APP_LOCAL_TOKEN || ""
@@ -449,7 +449,7 @@ function apply(ctx) {
       const raw = await a11yRequest("/status", undefined, 4000);
       const v = parseResult(raw);
       if (!v.ok) {
-        // v1.22（P0-3）：服务不可达时**不再**一口咬定"用户没开" —— 三种可能都列出来。
+        // v1.22（P0-3）：服务不可达时不再一口咬定"用户没开" —— 三种可能都列出来。
         //   真机复盘：无障碍"闪断"（被系统回收/重启中）与"用户关闭"的报错文案完全一样，
         //   模型据此误判"用户关掉了无障碍"。这里如实区分"拿不到状态"这件事本身。
         return {
@@ -457,7 +457,7 @@ function apply(ctx) {
           reachable: false,
           error: "无障碍服务不可达（本地端口没有应答）",
           diagnosis: "服务进程当前没在运行。可能是：① 用户从未开启过无障碍；② 服务刚被系统回收/正在重连（闪断）；③ 系统限制后台导致服务被停。",
-          hint: "先确认系统设置 → 无障碍里「DeepSeek Harness 屏幕助手」是否是**开启**状态："
+          hint: "先确认系统设置 → 无障碍里「DeepSeek Harness 屏幕助手」是否是开启状态："
             + "若已开启却不可达，多半是②③ —— 等几秒重试 android_a11y_status；"
             + "若确实没开，请引导用户开启后再试。不要直接断言「用户关掉了无障碍」。"
         };
@@ -470,7 +470,7 @@ function apply(ctx) {
       let diagnosis;
       let hint = "";
       if (running && reconnectedRecently) {
-        diagnosis = "运行中，但**刚刚重连过**（" + Math.round(ago / 1000) + " 秒前）—— 说明它此前断开过：这是「闪断」！";
+        diagnosis = "运行中，但刚刚重连过（" + Math.round(ago / 1000) + " 秒前）—— 说明它此前断开过：这是「闪断」！";
         hint = "闪断通常是系统内存吃紧或服务被回收的前兆：接下来优先用区域截图（android_see 的 select/region）"
           + "与 android_screen 读控件树，避免连续全屏截图；若紧接着出现点击/输入成片失败，先停下让内存回收。";
       } else if (running) {
@@ -585,7 +585,7 @@ function apply(ctx) {
       "点击屏幕上的控件。传 text（控件文字，模糊包含匹配，优先可点击项）、desc（内容描述）、x/y（屏幕绝对像素坐标）或 fx/fy（0~1 分数坐标）。" +
       "优先用 fx/fy 分数坐标（相对屏幕比例）：截图会被模型查看器缩放，用绝对像素容易点偏，分数坐标免疫缩放。" +
       "至少给一个；同时给了 text 与坐标时按 text 查找优先，找不到再按坐标点。需要已开启无障碍服务。" +
-      "**WebView / 网页按钮 / 自绘界面里无障碍点击常被忽略（返回成功但界面没变）：这类目标直接用 fx/fy 坐标，或改用 android_gesture 的 tap 笔。**",
+      "WebView / 网页按钮 / 自绘界面里无障碍点击常被忽略（返回成功但界面没变）：这类目标直接用 fx/fy 坐标，或改用 android_gesture 的 tap 笔。",
     parameters: {
       text: { type: "string", description: "控件文字（模糊包含匹配）" },
       desc: { type: "string", description: "控件内容描述（模糊包含匹配）" },
@@ -593,9 +593,9 @@ function apply(ctx) {
       y: { type: "number", description: "屏幕绝对 y 坐标（像素）" },
       fx: { type: "number", description: "分数 x 坐标（0~1，相对屏幕宽度比例；推荐，避免截图缩放误差）" },
       fy: { type: "number", description: "分数 y 坐标（0~1，相对屏幕高度比例；推荐，避免截图缩放误差）" },
-      ix: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 x 像素（工具会自动换算回屏幕坐标，免手算）" },
-      iy: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 y 像素" },
-      expect_text: { type: "string", description: "**可选但强烈建议**：点击后应出现的文字。给了它，工具会在点完后轮询控件树确认它真的出现了，并回 verified=true/false —— 专治「操作成功但没生效」（WebView 里尤其常见）" },
+      ix: { type: "number", description: "区域截图专用：在最近一张 android_see 图里的 x 像素（工具会自动换算回屏幕坐标，免手算）" },
+      iy: { type: "number", description: "区域截图专用：在最近一张 android_see 图里的 y 像素" },
+      expect_text: { type: "string", description: "可选但强烈建议：点击后应出现的文字。给了它，工具会在点完后轮询控件树确认它真的出现了，并回 verified=true/false —— 专治「操作成功但没生效」（WebView 里尤其常见）" },
       expect_timeout_ms: { type: "number", description: "expect_text 最多等多久（默认 4000）" }
     },
     output: {
@@ -654,12 +654,12 @@ function apply(ctx) {
         }
         if (!verified) {
           verifyHint = "点击后等了 " + Math.round((Date.now() - t0)) + "ms 仍没看到「" + expect + "」："
-            + "这一下**很可能没生效**（WebView/网页按钮常忽略无障碍 ACTION_CLICK）。"
+            + "这一下很可能没生效（WebView/网页按钮常忽略无障碍 ACTION_CLICK）。"
             + "可试：改用坐标点击（fx/fy）或 android_gesture 的 tap 笔；或先 android_screen_diff 看界面到底变没变。";
         }
       }
       return {
-        // 给了 expect_text 时，ok 表示"点了**且**生效了"，不再只看"点了"（复盘的核心诉求）
+        // 给了 expect_text 时，ok 表示"点了且生效了"，不再只看"点了"（复盘的核心诉求）
         ok: v.found !== false && (!expect || verified === true),
         found: v.found === true,
         method: typeof v.method === "string" ? v.method : "",
@@ -680,10 +680,9 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: "android_type",
     description:
-      "在当前聚焦的输入框中输入文本（通过无障碍服务）。输入前通常先用 android_tap 点击目标输入框使其聚焦。需要已开启无障碍服务。\n" +
-      "限制（真机实测）：网页/WebView、contenteditable（例如 DSH 自己的聊天输入框）对无障碍输入不可靠——setText 只改无障碍节点、不触发前端 input 事件；paste:true 也常只落到输入法候选栏、不提交。这类目标请改用系统级 android_input（先 tap 聚焦再 text 输入，两条路径均已实测可用）。\n" +
-      "另一个前提：无障碍点击不保证建立输入焦点（键盘没弹出就是没聚焦）——先用 android_input 的 tap 聚焦并确认键盘弹出，再输入。原生 App 的 EditText 用默认 setText 即可。\n" +
-      "注：本工具是无障碍版输入（不需要 root/Shizuku）；android_input 需要已授权 Shizuku/root，两者能力不同。",
+      "在当前聚焦的输入框中输入文本（无障碍版，不需要 root/Shizuku）。输入前先用 android_tap 点击输入框使其聚焦。\n" +
+      "真机实测的限制：网页/WebView、contenteditable（如 DSH 自己的聊天输入框）对无障碍输入不可靠——setText 只改无障碍节点、不触发前端 input 事件；paste:true 也常只落到输入法候选栏、不提交。这类目标改用系统级 android_input（先 tap 聚焦再 text 输入，两条路径均已实测可用）。\n" +
+      "无障碍点击不保证建立输入焦点：键盘没弹出就是没聚焦，先用 android_input 的 tap 聚焦并确认键盘弹出。原生 App 的 EditText 用默认 setText 即可。",
     parameters: {
       text: { type: "string", required: true, description: "要输入的文本" },
       paste: { type: "boolean", description: "是否用剪贴板粘贴方式输入（WebView/网页输入框建议 true；默认 false 用 setText）" }
@@ -862,18 +861,14 @@ function apply(ctx) {
     imageCtx.tools.register(defineTool({
       name: "android_see",
       description:
-        "截取当前屏幕（无障碍截图，无需 MediaProjection 弹窗）并把截图作为图片发送给模型查看。" +
-        "适合需要看图理解布局/图片内容、或控件树（android_screen）信息不足时（尤其 Unity/游戏等无控件界面）。" +
-        "**截图会被模型查看器缩放，绝对像素坐标会点偏——请优先用分数坐标（fx/fy，0~1）配合 android_tap/android_swipe/android_hold/android_gesture 操作**。" +
-        "换算：截图上量到的像素 (px,py) → 屏幕坐标 = (px×scaleX, py×scaleY)（scaleX=screenW/imageW，截图原生分辨率≈屏幕，通常≈1）。" +
-        "游戏/无控件界面建议 grid:true 叠加 4×4 网格，按「第几行第几列」定位更准。" +
-        "需要当前模型支持图片输入；模型不支持图片时请改用 android_screen 读控件文字。" +
-        "需要已开启无障碍服务且设备 Android 11+（截图能力），低版本可用 android_screen。",
+        "截取当前屏幕（无障碍截图，无 MediaProjection 弹窗）并把图片发给模型查看。控件树（android_screen）看不出布局或图片内容时用它，Unity/游戏等无控件界面尤其需要。\n" +
+        "截图会被模型查看器缩放，绝对像素会点偏：操作时优先用分数坐标 fx/fy（0~1）；换算 = 图上像素 × (screenW/imageW, screenH/imageH)。游戏/无控件界面可传 grid:true 叠加 4×4 网格，按行列定位。\n" +
+        "需要当前模型支持图片输入（不支持时用 android_screen 读文字）、已开启无障碍服务、且设备为 Android 11+（低版本用 android_screen）。",
       parameters: {
         grid: { type: "boolean", description: "true 时在截图上叠加 4×4 网格线，方便按行列定位（游戏/无控件界面推荐）" },
-        select: { type: "string", description: "**区域截图**：按无障碍节点文字取景（完全相等优先，其次更短的包含匹配），只截该节点（可配 pad 外扩）。适合看清小字/一条数据，比整屏清晰得多" },
+        select: { type: "string", description: "区域截图：按无障碍节点文字取景（完全相等优先，其次更短的包含匹配），只截该节点（可配 pad 外扩）。适合看清小字/一条数据，比整屏清晰得多" },
         selectIndex: { type: "number", description: "select 命中多个候选时取第几个（0 起，默认 0）。返回里的 selectCount/selectLabel 会告诉你命中是谁、还有几个候选" },
-        region: { type: "string", description: "**区域截图**：显式矩形 \"x,y,w,h\"（屏幕像素，左上角为原点）。与 select 二选一" },
+        region: { type: "string", description: "区域截图：显式矩形 \"x,y,w,h\"（屏幕像素，左上角为原点）。与 select 二选一" },
         pad: { type: "number", description: "select 时四周外扩的像素（默认 0，建议 8~24 留点上下文）" }
       },
       output: {
@@ -1132,10 +1127,10 @@ function apply(ctx) {
       fy1: { type: "number", description: "起点分数 y（0~1，推荐）" },
       fx2: { type: "number", description: "终点分数 x（0~1，推荐）" },
       fy2: { type: "number", description: "终点分数 y（0~1，推荐）" },
-      ix1: { type: "number", description: "**区域截图专用**：起点在最近一张 android_see 图里的 x 像素（自动换算）" },
-      iy1: { type: "number", description: "**区域截图专用**：起点在图里的 y 像素" },
-      ix2: { type: "number", description: "**区域截图专用**：终点在图里的 x 像素" },
-      iy2: { type: "number", description: "**区域截图专用**：终点在图里的 y 像素" },
+      ix1: { type: "number", description: "区域截图专用：起点在最近一张 android_see 图里的 x 像素（自动换算）" },
+      iy1: { type: "number", description: "区域截图专用：起点在图里的 y 像素" },
+      ix2: { type: "number", description: "区域截图专用：终点在图里的 x 像素" },
+      iy2: { type: "number", description: "区域截图专用：终点在图里的 y 像素" },
       durationMs: { type: "number", description: "滑动时长毫秒（默认 300）" },
       finger: { type: "number", description: "可选：指定手指（0~7）；若该手指正按住则从当前位置滑到终点并抬起" }
     },
@@ -1176,15 +1171,15 @@ function apply(ctx) {
     name: "android_hold",
     description:
       "在指定位置按住（长按）durationMs 毫秒后自动抬起，也可用 finger 指定手指。" +
-      "**需要一直按住不放（延续到后续操作）时，不要用本工具，改用 android_touch action=down**（down 后手指保持按住，可跨调用延续）。" +
+      "需要一直按住不放（延续到后续操作）时，不要用本工具，改用 android_touch action=down（down 后手指保持按住，可跨调用延续）。" +
       "适合长按图标、游戏蓄力、按住等待等。需要已开启无障碍服务。",
     parameters: {
       x: { type: "number", description: "按住 x（像素）" },
       y: { type: "number", description: "按住 y（像素）" },
       fx: { type: "number", description: "分数 x（0~1，推荐）" },
       fy: { type: "number", description: "分数 y（0~1，推荐）" },
-      ix: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 x 像素（自动换算）" },
-      iy: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 y 像素" },
+      ix: { type: "number", description: "区域截图专用：在最近一张 android_see 图里的 x 像素（自动换算）" },
+      iy: { type: "number", description: "区域截图专用：在最近一张 android_see 图里的 y 像素" },
       durationMs: { type: "number", description: "按住时长毫秒（默认 500）" },
       finger: { type: "number", description: "可选：指定手指（0~7）" }
     },
@@ -1219,11 +1214,8 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: "android_touch",
     description:
-      "虚拟触摸屏状态式控制：action=down（按下并保持）/ move（按住的手指滑到新位置）/ up（抬起）。" +
-      "每根手指用 finger 编号（0~7）区分，多根手指可同时按住——多指操作的基础。" +
-      "**典型用法：按住摇杆 = down(0) 在摇杆位置，然后 move(0) 拖动控制方向，松开 = up(0)**。" +
-      "down 之后手指一直按住，直到你 up / android_touch_status 确认 / 超时（30s）自动抬起。" +
-      "跨调用延续：down(0) 后可直接调 android_tap/android_gesture 等，按住的手指不会被松开（自动并入后续手势）。" +
+      "虚拟触摸屏状态式控制：action=down（按下并保持）/ move（按住的手指滑到新位置）/ up（抬起），手指用 finger 编号 0~7，可多指同时按住。\n" +
+      "典型用法：按住摇杆 = down(0) 在摇杆位置，再 move(0) 控制方向，松开 = up(0)。down 后手指一直按住，直到 up、android_touch_status 确认、或超时 30s 自动抬起；down(0) 之后直接调 android_tap/android_gesture 也不会松开，会并入后续手势。\n" +
       "坐标支持 x/y 或 fx/fy（0~1，推荐）。需要已开启无障碍服务。",
     parameters: {
       action: { type: "string", required: true, enum: ["down", "move", "up"], description: "down=按下保持 / move=按住移动 / up=抬起" },
@@ -1232,8 +1224,8 @@ function apply(ctx) {
       y: { type: "number", description: "目标 y（像素）" },
       fx: { type: "number", description: "分数 x（0~1，推荐）" },
       fy: { type: "number", description: "分数 y（0~1，推荐）" },
-      ix: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 x 像素（自动换算）" },
-      iy: { type: "number", description: "**区域截图专用**：在最近一张 android_see 图里的 y 像素" }
+      ix: { type: "number", description: "区域截图专用：在最近一张 android_see 图里的 x 像素（自动换算）" },
+      iy: { type: "number", description: "区域截图专用：在最近一张 android_see 图里的 y 像素" }
     },
     output: touchOutput,
     async execute(args, exec) {
@@ -1260,18 +1252,12 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: "android_gesture",
     description:
-      "一次执行一组多指手势（底层多笔时间轴，全部同时注入，真多指）。strokes 数组按顺序在时间轴上执行，支持：\n" +
-      "**网页按钮 / WebView / 自绘界面点不动时的首选**（实测无障碍 ACTION_CLICK 常被忽略，而手势注入有效；只要一个点就用 tap 笔）。\n" +
-      "- down: 按下并保持 {kind:'down', finger, x/y 或 fx/fy}\n" +
-      "- move: 按住的手指滑到新位置 {kind:'move', finger, x/y 或 fx/fy}\n" +
-      "- up: 抬起 {kind:'up', finger}\n" +
-      "- tap: 点按 {kind:'tap', x/y 或 fx/fy, [finger], [durationMs]}\n" +
-      "- swipe: 滑动 {kind:'swipe', x/y 或 fx/fy → x2/y2 或 fx2/fy2, [durationMs]}\n" +
-      "- hold: 按下→保持 durationMs→抬起 {kind:'hold', x/y 或 fx/fy, [durationMs], [finger]}\n" +
-      "- wait: 等待 {kind:'wait', ms}\n" +
-      "**典型游戏场景：左手按住摇杆同时右手点击 = [down(0, 摇杆), tap(1, 按钮)]**；按住摇杆拖动 = [down(0, 摇杆中心), move(0, 目标方向)]。" +
-      "down 的手指在请求结束后继续保持（可跨请求延续），直到 up / 超时自动抬起。" +
-      "坐标全部支持 fx/fy（0~1，推荐）。需要已开启无障碍服务。",
+      "一次执行一组多指手势（多笔时间轴同时注入，真多指）。每笔形如 {kind, finger?, x/y 或 fx/fy}，按顺序执行，kind 支持：\n" +
+      "- down 按下并保持 / move 按住的手指滑到新位置 / up 抬起\n" +
+      "- tap 点按（可给 finger、durationMs）/ swipe 滑动（再给 x2/y2 或 fx2/fy2）/ hold 按下→保持 durationMs→抬起 / wait{ms}\n" +
+      "网页按钮、WebView、自绘界面点不动时的首选：实测无障碍 ACTION_CLICK 常被忽略，手势注入有效；只点一个位置用 tap 笔即可。\n" +
+      "典型场景：左手按住摇杆同时右手点按钮 = [down(0, 摇杆), tap(1, 按钮)]；按摇杆拖动 = [down(0, 摇杆中心), move(0, 目标方向)]。" +
+      "down 的手指在请求结束后继续保持、可跨请求延续，直到 up 或超时自动抬起。坐标支持 fx/fy（0~1，推荐）。需要已开启无障碍服务。",
     parameters: {
       strokes: {
         type: "array",
@@ -1290,10 +1276,10 @@ function apply(ctx) {
             y2: { type: "number", description: "swipe 终点 y（像素）" },
             fx2: { type: "number", description: "swipe 终点分数 x（0~1）" },
             fy2: { type: "number", description: "swipe 终点分数 y（0~1）" },
-            ix: { type: "number", description: "**区域截图专用**：笔起点在图内 x 像素（自动换算）" },
-            iy: { type: "number", description: "**区域截图专用**：笔起点在图内 y 像素" },
-            ix2: { type: "number", description: "**区域截图专用**：swipe 终点在图内 x 像素" },
-            iy2: { type: "number", description: "**区域截图专用**：swipe 终点在图内 y 像素" },
+            ix: { type: "number", description: "区域截图专用：笔起点在图内 x 像素（自动换算）" },
+            iy: { type: "number", description: "区域截图专用：笔起点在图内 y 像素" },
+            ix2: { type: "number", description: "区域截图专用：swipe 终点在图内 x 像素" },
+            iy2: { type: "number", description: "区域截图专用：swipe 终点在图内 y 像素" },
             durationMs: { type: "number", description: "时长（wait=等待毫秒；tap 默认60；swipe 默认300；hold 默认500；move/up 默认100）" },
             ms: { type: "number", description: "wait 的等待毫秒" }
           }
@@ -1402,20 +1388,20 @@ function apply(ctx) {
   // A2：统一能力探测（一次问清"现在到底能做什么"）
   // 背景：无障碍开关、截图能力、Shizuku/root、虚拟屏桥是否在跑、能不能列/启动应用，
   // 原来分散在 4~5 个工具各自的失败信息里，模型只能逐个试错。
-  // 本工具**不做任何特权操作**：只读 env + 打两个本地 HTTP（都是本 App 自己的服务）。
+  // 本工具不做任何特权操作：只读 env + 打两个本地 HTTP（都是本 App 自己的服务）。
   // 放在无障碍插件里是有意的——dsh-tool-android 在无特权时整体不注册，
   // 能力探测若放在那里就会"无特权时恰好消失"，正是最需要它的时候没有。
   // ==========================================================================
-  // v1.22（P1）：把「聚焦 → 写文本 → 提交 → 读回自证」做成**一个原子工具**（真机 Agent 复盘 §4）
+  // v1.22（P1）：把「聚焦 → 写文本 → 提交 → 读回自证」做成一个原子工具（真机 Agent 复盘 §4）
   ctx.tools.register(defineTool({
     name: "android_focus_type",
     description:
-      "把「聚焦输入框 → 写入文本 →（可选）提交 → 读回自证」做成**一次调用**。" +
+      "把「聚焦输入框 → 写入文本 →（可选）提交 → 读回自证」做成一次调用。" +
       "为什么需要它：实测在 Chromium/WebView 里，单独用 android_type 会 ACTION_SET_TEXT 返回 false、" +
       "android_paste_text 的内容容易落进输入法候选条、而输入法的「确定」只是收起键盘并不导航。" +
       "本工具内部顺序回退：① 无障碍直接写 → ② 写 App 剪贴板再粘贴；提交走 ACTION_IME_ENTER（Android 11+）；" +
       "每一步都读回控件树自证，并在 steps/verified 里如实说明哪一步生效、哪一步没生效。" +
-      "**要打开网址请优先用 android_open_url**（比在浏览器里打字可靠得多）。",
+      "要打开网址请优先用 android_open_url（比在浏览器里打字可靠得多）。",
     parameters: {
       text: { type: "string", required: true, description: "要写入的文本（中文 / emoji 均可）" },
       select: { type: "string", description: "目标输入框的文字或提示（按文字找控件并点击聚焦，推荐）" },
@@ -1463,7 +1449,7 @@ function apply(ctx) {
         const sel = String(args.select);
         const t = parseResult(await a11yRequest("/tap", { text: sel }, 8000));
         if (t.found === false) {
-          // 回退：无障碍的文字匹配**区分大小写**（实测 "Search Settings" 匹配不到 "Search settings"）
+          // 回退：无障碍的文字匹配区分大小写（实测 "Search Settings" 匹配不到 "Search settings"）
           //   → 用 /dump 做一次忽略大小写的查找，取到坐标直接点。
           const d = await dumpNodes();
           const needle = sel.toLowerCase();
@@ -1586,7 +1572,7 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: "android_find_text",
     description:
-      "在控件树里查找某段文字，并**可以等它出现**（轮询，不产生任何截图）。" +
+      "在控件树里查找某段文字，并可以等它出现（轮询，不产生任何截图）。" +
       "点完之后等下一页 / 等按钮可点 / 等提示出现，都用它，比固定 sleep 或反复 android_see 既快又省内存。",
     parameters: {
       text: { type: "string", required: true, description: "要找的文字（包含匹配）" },
@@ -1668,7 +1654,7 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: "android_wait_stable",
     description:
-      "等界面稳定：轮询**控件树指纹**，直到连续两次相同（或超时）。用于「等页面加载完再截图/点击」。" +
+      "等界面稳定：轮询控件树指纹，直到连续两次相同（或超时）。用于「等页面加载完再截图/点击」。" +
       "比「不停地截图比哈希」省内存（不产生任何位图），也不会触发系统的内存回收。",
     parameters: {
       timeout_ms: { type: "number", description: "最多等多久（默认 6000）" },
@@ -1739,14 +1725,14 @@ function apply(ctx) {
     }
   }));
 
-  // v1.22（P1）：与「上次看过的界面」做差异 —— 用来确认"刚才那一下到底生效没有"，**不产生截图**
+  // v1.22（P1）：与「上次看过的界面」做差异 —— 用来确认"刚才那一下到底生效没有"，不产生截图
   ctx.tools.register(defineTool({
     name: "android_screen_diff",
     description:
       "对比「与上一次读取控件树相比，界面变了什么」：回新增 / 消失的节点与计数；没变则明确回「无变化」。" +
       "适用场景：点击 / 输入之后确认是否真的生效（复盘里「操作成功但没生效」是最高频的坑）。" +
-      "**不产生任何截图**（纯控件树比较），比「再截一张图自己看」既省内存也省 token。" +
-      "比较基准是**最近一次**读过控件树的操作（android_screen / android_find_text / android_wait_stable / 本工具等）。",
+      "不产生任何截图（纯控件树比较），比「再截一张图自己看」既省内存也省 token。" +
+      "比较基准是最近一次读过控件树的操作（android_screen / android_find_text / android_wait_stable / 本工具等）。",
     parameters: {
       limit: { type: "number", description: "最多各列出多少条新增/消失（默认 20）" }
     },
@@ -1814,7 +1800,7 @@ function apply(ctx) {
     name: "android_scroll_to",
     description:
       "反复滚动屏幕直到某段文字出现（可指定方向与最大次数）。用于长列表 / 长页面里找目标。" +
-      "每滚一次读一次控件树（**不截图**），找到就回 found=true 及其位置；滚满次数仍没有就如实回 found=false。" +
+      "每滚一次读一次控件树（不截图），找到就回 found=true 及其位置；滚满次数仍没有就如实回 found=false。" +
       "比「自己 scroll 几次 + 每次 android_see 看一眼」又快又省内存。",
     parameters: {
       text: { type: "string", required: true, description: "要找的文字（包含匹配）" },
@@ -1903,7 +1889,7 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: "android_mem_status",
     description:
-      "查看本机内存状况（读 /proc/meminfo，**全机视图**，不受 App cgroup 隔离）。" +
+      "查看本机内存状况（读 /proc/meminfo，全机视图，不受 App cgroup 隔离）。" +
       "准备做长时间 / 高频的屏幕操作（尤其反复 android_see 全屏截图）前建议先看一眼：" +
       "可用内存低于约 400MB 时，高频全屏截图会显著提高系统回收 App 与无障碍服务的概率" +
       "（表现是无障碍「闪断」、随后 tap/scroll/type 全部失败）。" +
@@ -1945,7 +1931,7 @@ function apply(ctx) {
         : (mem.availKb < FULL_SHOT_WARN_AVAIL_KB ? "偏低" : "充足");
       const hints = [];
       if (level === "紧张") {
-        hints.push("可用内存紧张：**不要**做全屏截图（会被本插件直接拒绝），改用 android_see(select=/region=) 区域截图"
+        hints.push("可用内存紧张：不要做全屏截图（会被本插件直接拒绝），改用 android_see(select=/region=) 区域截图"
           + "或 android_screen 读控件树；若已出现工具大面积失败，先停下、让 App 回前台，等系统回收内存后再继续。");
       } else if (level === "偏低") {
         hints.push("可用内存偏低：接下来优先区域截图，避免连续整屏截图。");
@@ -1968,7 +1954,7 @@ function apply(ctx) {
     description:
       "一次性查询本机当前可用的 Android 能力（无障碍是否开启、能否截图、Shizuku/root 特权通道、虚拟屏服务是否就绪、" +
       "能否做需要特权的系统操作如装机/改设置/模拟输入）。" +
-      "**开始任何手机操作任务前建议先调用一次**，避免逐个工具试错（例如无特权时 android_input/android_package 根本不会出现在工具列表里）。" +
+      "开始任何手机操作任务前建议先调用一次，避免逐个工具试错（例如无特权时 android_input/android_package 根本不会出现在工具列表里）。" +
       "返回每项能力的可用性与不可用时的下一步建议。",
     parameters: {},
     output: {
@@ -2047,7 +2033,7 @@ function apply(ctx) {
         : (mem.availKb < FULL_SHOT_MIN_AVAIL_KB ? "紧张"
           : (mem.availKb < FULL_SHOT_WARN_AVAIL_KB ? "偏低" : "充足"));
       if (memLevel === "紧张") {
-        hints.push("可用内存紧张（" + mbOf(mem.availKb) + "MB）：**不要**用 android_see 全屏截图（会被拒绝），"
+        hints.push("可用内存紧张（" + mbOf(mem.availKb) + "MB）：不要用 android_see 全屏截图（会被拒绝），"
           + "改用 android_see(select=文字) / android_see(region=x,y,w,h) 区域截图或 android_screen 读控件树；"
           + "否则容易触发系统回收 App 与无障碍服务，之后点击/输入会成片失败。");
       } else if (memLevel === "偏低") {
@@ -2056,7 +2042,7 @@ function apply(ctx) {
       hints.push("截图省内存的姿势：android_see(select=\"界面上的文字\") 或 region=\"x,y,w,h\"（区域图几十 KB），"
         + "比整屏截图（每张 2~4MB、位图缓冲 ~10MB）省得多；需要大量读界面时优先 android_screen 读控件树。");
       if (!privileged) hints.push("未授予 Shizuku/root：特权工具（android_input/android_package/android_app/android_setting/android_screenshot）不会出现在工具列表；中文输入请用 android_paste_text，截图请用 android_see。");
-      hints.push("列应用/启动应用**不需要特权**：用 android_apps 列（走 PackageManager），用 android_launch(package=…) 启动；"
+      hints.push("列应用/启动应用不需要特权：用 android_apps 列（走 PackageManager），用 android_launch(package=…) 启动；"
         + "注意 Android 10+ 后台启动 Activity 有限制，App 在前台时最稳；要指定 activity 或在虚拟屏启动仍需 Shizuku/root。");
       if (privileged && !vscreenBridge) hints.push("虚拟屏桥未就绪：打开一次 App 即可拉起（桥在 App 进程内，随 App 启动）。");
       return {
@@ -2067,7 +2053,7 @@ function apply(ctx) {
         privilegedChannel: channel,
         canSystemOps: privileged,
         // v1.19：列应用/启动应用走 App 进程的 PackageManager（targetSdk=28 不受包可见性过滤），
-        // 因此**无特权也为真**；受限之处是 Android 10+ 的后台启动 Activity（BAL）。
+        // 因此无特权也为真；受限之处是 Android 10+ 的后台启动 Activity（BAL）。
         canListApps: true,
         canLaunchApps: true,
         vscreenBridge,

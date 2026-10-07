@@ -98,12 +98,13 @@ public class MainActivity extends Activity {
     // 外部公共根目录不要用常量：它必须按包名派生（正式版 / Lite / 兼容版共存时互不干扰）。
     // 曾硬编码为 "DeepSeekHarness" → Lite/兼容版会写到正式版的外部目录（vscreen jar、外部回退 dshroot
     // 都会串到别的版本上）。统一用 pkgRoot()（见下）。
-    /** v1.23：悬浮窗气泡消息的字数上限 —— 中文与非中文字符**分开计**。
-     *  为什么分开：气泡是**单行**（setSingleLine + TruncateAt.END，最宽 240dp），
-     *  一个汉字约占一个半角字符两倍的宽度，所以两类的合理上限不同；
-     *  超过上限时 App 侧按上限截断（并回真实计数），工具侧也会先行拦截并给出明确报错。 */
-    public static final int BUBBLE_MAX_CJK = 20;     // 中日韩字符（含全角标点）上限
-    public static final int BUBBLE_MAX_ASCII = 40;   // 其它字符（拉丁 / 数字 / 半角标点 / emoji 等）上限
+    /** v1.23：悬浮窗气泡消息的**长度预算**（按"汉字宽"计，维护者口径）。
+     *  规则：1 个汉字 / 全角标点 = 1 个汉字宽；1 个其它字符（英文 / 数字 / 半角标点 / emoji）= 0.5。
+     *  ⇒ 合计上限 20 个汉字宽：20 个汉字满、40 个英文字母满、10 汉字 + 20 字母也满。
+     *  实现上用**半单位**整数计数（汉字 = 2、其它 = 1），避免浮点比较问题：
+     *  {@link #BUBBLE_BUDGET_HALF} = 40 半单位 = 20 汉字宽。 */
+    public static final int BUBBLE_BUDGET_UNITS = 20;      // 对外口径：合计 20 个"汉字宽"
+    private static final int BUBBLE_BUDGET_HALF = BUBBLE_BUDGET_UNITS * 2;   // 内部：半单位预算
 
     /** 是否算"中文"（中日韩字符 + 全角标点 / CJK 符号）。按码点判断。 */
     private static boolean isCjkCodePoint(int cp) {
@@ -120,28 +121,24 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * v1.23 第①道闸：按**字数上限**裁剪（中文 ≤ {@link #BUBBLE_MAX_CJK}、其它 ≤ {@link #BUBBLE_MAX_ASCII}，
-     * 两类分开计、互不挤占）。这是可预期、且**写进工具说明**的规则。
+     * v1.23 第①道闸：按**长度预算**裁剪（合计 {@link #BUBBLE_BUDGET_UNITS} 个"汉字宽"：
+     * 汉字 / 全角标点 = 1，其它字符 = 0.5）。这是可预期、且**写进工具说明**的规则。
      * 第②道闸（按真实渲染宽度裁）在 OverlayService.fitBubbleWidth —— 因为气泡是那边渲染的、
      * 字号（fontScale）也是那边生效的（实测：主进程与服务资源字号可能不一致）。
+     *
+     * out[0] = 汉字个数、out[1] = 其它字符个数、out[2] = 用量（汉字宽，可为 .5）。
      */
     private static String fitBubbleText(String text, int[] out) {
         if (text == null) text = "";
-        int cjk = 0;
-        int ascii = 0;
+        int half = 0;                 // 已用半单位（汉字=2、其它=1）
         StringBuilder sb = new StringBuilder();
         int i = 0;
         while (i < text.length()) {
             int cp = text.codePointAt(i);
             int n = Character.charCount(cp);
-            boolean isCjk = isCjkCodePoint(cp);
-            if (isCjk) {
-                if (cjk >= BUBBLE_MAX_CJK) break;
-                cjk++;
-            } else {
-                if (ascii >= BUBBLE_MAX_ASCII) break;
-                ascii++;
-            }
+            int cost = isCjkCodePoint(cp) ? 2 : 1;      // 半单位
+            if (half + cost > BUBBLE_BUDGET_HALF) break;
+            half += cost;
             sb.appendCodePoint(cp);
             i += n;
         }
@@ -149,20 +146,22 @@ public class MainActivity extends Activity {
         return sb.toString();
     }
 
-    /** 数一遍中/非中文字符数（与 fitBubbleText 同一口径）。 */
+    /** 数一遍汉字/其它字符个数与用量（汉字宽）；out[0]=汉字数 out[1]=其它数 out[2]=用量×2（半单位）。 */
     private static void countBubble(String s, int[] out) {
         int cjk = 0;
-        int ascii = 0;
+        int other = 0;
+        int half = 0;
         if (s != null) {
             for (int k = 0; k < s.length(); ) {
                 int cp = s.codePointAt(k);
-                if (isCjkCodePoint(cp)) cjk++; else ascii++;
+                if (isCjkCodePoint(cp)) { cjk++; half += 2; } else { other++; half += 1; }
                 k += Character.charCount(cp);
             }
         }
-        if (out != null && out.length >= 2) {
+        if (out != null && out.length >= 3) {
             out[0] = cjk;
-            out[1] = ascii;
+            out[1] = other;
+            out[2] = half;
         }
     }
 
@@ -4391,11 +4390,11 @@ public class MainActivity extends Activity {
             // 转给 OverlayService 显示在小人上方（text 空 = 收起）。
             if (action.equals("bubble") || action.equals("agent-status")) {
                 String text = jsonField(raw, "text");
-                // v1.23：气泡是**单行**（setSingleLine + TruncateAt.END，宽 240dp），太长了会被省略号截断，
-                // 所以给出明确的字数上限；中文与非中文**分开计**（一个汉字约占两个半角宽）。
-                // 这里**强制执行**（超了按上限截断），并把真实计数回给调用方，好让它如实报告。
-                int[] cnt = new int[2];
-                String fitted = fitBubbleText(text, cnt);                       // ① 字数上限（写进工具说明的规则）
+                // v1.23：气泡是**单行**（setSingleLine + TruncateAt.END，宽 240dp），太长会被省略号截断，
+                // 所以按"汉字宽"给预算：汉字/全角 = 1，其它字符 = 0.5，合计 20（见 BUBBLE_BUDGET_UNITS）。
+                // 这里**强制执行**（超预算按预算截断），并把真实用量回给调用方，好让它如实报告。
+                int[] cnt = new int[3];                                        // [汉字数, 其它数, 半单位用量]
+                String fitted = fitBubbleText(text, cnt);                       // ① 长度预算（写进工具说明的规则）
                 String byWidth = OverlayService.fitBubbleWidth(fitted, 400);    // ② 按气泡真实渲染宽度（字号缩放也不出省略号）
                 if (!byWidth.equals(fitted)) {
                     fitted = byWidth;
@@ -4409,9 +4408,9 @@ public class MainActivity extends Activity {
                 StringBuilder sb = new StringBuilder("{\"ok\":true,\"bubble\":\"");
                 sb.append(fitted.replace("\"", "'"));
                 sb.append("\",\"cjk\":").append(cnt[0]);
-                sb.append(",\"ascii\":").append(cnt[1]);
-                sb.append(",\"maxCjk\":").append(BUBBLE_MAX_CJK);
-                sb.append(",\"maxAscii\":").append(BUBBLE_MAX_ASCII);
+                sb.append(",\"ascii\":").append(cnt[1]);          // 兼容旧字段名：其它字符数
+                sb.append(",\"cost\":").append(cnt[2] / 2.0);
+                sb.append(",\"budget\":").append(BUBBLE_BUDGET_UNITS);
                 sb.append(",\"truncated\":").append(truncated);
                 sb.append(",\"running\":").append(OverlayService.isRunning);
                 sb.append('}');

@@ -7,7 +7,7 @@
  * 特权通道（由 MainActivity 探测后通过环境变量告知）：
  *   - ROOT_AVAILABLE=1  ：设备有 root（su 可用），走 su -c 通道
  *   - SHIZUKU_AVAILABLE=1：Shizuku 已授权，走 app_process rish 通道
- * 两者都未授予时**不注册任何工具**：AI 工具列表里没有 android_*，
+ * 两者都未授予时不注册任何工具：AI 工具列表里没有 android_*，
  * 自然不会反复尝试系统操作；此时文件读写走 DSH 自带 fs/bash 工具。
  *
  * 审批策略：默认自动执行（已授权通道）。设环境变量 SHIZUKU_APPROVE=ask
@@ -145,7 +145,7 @@ function appPost(path, obj, timeoutMs) {
 }
 
 /**
- * v1.22：**免特权**地执行一个本地命令并回收输出（以本应用自己的 uid）。
+ * v1.22：免特权地执行一个本地命令并回收输出（以本应用自己的 uid）。
  * 现有 shizukuCmd / suCmd / privCmd 都走特权通道；读日志这类"自身权限就够"的场合用这个。
  * 失败一律如实回 error，不静默返回空字符串（复盘教训：别让调用方把"没输出"当成"没日志"）。
  */
@@ -429,7 +429,7 @@ function apply(ctx) {
   // 通道：App 本地 HTTP /overlay?action=bubble；App 没跑或没开悬浮窗时静默失败（不打扰）。
   {
     let busy = false;
-    // v1.21 修正（ANR）：**必须节流**。assistant-stream 是逐 token/逐帧触发的，
+    // v1.21 修正（ANR）：必须节流。assistant-stream 是逐 token/逐帧触发的，
     // 原来每个事件都 POST 一次气泡更新 → 悬浮窗被高频重排重绘，而模拟器是软件渲染，
     // 主线程会卡在 HardwareRenderer.nSyncAndDrawFrame 出帧上 → 系统判 App 无响应（实测 ANR）。
     // 现在：① 相同文案在 minGapMs 内不重复推；② 任意两次推送至少间隔 minGapMs。
@@ -451,7 +451,7 @@ function apply(ctx) {
     ctx.on("agent/inbox/claimed", () => { busy = true; bubble("思考中…", false); });
     // 流式输出：带工具名就是工具调用，否则仍算思考/输出中
     // v1.21：原来只认 frame.name/tool/toolName/call.name —— 真机反馈"正在调用 <工具>… 从没出现过"，
-    // 说明实际帧结构不是这几种。改成**深度扫描**帧里可能藏工具名的字段，
+    // 说明实际帧结构不是这几种。改成深度扫描帧里可能藏工具名的字段，
     // 并在第一次扫描失败时把帧的键名打到日志（dsh-web.log）以便进一步校正。
     let frameShapeLogged = false;
     const findToolName = (o, depth) => {
@@ -503,7 +503,7 @@ function apply(ctx) {
     ctx.on("agent/status", (p) => {
       const s = p && p.status;
       if (!s) return;
-      // v1.21：waiting-input / waiting-for-input = 明确在**等用户输入**（例如 agent 提了问）
+      // v1.21：waiting-input / waiting-for-input = 明确在等用户输入（例如 agent 提了问）
       if (s === "waiting-input" || s === "waiting-for-input") {
         busy = false;
         bubble("正在向用户提问...", true);
@@ -601,9 +601,9 @@ function apply(ctx) {
   }));
 
   // ==========================================================================
-  // 免特权路径（v1.19）：列出应用 / 启动应用 —— 走 **App 进程的 PackageManager**。
-  // 放在特权门控**之前**：无 root/Shizuku 时这两个工具依然可用（其余系统操作仍按下面的门控）。
-  // 为什么免特权可行：本 App targetSdk=28，而 Android 11+ 的**包可见性过滤只对 targetSdk≥30 生效**，
+  // 免特权路径（v1.19）：列出应用 / 启动应用 —— 走 App 进程的 PackageManager。
+  // 放在特权门控之前：无 root/Shizuku 时这两个工具依然可用（其余系统操作仍按下面的门控）。
+  // 为什么免特权可行：本 App targetSdk=28，而 Android 11+ 的包可见性过滤只对 targetSdk≥30 生效，
   //   getInstalledApplications / getLaunchIntentForPackage 可直接看到/启动全部应用，无需 QUERY_ALL_PACKAGES。
   //   ⚠ 若将来把 targetSdk 提到 30+，必须补 <queries>(MAIN+LAUNCHER) 或 QUERY_ALL_PACKAGES。
   // 对应壳内路由：POST /packages、POST /app（token 鉴权，见 MainActivity.handlePackagesRequest/handleAppRequest）。
@@ -719,7 +719,7 @@ function apply(ctx) {
     name: "android_open_url",
     description:
       "用系统默认应用打开一个 URL 或深链（Intent.ACTION_VIEW），不需要 root 或 Shizuku。" +
-      "**要打开网页 / 唤起 App 深链（https://、market://、weixin:// 等），一律优先用本工具**，" +
+      "要打开网页 / 唤起 App 深链（https://、market://、weixin:// 等），一律优先用本工具，" +
       "不要走「在浏览器里点地址栏→输入→提交」那条路：实测在 Chromium 无障碍下极不可靠（setText 返回 false、" +
       "粘贴被输入法吃掉、输入法的确定键只收键盘不导航），且要十几步。" +
       "返回 ok 只表示 Intent 已发出（系统能不能处理由系统决定，例如没装对应 App 会失败）。" +
@@ -820,10 +820,10 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: "android_apk_info",
     description:
-      "查看一个已安装应用的 APK：路径 / 大小 / 应用名，或列出包内条目（action=list）。**免特权**。" +
+      "查看一个已安装应用的 APK：路径 / 大小 / 应用名，或列出包内条目（action=list）。免特权。" +
       "用途：逆向侦查（找 JS bundle、接口表、资源、manifest）。" +
       "复盘里那位 agent 是手搓 `pm path` + `unzip` 才拿到这些 —— 现在一步到位，且不依赖设备有没有 unzip。" +
-      "⚠ 纪律：只读。它读的是**别人的**安装包（Android 上这是正常性质），但不要用它去改别人的应用。",
+      "⚠ 纪律：只读。它读的是别人的安装包（Android 上这是正常性质），但不要用它去改别人的应用。",
     parameters: {
       package: { type: "string", required: true, description: "包名（用 android_apps 查）" },
       list: { type: "boolean", description: "true = 附带包内条目清单（默认 false 只回路径/大小）" },
@@ -869,7 +869,7 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: "android_apk_extract",
     description:
-      "从已安装应用的 APK 里**取出文件**（单个 entry，或按 prefix 批量，如 assets/）。**免特权**。" +
+      "从已安装应用的 APK 里取出文件（单个 entry，或按 prefix 批量，如 assets/）。免特权。" +
       "默认解到应用私有目录（files/apk-extract），也可用 out_dir 指定其它可写路径。" +
       "取出 JS bundle / 接口表后用 fs 工具读即可。⚠ 只读别人的包，不要改动任何东西。",
     parameters: {
@@ -918,8 +918,8 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: "android_logcat",
     description:
-      "读取日志（`logcat -d`，默认最近 200 行）。**免特权**，但受系统限制：" +
-      "Android 11+ 起应用只能读到**自己**（以及自己启动的子进程）的日志，别家 App 的日志看不到 —— " +
+      "读取日志（`logcat -d`，默认最近 200 行）。免特权，但受系统限制：" +
+      "Android 11+ 起应用只能读到自己（以及自己启动的子进程）的日志，别家 App 的日志看不到 —— " +
       "这不是工具坏了，是系统隐私策略。要看引擎/插件日志，本工具的 \"DSH\" 关键字过滤通常就够。" +
       "更全的日志在控制台「日志」页或 files/dsh-web.log（用 fs 工具读）。",
     parameters: {
@@ -943,7 +943,7 @@ function apply(ctx) {
       const argv = ["-d", "-t", String(n), "-v", "brief"];
       if (args.tag) argv.push("-s", String(args.tag));
       // 实测（Android 16 模拟器 community 包）：app uid 直接 spawn /system/bin/logcat 报 ENOENT
-      // （SELinux/exec 限制），而 shell 与**我们 payload 里的 bash** 都能跑通 —— 所以加一层 bash 回退。
+      // （SELinux/exec 限制），而 shell 与我们 payload 里的 bash 都能跑通 —— 所以加一层 bash 回退。
       let out = await runLocal(["/system/bin/logcat", ...argv], 15000);
       if (out.ok !== true) {
         const bash = payloadBashPath();
@@ -977,71 +977,69 @@ function apply(ctx) {
   }));
 
   // ===== v1.23：让 agent 通过悬浮窗小人的消息气泡"说一句话" =====
-  // 上限：中文（含全角标点）≤ 20 个、其它字符 ≤ 40 个，两类**分开计、互不挤占**。
-  // 为什么分开：气泡是**单行**（setSingleLine + TruncateAt.END，最宽 240dp），一个汉字约占
-  // 两个半角宽，所以两类的合理上限不同。超限时本工具**直接报错**（让 agent 自己改短），
+  // 上限：中文（含全角标点）≤ 20 个、其它字符 ≤ 40 个，两类分开计、互不挤占。
+  // 为什么分开：气泡是单行（setSingleLine + TruncateAt.END，最宽 240dp），一个汉字约占
+  // 两个半角宽，所以两类的合理上限不同。超限时本工具直接报错（让 agent 自己改短），
   // 而不是静默截断；App 侧仍按同一规则兜底截断。
   const BUBBLE_CJK_RE = /[\u3000-\u303F\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]|[\u{20000}-\u{2FA1F}]/u;
-  const BUBBLE_MAX_CJK = 20;
-  const BUBBLE_MAX_ASCII = 40;
-  const countBubbleChars = (s) => {
+  // 长度按"汉字宽"计：汉字/全角 = 1，其它字符 = 0.5，合计上限 20（即 20 汉字或 40 英文字母）。
+  const BUBBLE_BUDGET = 20;
+  const countBubbleCost = (s) => {
+    let cost = 0;
     let cjk = 0;
-    let ascii = 0;
-    for (const ch of String(s)) { if (BUBBLE_CJK_RE.test(ch)) cjk++; else ascii++; }
-    return { cjk, ascii };
+    let other = 0;
+    for (const ch of String(s)) {
+      if (BUBBLE_CJK_RE.test(ch)) { cost += 1; cjk++; } else { cost += 0.5; other++; }
+    }
+    return { cost, cjk, other };
   };
   ctx.tools.register(defineTool({
     name: "android_say",
     description:
-      "让手机悬浮窗小人**头顶气泡显示一句话**（给用户看的即时消息，例如「稍等，我在查资料」）。" +
-      "**字数上限：中文（含全角标点）不超过 " + BUBBLE_MAX_CJK + " 个、其它字符（英文 / 数字 / 半角标点 / emoji）不超过 "
-      + BUBBLE_MAX_ASCII + " 个；两类分开计、互不挤占** —— 气泡是单行，超长会被省略号截断，" +
-      "所以超限时本工具直接报错（不硬截），请把话改短后重试。" +
-      "（若用户把系统字体调大，气泡实际能显示的字会更少，App 会按真实宽度再裁一点 —— 返回里的 cjk/ascii/truncated 会如实反映最终结果。）" +
-      "何时用：需要让用户知道你在做什么、或请他看一眼屏幕时，调一次即可，不要刷屏。" +
-      "注意：气泡与「agent 状态」（思考中… / 正在调用…）**共用同一个位置**，后续状态更新会把它顶掉；" +
-      "想让它常驻就传 sticky=true。悬浮窗没开时返回 running=false（不报错）。",
+      "让悬浮窗小人头顶气泡显示一句话（给用户看的即时消息，如「稍等，我在查资料」）。" +
+      "长度上限 " + BUBBLE_BUDGET + " 个汉字宽：汉字与全角标点算 1，其它字符（英文/数字/半角标点/emoji）算 0.5，" +
+      "即 20 个汉字或 40 个英文字母封顶。超限直接报错（不硬截），改短后重试。" +
+      "气泡与 agent 状态（思考中…/正在调用…）共用同一位置、会被后续状态顶掉，要常驻传 sticky=true；" +
+      "系统字体被调大时能显示的字更少，App 会按真实宽度再裁（此时 truncated=true）。",
     parameters: {
-      text: { type: "string", required: true, description: "要显示的话：中文不超过 " + BUBBLE_MAX_CJK + " 个、其它字符不超过 " + BUBBLE_MAX_ASCII + " 个（两类分开计）" },
-      sticky: { type: "boolean", description: "true = 常驻显示，直到被新状态顶掉或用户点掉（默认 false）" },
-      ttl_seconds: { type: "number", description: "非 sticky 时显示多少秒后自动收起（默认 12）" }
+      text: { type: "string", required: true, description: "要显示的话，合计不超过 " + BUBBLE_BUDGET + " 个汉字宽（汉字算 1、其它字符算 0.5）" },
+      sticky: { type: "boolean", description: "true = 常驻，直到被新状态顶掉或用户点掉。默认 false" },
+      ttl_seconds: { type: "number", description: "非 sticky 时显示多少秒后自动收起。默认 12" }
     },
     output: {
       schema: resultSchema({
         text: { type: "string" },
         cjk: { type: "number" },
-        ascii: { type: "number" },
-        maxCjk: { type: "number" },
-        maxAscii: { type: "number" },
+        other: { type: "number" },
+        cost: { type: "number" },
+        budget: { type: "number" },
         truncated: { type: "boolean" },
         running: { type: "boolean" },
         hint: { type: "string" }
       }),
       render: (_a, value) => {
         if (!value.ok) return renderResult(value);
-        const shown = value.running === false
-          ? "（悬浮窗没开，用户看不到）"
-          : "";
         return [{ type: "text", text: "气泡已显示「" + (value.text || "") + "」"
-          + "（中文 " + (value.cjk || 0) + "/" + (value.maxCjk || BUBBLE_MAX_CJK)
-          + "，其它 " + (value.ascii || 0) + "/" + (value.maxAscii || BUBBLE_MAX_ASCII) + "）"
-          + (value.truncated ? "⚠ 被截断" : "") + shown }];
+          + "（用量 " + (value.cost || 0) + "/" + (value.budget || BUBBLE_BUDGET) + " 个汉字宽"
+          + "：汉字 " + (value.cjk || 0) + " + 其它 " + (value.other || 0) + "）"
+          + (value.truncated ? "，被截断" : "")
+          + (value.running === false ? "（悬浮窗没开，用户看不到）" : "") }];
       }
     },
     async execute(args) {
       const raw = args.text === undefined ? "" : String(args.text);
       if (!raw) return { ok: false, error: "android_say 需要 text 参数" };
-      const cnt = countBubbleChars(raw);
-      if (cnt.cjk > BUBBLE_MAX_CJK || cnt.ascii > BUBBLE_MAX_ASCII) {
+      const cnt = countBubbleCost(raw);
+      if (cnt.cost > BUBBLE_BUDGET) {
         return {
           ok: false,
-          error: "超出气泡字数上限：本次中文 " + cnt.cjk + "/" + BUBBLE_MAX_CJK
-            + "、其它字符 " + cnt.ascii + "/" + BUBBLE_MAX_ASCII + "（两类分开计）",
+          error: "超出气泡长度上限：本次 " + cnt.cost + "/" + BUBBLE_BUDGET + " 个汉字宽"
+            + "（汉字 " + cnt.cjk + " 个 + 其它字符 " + cnt.other + " 个×0.5）",
           cjk: cnt.cjk,
-          ascii: cnt.ascii,
-          maxCjk: BUBBLE_MAX_CJK,
-          maxAscii: BUBBLE_MAX_ASCII,
-          hint: "把话改短后重试（例：「稍等，我在查资料」= 中文 8 个）；细节可以用 android_screen / android_see 交待，气泡只放一句。"
+          other: cnt.other,
+          cost: cnt.cost,
+          budget: BUBBLE_BUDGET,
+          hint: "改短后重试。20 个汉字、40 个英文字母、或 10 个汉字加 20 个字母都算满；细节用 android_screen / android_see 交待。"
         };
       }
       const body = { token: process.env.APP_LOCAL_TOKEN || "", action: "bubble", text: raw };
@@ -1060,9 +1058,9 @@ function apply(ctx) {
         ok: true,
         text: r.bubble !== undefined ? String(r.bubble) : raw,
         cjk: typeof r.cjk === "number" ? r.cjk : cnt.cjk,
-        ascii: typeof r.ascii === "number" ? r.ascii : cnt.ascii,
-        maxCjk: typeof r.maxCjk === "number" ? r.maxCjk : BUBBLE_MAX_CJK,
-        maxAscii: typeof r.maxAscii === "number" ? r.maxAscii : BUBBLE_MAX_ASCII,
+        other: typeof r.ascii === "number" ? r.ascii : cnt.other,
+        cost: typeof r.cost === "number" ? r.cost : cnt.cost,
+        budget: typeof r.budget === "number" ? r.budget : BUBBLE_BUDGET,
         truncated: r.truncated === true,
         running: r.running === true
       };
@@ -1079,7 +1077,7 @@ function apply(ctx) {
     name: "android_package",
     description:
       "Android 包管理：列出已安装应用、安装 APK、卸载应用、清除应用数据、授予/撤销运行时权限。" +
-      "底层走 pm 命令（root su 或 Shizuku 特权通道）——**无特权时本工具不会注册**，" +
+      "底层走 pm 命令（root su 或 Shizuku 特权通道）——无特权时本工具不会注册，" +
       "此时「列出应用」请改用 android_apps（免特权，且带应用名/版本/是否可启动）。" +
       "install 会自动把 APK 拷到 /data/local/tmp 并用 install-create/install-write/install-commit 会话式安装" +
       "（单发 pm install 在 ColorOS 上会卡死，且 system_server 读不了 /storage/emulated/0），" +
@@ -1127,7 +1125,7 @@ function apply(ctx) {
   ctx.tools.register(defineTool({
     name: "android_app",
     description: "Android 应用管理：启动应用、强制停止应用、查看当前前台应用。底层走 am/dumpsys（root su 或 Shizuku 特权通道）。" +
-      "**启动应用不需要特权也行**：免特权请用 android_launch(package=…)；本工具仅在你需要指定 activity 或走特权通道时使用（无特权时不注册）。",
+      "启动应用不需要特权也行：免特权请用 android_launch(package=…)；本工具仅在你需要指定 activity 或走特权通道时使用（无特权时不注册）。",
     parameters: {
       action: {
         type: "string", required: true,

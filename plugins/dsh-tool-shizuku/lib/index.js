@@ -5,7 +5,7 @@
  *   - ROOT_AVAILABLE=1  ：设备有 root（su 可用），走 su -c 通道
  *   - SHIZUKU_AVAILABLE=1：Shizuku 已授权，走 app_process rish 通道
  * 两者都未授予时（ROOT_AVAILABLE != 1 且 SHIZUKU_AVAILABLE != 1），
- * **不注册特权工具** —— AI 的工具列表里没有 shizuku_shell，自然不会反复尝试调用；
+ * 不注册特权工具 —— AI 的工具列表里没有 shizuku_shell，自然不会反复尝试调用；
  * 此时文件读写走 DSH 自带的 fs/bash 工具（只需"所有文件访问权限"，无需特权）。
  *
  * 默认在已授权的通道下自动执行（无需逐次审批）。
@@ -168,7 +168,7 @@ function suCmd(command, timeoutMs) {
 }
 
 /**
- * 经 **App 进程**（Shizuku API 通道）执行特权命令：POST 127.0.0.1:<notifyPort>/shell。
+ * 经 App 进程（Shizuku API 通道）执行特权命令：POST 127.0.0.1:<notifyPort>/shell。
  *
  * 为什么不再直接用引擎内 rish：Shizuku 服务端校验「某包是否被授权」时要回头问 Shizuku 应用本体，
  * 而 ColorOS 会冻结/查杀 Shizuku 应用（真机日志：OplusHansManager “F exit()”、NativeFreezeManager、
@@ -233,7 +233,7 @@ function apply(ctx) {
   const available = privilegedAvailable();
 
   // 1) 特权 shell（默认自动执行，SHIZUKU_APPROVE=ask 时逐次审批）
-  // 未授予 root 且未授予 Shizuku 时**不注册**本工具：AI 工具列表里没有它，
+  // 未授予 root 且未授予 Shizuku 时不注册本工具：AI 工具列表里没有它，
   // 就不会反复尝试特权命令；此时文件读写应使用 DSH 自带的 fs/bash 工具。
   if (available) {
     ctx.tools.register(defineTool({
@@ -322,9 +322,9 @@ function apply(ctx) {
     async execute() {
       const appId = process.env.SHIZUKU_APP_ID || "";
       const dex = process.env.SHIZUKU_DEX;
-      // v1.13：**声称的通道必须实跑一次验证**。
+      // v1.13：声称的通道必须实跑一次验证。
       // 旧实现只要 SHIZUKU_AVAILABLE==="1" 就直接回 available:true —— 但那个环境变量是 App 侧按
-      // **uid** 判的（Shizuku.checkSelfPermission），而 rish 侧是按 RISH_APPLICATION_ID（**包名**）取权限。
+      // uid 判的（Shizuku.checkSelfPermission），而 rish 侧是按 RISH_APPLICATION_ID（包名）取权限。
       // 两者不一致时（例如包名写错）会表现为“状态说已授权、实际每次调用都 5 秒超时”，把真正的病因藏起来。
       // 现在：实跑探针，失败就如实报错并把 appId 带出来（这是排查门卫问题的关键信息）。
       if (process.env.ROOT_AVAILABLE === "1") {
@@ -399,11 +399,11 @@ function apply(ctx) {
     }
   }));
 
-  // 3) AI 发通知（**不依赖特权**：只需 App 通知权限，走本地 127.0.0.1:3081）
+  // 3) AI 发通知（不依赖特权：只需 App 通知权限，走本地 127.0.0.1:3081）
   // 始终注册：即使没有 root/Shizuku，只要用户在系统设置里给了通知权限就能发。
   ctx.tools.register(defineTool({
     name: "android_notify",
-    description: "向用户手机发送一条系统通知（标题 + 正文）。**只需要通知权限（POST_NOTIFICATIONS），不需要 Shizuku/root**。用于：后台任务完成、需要用户关注、长时间任务的进度提醒等。如果返回 ok:false 且提示通知权限未授予，请让用户在系统设置里为本应用开启通知权限后重试。",
+    description: "向用户手机发送一条系统通知（标题 + 正文）。只需要通知权限（POST_NOTIFICATIONS），不需要 Shizuku/root。用于：后台任务完成、需要用户关注、长时间任务的进度提醒等。如果返回 ok:false 且提示通知权限未授予，请让用户在系统设置里为本应用开启通知权限后重试。",
     parameters: {
       title: {
         type: "string",
@@ -467,15 +467,15 @@ function apply(ctx) {
     }
   }));
 
-  // 4) 本地设置（**不依赖特权**：只需 App 的「修改系统设置」WRITE_SETTINGS 权限，改 Settings.System 各项）
+  // 4) 本地设置（不依赖特权：只需 App 的「修改系统设置」WRITE_SETTINGS 权限，改 Settings.System 各项）
   ctx.tools.register(defineTool({
     name: "android_setting_app",
     description:
-      "通过 App 自身的 WRITE_SETTINGS 权限修改系统设置（Settings.System 命名空间）。**不需要 Shizuku/root**，但需要用户在权限引导页或系统设置里授予「修改系统设置」权限。" +
-      "常用 key：screen_brightness（亮度 0-255）、screen_brightness_mode（0=手动 1=自动）、screen_off_timeout（屏幕超时毫秒，如 60000）、" +
-      "accelerometer_rotation（自动旋转 0/1）、font_scale（字体大小，如 1.0/1.3）、volume_music/volume_ring/volume_alarm/volume_notification（音量 0-15）、" +
-      "sound_effects_enabled（触摸音 0/1）、haptic_feedback_enabled（震动反馈 0/1）、notification_light_pulse（通知灯 0/1）、ringtone（铃声 Uri）。" +
-      "改全局设置（Global/Secure 命名空间）请用 shizuku_shell 的 settings 命令（需要特权）。",
+      "修改系统设置（Settings.System 命名空间），用 App 自身的 WRITE_SETTINGS 权限，不需要 Shizuku/root；需用户授予「修改系统设置」权限。\n" +
+      "常用 key：screen_brightness（0-255）、screen_brightness_mode（0 手动 / 1 自动）、screen_off_timeout（毫秒，如 60000）、accelerometer_rotation（0/1）、" +
+      "font_scale（如 1.0/1.3）、volume_music / volume_ring / volume_alarm / volume_notification（0-15）、sound_effects_enabled（0/1）、" +
+      "haptic_feedback_enabled（0/1）、notification_light_pulse（0/1）、ringtone（Uri）。\n" +
+      "Global/Secure 命名空间用 shizuku_shell 的 settings 命令（需要特权）。",
     parameters: {
       key: {
         type: "string", required: true,
@@ -539,10 +539,10 @@ function apply(ctx) {
     }
   }));
 
-  // 5) 剪贴板（**不依赖特权**：读写系统剪贴板，无需任何特殊权限）
+  // 5) 剪贴板（不依赖特权：读写系统剪贴板，无需任何特殊权限）
   ctx.tools.register(defineTool({
     name: "android_clipboard",
-    description: "读写手机剪贴板。**不需要 Shizuku/root 和任何特殊权限**。action=read 读取当前剪贴板内容；action=write 把 content 写入剪贴板（如 AI 生成代码/文本后让用户粘贴）。",
+    description: "读写手机剪贴板。不需要 Shizuku/root 和任何特殊权限。action=read 读取当前剪贴板内容；action=write 把 content 写入剪贴板（如 AI 生成代码/文本后让用户粘贴）。",
     parameters: {
       action: {
         type: "string", required: true,
