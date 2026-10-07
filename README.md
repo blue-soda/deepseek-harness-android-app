@@ -1,4 +1,4 @@
-# DeepSeek Harness 手机版（Android）· 社区构建
+# DeepSeek Harness for Android
 
 > 把 DeepSeek Harness（DSH）打包成**可直接安装的 Android APK**：装上就能用，还能让 AI **免 Root 操作手机**。
 >
