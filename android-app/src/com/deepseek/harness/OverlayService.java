@@ -641,9 +641,8 @@ public class OverlayService extends Service {
                         if (dragging) {
                             lp.x = (int) (startX + (ev.getRawX() - touchX));
                             lp.y = (int) (startY + (ev.getRawY() - touchY));
-                            try { wm.updateViewLayout(rootView, lp); } catch (Throwable ignored) {}
                             updateDismissHint(ev.getRawY());
-                    layoutCompanions();   // v1.21（重构）：拖动时气泡/面板跟随
+                            updateAvatarWindow();   // v1.24：拖动时气泡/面板跟随（统一出口）
                         }
                         return true;
                     case MotionEvent.ACTION_UP:
@@ -826,7 +825,7 @@ public class OverlayService extends Service {
                         }
                         if (lp.x != want) {
                             lp.x = want;
-                            wm.updateViewLayout(rootView, lp);
+                            updateAvatarWindow();   // v1.24：改 lp.x 必须走这个出口（同步气泡/面板）
                         }
                     } catch (Throwable ignored) {}
                 }
@@ -848,8 +847,7 @@ public class OverlayService extends Service {
             lp.x = edgeXFor(w);
             if (lp.y < 0) lp.y = 0;
             if (lp.y > screenH - h) lp.y = Math.max(0, screenH - h);
-            wm.updateViewLayout(rootView, lp);
-            layoutCompanions();     // v1.21（重构）：气泡/面板跟随小人
+            updateAvatarWindow();   // v1.24：气泡/面板跟随小人（统一出口；原为 updateViewLayout + layoutCompanions）
             // v1.21 诊断：把停靠方向、窗口几何、小人实际位置、气泡可见性打出来。
             // 真机/模拟器上"小人在半空""气泡被截短"这类问题只能靠这几个数定位（不能再靠猜）。
             try {
@@ -1023,6 +1021,32 @@ public class OverlayService extends Service {
         return inset + w;
     }
 
+    /**
+     * v1.24（用户报障修复）：**改动小人窗口的唯一出口** —— 提交 lp 之后立刻把气泡/面板同步到
+     * 小人的**当前**几何。
+     *
+     * 根因（真机复现的数字）：气泡/面板两个窗口的 x 都从"小人窗口的 lp.x"算出（见 layoutCompanions），
+     * 而原先**只有拖动、贴边（snapToEdge）、整体显隐**会调用 layoutCompanions ——
+     * 改 lp.x 的三个地方漏了同步：
+     *   · 贴边过渡动画（applyEdgePos 的每一帧，小人从"半藏位"滑到"完整位"，差 8dp=24px）；
+     *   · 右缘钉住（installRightEdgePin）；
+     *   · clampPanelOnScreen。
+     * 于是面板停在**小人的旧位置**上，直到下一次 layoutCompanions 才"迟到地对齐"。
+     * 实测（左停靠，面板刚展开）：面板 x=-12 / 小人 x=+12；点面板「退出」后面板跳到 x=+12 ——
+     * 因为「退出」会飘「下班啦」气泡 → applyBubble() → layoutCompanions()。
+     * 右停靠同理（面板 692 → 668，向左跳 24px），与用户报障"点退出整体平移一下"完全一致。
+     *
+     * 现在把"改 lp.x/lp.y"和"同步附属窗口"绑在一个出口里：附属窗口永远跟小人当前几何一致，
+     * 之后任何一次重排（气泡出现、状态刷新、点退出…）都不会再产生位移。
+     */
+    private void updateAvatarWindow() {
+        try {
+            if (lp == null || rootView == null) return;
+            wm.updateViewLayout(rootView, lp);
+            layoutCompanions();     // 小人动了，气泡/面板立刻跟上（同一帧，无滞后）
+        } catch (Throwable ignored) {}
+    }
+
     /** 面板显示/隐藏；animate=true 时带旋转抖动 + 位置过渡（唤出、收起共用）。 */
     private void setPanelVisible(boolean show, boolean animate) {
         panelVisible = show;
@@ -1043,7 +1067,7 @@ public class OverlayService extends Service {
         if (lp == null) return;
         lp.width = WindowManager.LayoutParams.WRAP_CONTENT;
         lp.height = WindowManager.LayoutParams.WRAP_CONTENT;
-        try { wm.updateViewLayout(rootView, lp); } catch (Throwable ignored) {}
+        updateAvatarWindow();   // v1.24：小人窗口重新提交后同步气泡/面板
         if (!animate) {
             snapToEdge();
         } else {
@@ -1095,7 +1119,7 @@ public class OverlayService extends Service {
             if (lp.y > screenH - h) lp.y = Math.max(0, screenH - h);
             if (!animate || lp.x == targetX) {
                 lp.x = targetX;
-                wm.updateViewLayout(rootView, lp);
+                updateAvatarWindow();   // v1.24：改 lp.x 必须走这个出口（同步气泡/面板）
                 return;
             }
             final int fromX = lp.x;
@@ -1107,7 +1131,7 @@ public class OverlayService extends Service {
                 @Override public void onAnimationUpdate(android.animation.ValueAnimator a) {
                     if (lp == null || rootView == null) return;
                     lp.x = (Integer) a.getAnimatedValue();
-                    try { wm.updateViewLayout(rootView, lp); } catch (Throwable ignored) {}
+                    updateAvatarWindow();   // v1.24：动画每一帧都同步气泡/面板（原先漏同步 → 点退出时跳一下）
                 }
             });
             va.start();
@@ -1191,7 +1215,7 @@ public class OverlayService extends Service {
                 @Override public void onAnimationUpdate(android.animation.ValueAnimator a) {
                     if (lp == null || rootView == null) return;
                     lp.x = (Integer) a.getAnimatedValue();
-                    try { wm.updateViewLayout(rootView, lp); } catch (Throwable ignored) {}
+                    updateAvatarWindow();   // v1.24：动画每一帧都同步气泡/面板（原先漏同步 → 点退出时跳一下）
                 }
             });
             va.start();
@@ -1257,7 +1281,7 @@ public class OverlayService extends Service {
                 int maxX = getResources().getDisplayMetrics().widthPixels - w - dp(4);
                 if (lp.x > maxX) lp.x = Math.max(dp(4), maxX);
             }
-            wm.updateViewLayout(rootView, lp);
+            updateAvatarWindow();   // v1.24：改 lp.x 必须走这个出口（同步气泡/面板）
         } catch (Throwable ignored) {}
     }
 
