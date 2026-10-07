@@ -132,6 +132,51 @@ def report_hooks(rows: list[dict]) -> None:
     print("  " + "  ".join(f"{b:>4}" for b in buckets))
 
 
+def report_heavy(hooks_path: str, resolve_path: str | None = None) -> None:
+    """谁带来的模块最多、谁的模块解析最贵 —— 用于"减少模块数"的定位。
+
+    ⚠ 2026-10-07：这个函数一度被 `.cache/boot-timer/analyze.py` 的旧副本覆盖而丢失，
+    所以它同时被 main() 调用，避免再被漏掉。
+    """
+    rows = load_hooks(hooks_path)
+    if not rows:
+        print(f"\n!! {hooks_path} 里没有可解析的加载记录")
+        return
+    files = [r for r in rows if not r["url"].startswith("node:")]
+    by_mod = defaultdict(lambda: [0, 0])
+    for r in files:
+        k = pkg_of(r["url"])
+        by_mod[k][0] += 1
+        by_mod[k][1] += r["bytes"]
+    print(f"\n== 谁带来的模块最多（{os.path.basename(hooks_path)}；文件模块共 {len(files)} 个）==")
+    print(f"  {'包':<44}{'模块':>6}{'KB':>9}")
+    for k, (n, b) in sorted(by_mod.items(), key=lambda kv: -kv[1][0])[:20]:
+        print(f"  {k:<44}{n:>6}{b/1024:>9.0f}")
+
+    if resolve_path and os.path.isfile(resolve_path):
+        res = []
+        for line in open(resolve_path, "r", encoding="utf-8", errors="replace"):
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 4:
+                continue
+            try:
+                res.append((float(parts[1]), parts[3]))
+            except ValueError:
+                continue
+        if res:
+            by_res = defaultdict(lambda: [0.0, 0])
+            for ms, url in res:
+                k = pkg_of(url)
+                by_res[k][0] += ms
+                by_res[k][1] += 1
+            total = sum(m for m, _ in res)
+            print(f"\n== 谁的模块解析最贵（{os.path.basename(resolve_path)}；"
+                  f"解析 {len(res)} 次 / {total:.0f} ms）==")
+            print(f"  {'包':<44}{'次数':>6}{'ms':>9}")
+            for k, (ms, n) in sorted(by_res.items(), key=lambda kv: -kv[1][0])[:20]:
+                print(f"  {k:<44}{n:>6}{ms:>9.0f}")
+
+
 # ---------- CPU profile ----------
 
 def classify(url: str, fn: str) -> str:
