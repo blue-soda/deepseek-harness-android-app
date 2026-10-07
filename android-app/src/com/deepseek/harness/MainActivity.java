@@ -3251,6 +3251,11 @@ public class MainActivity extends Activity {
         if (webView != null) webView.onResume();
         rootOk = null; // 从设置页/Shizuku 返回时重新探测 root
         refreshAllStatuses();
+        // v1.21（用户报障）：从系统设置授完权回到 App，控制台「授予权限」页仍显示"未授权"。
+        // 原因：那一页每行的状态文字是**构建时**算好的（addPermRow 里 conPermOk 只取一次），
+        // 而 onResume 原来只刷新引导页的状态行，没有重绘控制台页面。
+        // 补一次重绘 —— 它内部只在"控制台可见且正停在权限页"时才渲染，不影响其它页面。
+        refreshConsolePermIfShown();
         // 从 Shizuku/设置页返回时重新检测
         if (permRows != null && !permRows.isEmpty()) probeShizuku();
         // v1.13.12：切回前台时补采样一次页面底色（离开期间前端主题可能被改过）
