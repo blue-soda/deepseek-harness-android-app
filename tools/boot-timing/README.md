@@ -88,3 +88,35 @@ CPU profile（36 s 采样）分类：cordis + cordis-plugin-loader ≈ **6.4 s**
 模块加载的时间分布（十分位）：`79 15 296 270 202 153 26 369 55 54` —— 加载分散在整个启动过程中，
 20-50% 与 70-80% 各有一个高峰，说明"插件挂载"与"主线程编译"是交替进行的，没有单一可优化的停顿点。
 
+## 为什么"最大的耗时在主线程空档"
+
+ESM 的加载分四步：**resolve → load(读文件) → link/instantiate → evaluate**。
+本工具只在 `load` 处打点，所以第 1、3、4 步（尤其第 4 步的**顶层求值**）全部表现为"两次加载之间的空档"。
+按 CPU profile 拆开（36 s 采样）：
+
+| 空档成分 | 估算 | 说明 |
+|---|---|---|
+| V8 解析/编译 | ~5.5 s | `compileSourceTextModule` 2.6 s + `compileForInternalLoader` 1.1 s + `wrapSafe` 1.0 s + V8 解析 0.8 s |
+| 模块解析（找 package.json/realpath/URL） | ~2.5 s | `getPackageScopeConfig` 0.7 s + `URL` 0.6 s + `realpathSync` 0.5 s + `deserializePackageJSON` 0.4 s + `finalizeResolution` 0.3 s |
+| 插件挂载 / 依赖注入 | ~6.4 s | `@deepseek-ai/cordis` 4.8 s + `cordis-plugin-loader` 1.6 s |
+| profile 合成 / schema 校验 | ~3.8 s | `js-yaml` 1.0 s + `schemastery` 0.8 s + `zod` 0.6 s + `dsh-app-boot` 1.4 s |
+| 文件 I/O（真实读盘） | ~0.9-3.7 s | 其中 `realpathSync` 属上一条的"解析" |
+| GC / native | ~1.8 s | |
+
+**为什么这里特别大**：① 1378 个文件 / 14.5 MB 都要 link+evaluate；② 模拟器是 arm64 经
+ndk_translation **翻译执行**，CPU 成本放大数倍；③ 插件在 import/apply 阶段就做真事（建 schema、注册服务、YAML 解析）；
+④ 与功能无关的重库（turndown/domino、fontkit/brotli）被**静态导入**，白白参与 link+evaluate。
+
+**怎么办（含实测）**：
+
+| 手段 | 实测/预期 | 结论 |
+|---|---|---|
+| 把重库改成懒加载（`await import()`） | 微基准：`import turndown` **984-1088 ms**、`import fontkit` **1330-1577 ms** | ✅ **最划算**：~2.7 s，改动小、有 overlay 机制 |
+| 裁 profile / 插件 | cordis+loader 6.4 s 与插件数强相关 | ✅ 量级最大，但要逐个验证功能 |
+| `NODE_COMPILE_CACHE`（V8 字节码缓存） | 热缓存后 turndown 984→990 ms、fontkit 1458→1330 ms（~9%，两次噪声级别） | ❌ 实测基本无效，别做 |
+| V8 快照 / SEA | 见 CHANGES：Node 快照只支持单入口、不能加载额外用户模块 | ❌ 与"插件运行时动态挂载"架构冲突 |
+| 合并第三方依赖成单文件 | 省的是 resolution（~2.5 s）的一部分，不省编译 | 🔸 收益有限 |
+| 清 `.ts`/`.md`（20 MB） | 不影响启动（只读了 1378 个文件） | 🔸 只减安装体积 |
+| 首启预热引擎（向导期间就起） | 感知上把 30 s 藏进读向导的时间 | ✅ 不改引擎成本但体验最好 |
+
+
