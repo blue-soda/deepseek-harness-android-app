@@ -6922,6 +6922,21 @@ public class MainActivity extends Activity {
         conDetailBox = conExtractDetail();
         card.addView(conDetailBox);
 
+        // v1.21（用户报障）：状态块的副标题写着「点这一行看详情」，但这一块**从来没绑过点击** ——
+        // 点了没反应（上游同版本也一样）。这里补齐：点状态块本身或其两行文字 = 展开/收起详情，
+        // 与「运行环境」弹窗里的「看详情」按钮完全同一行为（子按钮各自消费点击，不受影响）。
+        View.OnClickListener detailToggle = new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                consoleDetailOpen = !consoleDetailOpen;
+                renderConsole();
+            }
+        };
+        card.setOnClickListener(detailToggle);
+        conExState.setOnClickListener(detailToggle);
+        conEnState.setOnClickListener(detailToggle);
+        conEnMeta.setOnClickListener(detailToggle);
+        conExMeta.setOnClickListener(detailToggle);
+
         // ── 会话（把原来藏在「内核自检」页里的两个入口提到首页） ──
         items.put("group.sessions", cGrpTitle(t("title.grpSessions", "会话")));
         items.put("sessionadmin", cNavRow(t("card.sessionadmin", "会话管理"),
