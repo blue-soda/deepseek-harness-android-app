@@ -1,4 +1,4 @@
-# DeepSeek Harness 手机版（Android）· 社区构建
+# DeepSeek Harness for Android
 
 > ⚠️ **本 `main` 分支只是上游同步点** —— 本仓库的实际开发、修复与发布都在 **`master`** 分支：
 > **https://github.com/blue-soda/deepseek-harness-android-app/tree/master**
