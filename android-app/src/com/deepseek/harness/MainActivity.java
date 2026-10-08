@@ -7323,13 +7323,22 @@ public class MainActivity extends Activity {
         refreshConsole();
     }
 
-    /** v1.19.7：新版主控台里「分组标题 → 它管着哪些行」（整组被隐藏时标题一并收掉）。 */
+    /**
+     * v1.19.7：新版主控台里「分组标题 → 它管着哪些行」（整组被隐藏时标题一并收掉）。
+     *
+     * v1.24：**这个数组同时是主控台的默认渲染顺序** —— {@link #emitConsoleItems} 直接按它铺。
+     * 标题为空串的组 = 不参与分组的独立块（`extract` 状态块 / `actions` 主题自定义动作）。
+     * 为什么要它来定顺序：以前顺序取的是 `items` 的**插入顺序**（构造代码的顺序），
+     * 而"会话组放最后"只写在注释里 ⇒ 要求被静默撤销（维护者复报"会话又跑到系统上面"）。
+     */
     private static final String[][] SIMPLE_GROUPS = {
+        {"", "extract"},
         {"group.system", "env", "browser", "perm", "plugins", "log", "theme"},
         {"group.diagnose", "selfcheck"},
         // v1.21（用户要求）：会话两行移到最后 —— 它们不是日常高频操作，
         // 原来排在最上面会挡住「启动引擎 / 权限 / 日志」这些常用入口。
         {"group.sessions", "sessionadmin", "sessionheal"},
+        {"", "actions"},
     };
 
     /**
@@ -7353,16 +7362,26 @@ public class MainActivity extends Activity {
         if (ct != null) hidden.addAll(ct.hiddenCards);
 
         for (int g = 0; g < SIMPLE_GROUPS.length; g++) {
+            String title = SIMPLE_GROUPS[g][0];
+            if (title.length() == 0) continue;   // 无标题块（extract / actions）不参与"整组隐藏"判定
             boolean anyVisible = false;
             for (int k = 1; k < SIMPLE_GROUPS[g].length; k++) {
                 if (!hidden.contains(SIMPLE_GROUPS[g][k]) && items.containsKey(SIMPLE_GROUPS[g][k])) anyVisible = true;
             }
-            if (!anyVisible) hidden.add(SIMPLE_GROUPS[g][0]);   // 整组都没了 → 标题也别留
+            if (!anyVisible) hidden.add(title);   // 整组都没了 → 标题也别留
         }
         hidden.remove("extract");   // 主操作块不给藏（藏了就没有启动引擎的入口）
 
         java.util.List<String> order = new java.util.ArrayList<String>();
         if (ct != null && ct.cardOrder != null) order.addAll(ct.cardOrder);
+        // v1.24：内置默认顺序 = SIMPLE_GROUPS（分组标题 + 组内行 + 两个无标题块），
+        // **不再用 items 的插入顺序** —— 插入顺序是"构造代码的顺序"，不是"想要的顺序"；
+        // 两者不一致时用户看到的是后者，于是"会话放最后"这类要求会被静默撤销。
+        for (int g = 0; g < SIMPLE_GROUPS.length; g++) {
+            for (int k = 0; k < SIMPLE_GROUPS[g].length; k++) {
+                if (!order.contains(SIMPLE_GROUPS[g][k])) order.add(SIMPLE_GROUPS[g][k]);
+            }
+        }
         for (String id : items.keySet()) if (!order.contains(id)) order.add(id);
 
         String prev = null;
