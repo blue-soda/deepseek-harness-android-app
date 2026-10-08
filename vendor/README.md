@@ -43,7 +43,7 @@ DSH 只有看到它在 bundles 里才会组合进插件树。
 
 | 插件 | 版本 | 来源 | 说明 |
 |---|---|---|---|
-| `ds-harness-remote` | 0.4.31 | npm `@blue-soda/dsh-remote`（同源仓库 `github:blue-soda/ds-harness-remote`）| 端到端加密的远程访问（桌面/网页/安卓互连）。自带 `dist/index.js` + `dist/client.github.js`；运行时依赖 `qrcode`/`werift`/`ws`/`zod` 一并内置，`@deepseek-ai/schemastery` 由内核树嵌套路径提供、不内置。 |
+| `ds-harness-remote` | 0.4.32 | 同源本地仓库 `github:blue-soda/ds-harness-remote` 的 `packages/plugin`（npm `@blue-soda/dsh-remote` 尚未发布到 0.4.32）| 端到端加密的远程访问（桌面/网页/安卓互连）。自带 `dist/index.js` + `dist/client.github.js`；运行时依赖 `qrcode`/`werift`/`ws`/`zod` 一并内置，`@deepseek-ai/schemastery` 由内核树嵌套路径提供、不内置。 |
 
 ## 更新步骤（人工）
 
@@ -81,6 +81,15 @@ mkdir -p /tmp/npm && tar -xzf /tmp/dsh-remote.tgz -C /tmp/npm     # 解出 packa
 > 并且做了**双向核对**：npm 发布产物 vs 同源本地仓库 `C:\Workspace\ds-harness-remote`
 > （`main@67842d3 chore(release): 0.4.31`，工作区干净）的 `packages/plugin` ——
 > **237/237 文件 SHA-256 完全一致** ✅。
+
+> 2026-10-08 更新到 **0.4.32**：npm 上 **没有** 0.4.32（`npm view @blue-soda/dsh-remote@0.4.32`
+> 报 404，registry 最新仍是 0.4.31 —— 发布还在 CDN 处理中），因此按方式 A 的同一份 `files` 清单
+> （`bin/ dist/ locale/ cordis.patch.yml dsh-plugin.json public.d.ts README.md LICENSE package.json`）
+> 从**同源本地仓库**整包替换：`C:\Workspace\ds-harness-remote`（`main@a30609d`，工作区干净；
+> 上一提交 `7cc3bea chore: … bump to 0.4.32`）的 `packages/plugin`（version 0.4.32，
+> `dist/` 已构建、`PLUGIN_VERSION = "0.4.32"`），`node_modules/` 原样保留（依赖清单逐项一致）。
+> 替换后做了字节核对：**237/237 文件 SHA-256 一致** ✅（脚本见 `.cache/verify-plugin-vendor.py`）。
+> 本版内含自动重连逻辑优化（快速重连不再把健康链路判定为故障）。
 
 ### 方式 B：GitHub 渠道（默认，含未发布提交）
 

@@ -3939,6 +3939,8 @@ Minimum version required to store current data is: ` + bestVersion + `.
                 return;
               }
               setRouteOpen(!1), props.control("mode.set", { mode: "local" }).catch(() => {
+              }).then(() => {
+                window.location.reload();
               });
             }
           }, React.createElement("i", { "aria-hidden": !0 }), reconnecting ? t("reconnecting") : networkLabel),

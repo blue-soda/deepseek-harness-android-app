@@ -4,10 +4,17 @@ var __export = (target2, all) => {
     __defProp(target2, name2, { get: all[name2], enumerable: true });
 };
 
-// src/loopback-preview.ts
-import { randomBytes, randomUUID } from "node:crypto";
-import { createServer } from "node:http";
-import { WebSocketServer } from "ws";
+// ../webrtc/dist/websocket-backpressure.js
+async function waitForRelayCapacity(socket) {
+  const started = Date.now();
+  while ((socket.bufferedAmount ?? 0) > 512 * 1024) {
+    if (socket.readyState !== 1 || Date.now() - started > 1e4)
+      throw new Error("Relay consumer is too slow or disconnected");
+    await new Promise((resolve4) => setTimeout(resolve4, 10));
+  }
+  if (socket.readyState !== 1)
+    throw new Error("Relay transport closed");
+}
 
 // ../../node_modules/zod/v3/external.js
 var external_exports = {};
@@ -4599,1277 +4606,6 @@ function cryptoRandomId() {
   return `msg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
 }
 
-// src/loopback-host.ts
-import { request as httpRequest } from "node:http";
-import { WebSocket as WebSocket2 } from "ws";
-
-// src/safe-error.ts
-var RpcError = class extends Error {
-  constructor(code, message, details, retryable = false) {
-    super(message);
-    this.code = code;
-    this.details = details;
-    this.retryable = retryable;
-  }
-};
-function safeErrorCode(error) {
-  if (error instanceof RpcError) return error.code;
-  if (error instanceof external_exports.ZodError) return "INVALID_MESSAGE";
-  return "INTERNAL_ERROR";
-}
-
-// src/loopback-host.ts
-var HOP_HEADERS = /* @__PURE__ */ new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-  "host",
-  "content-length",
-  "forwarded",
-  "x-forwarded-for",
-  "x-forwarded-host",
-  "x-forwarded-proto"
-]);
-function cleanHeaders(headers) {
-  const removed = new Set(HOP_HEADERS);
-  for (const [name2, value] of headers) if (name2.toLowerCase() === "connection") {
-    for (const token of value.split(",")) removed.add(token.trim().toLowerCase());
-  }
-  return headers.filter(([name2]) => !removed.has(name2.toLowerCase()) && !name2.toLowerCase().startsWith("sec-websocket-"));
-}
-function headerPairs(headers) {
-  return Object.entries(headers).flatMap(([name2, value]) => value === void 0 ? [] : (Array.isArray(value) ? value : [value]).map((item) => [name2, item]));
-}
-var LoopbackHost = class {
-  constructor(getPorts, onClose) {
-    this.onClose = onClose;
-    this.ports = [...getPorts()];
-    this.timer = setInterval(() => {
-      for (const [id4, handle] of this.handles) if (Date.now() - handle.touched > 6e4) this.close(id4);
-    }, 1e4);
-    this.timer.unref();
-  }
-  handles = /* @__PURE__ */ new Map();
-  ports;
-  closed = false;
-  timer;
-  setPorts(ports) {
-    this.ports = [...ports];
-    const allowed = new Set(ports);
-    for (const [id4, handle] of this.handles) if (!allowed.has(handle.port)) this.close(id4);
-  }
-  async call(input2) {
-    if (this.closed) throw new RpcError("TRANSPORT_CLOSED", "Preview connection closed.");
-    const value = loopbackRequestSchema.parse(input2);
-    if (value.op === "describe") return { ports: [...this.ports] };
-    if (value.op === "close") {
-      this.close(value.id);
-      return { closed: true };
-    }
-    if (value.op === "http.open" || value.op === "ws.open") {
-      if (!this.ports.includes(value.port)) throw new RpcError(
-        "LOOPBACK_PORT_DENIED",
-        "This preview port is not allowed. Add it to loopback.ports in the Host Remote settings and save the access settings. / \u8BF7\u5728 Host Remote \u8BBE\u7F6E\u4E2D\u5141\u8BB8\u6B64\u9884\u89C8\u7AEF\u53E3\u5E76\u4FDD\u5B58\u8BBF\u95EE\u8BBE\u7F6E\u3002"
-      );
-      if (this.handles.has(value.id)) throw new RpcError("REQUEST_CONFLICT", "Preview handle is already in use.");
-      if (this.handles.size >= LOOPBACK_MAX_CONNECTIONS) throw new RpcError("RATE_LIMITED", "Too many active preview requests.");
-      let openedHandle;
-      try {
-        const opening = value.op === "http.open" ? this.openHttp(value) : this.openWs(value);
-        openedHandle = this.handles.get(value.id);
-        return await opening;
-      } catch {
-        this.close(value.id, openedHandle);
-        throw new RpcError("LOOPBACK_UNAVAILABLE", "The allowed loopback service did not respond. Check that it is running on the Host.");
-      }
-    }
-    const handle = this.handles.get(value.id);
-    if (handle === void 0) throw new RpcError("LOOPBACK_CLOSED", "Preview request closed; reload the preview.");
-    handle.touched = Date.now();
-    if (value.op === "http.read" && handle.kind === "http") {
-      if (handle.reading) throw new RpcError("REQUEST_CONFLICT", "Only one preview read may be pending.");
-      handle.reading = true;
-      try {
-        const response = handle.response;
-        let chunk = response.read(Math.min(response.readableLength || LOOPBACK_CHUNK_BYTES, LOOPBACK_CHUNK_BYTES));
-        if (chunk === null && !response.readableEnded && !response.destroyed) {
-          await new Promise((resolve4, reject) => {
-            const timer = setTimeout(() => finish(new Error("timeout")), 2e4);
-            const ready = () => finish();
-            const fail4 = () => finish(new Error("closed"));
-            const finish = (error) => {
-              clearTimeout(timer);
-              response.off("readable", ready);
-              response.off("end", ready);
-              response.off("close", ready);
-              response.off("error", fail4);
-              error === void 0 ? resolve4() : reject(error);
-            };
-            response.once("readable", ready);
-            response.once("end", ready);
-            response.once("close", ready);
-            response.once("error", fail4);
-          });
-          if (this.handles.get(value.id) !== handle) throw new Error("closed");
-          chunk = response.read(Math.min(response.readableLength || LOOPBACK_CHUNK_BYTES, LOOPBACK_CHUNK_BYTES));
-          if (chunk === null && response.readableLength > 0) chunk = response.read(Math.min(response.readableLength, LOOPBACK_CHUNK_BYTES));
-        }
-        const done = chunk === null && (response.readableEnded || response.destroyed);
-        if (done && !response.complete) throw new Error("truncated");
-        handle.total += chunk?.length ?? 0;
-        if (handle.total > 64 * 1024 * 1024) throw new Error("size");
-        if (done) this.close(value.id, handle);
-        return { data: chunk?.toString("base64") ?? "", done };
-      } catch {
-        this.close(value.id, handle);
-        throw new RpcError("LOOPBACK_READ_FAILED", "Preview response ended or exceeded its limit; reload to retry.");
-      } finally {
-        handle.reading = false;
-      }
-    }
-    if (handle.kind === "ws") {
-      if (value.op === "ws.send") {
-        const data2 = Buffer.from(value.data, "base64");
-        if (data2.length > LOOPBACK_MAX_WS_BYTES || handle.socket.bufferedAmount > 1024 * 1024) {
-          this.close(value.id);
-          throw new RpcError("RATE_LIMITED", "Preview WebSocket buffer exceeded its limit.");
-        }
-        await new Promise((resolve4, reject) => handle.socket.send(data2, { binary: value.binary }, (error) => error ? reject(new RpcError("LOOPBACK_CLOSED", "Preview socket closed.")) : resolve4()));
-        return { sent: true };
-      }
-      if (value.op === "ws.read") {
-        if (handle.reading) throw new RpcError("REQUEST_CONFLICT", "Only one preview read may be pending.");
-        handle.reading = true;
-        try {
-          if (handle.messages.length === 0 && !handle.closed) await new Promise((resolve4) => {
-            const timer = setTimeout(() => {
-              handle.wake = void 0;
-              resolve4();
-            }, 2e4);
-            handle.wake = () => {
-              clearTimeout(timer);
-              handle.wake = void 0;
-              resolve4();
-            };
-          });
-          let bytes = 0;
-          const messages = [];
-          while (handle.messages.length > 0 && bytes < LOOPBACK_MAX_WS_BYTES) {
-            const message = handle.messages.shift();
-            bytes += message.data.length;
-            messages.push(message);
-          }
-          handle.bytes -= bytes;
-          const closed = handle.closed && handle.messages.length === 0;
-          if (closed) this.close(value.id, handle);
-          return { messages, closed };
-        } finally {
-          handle.reading = false;
-        }
-      }
-    }
-    throw new RpcError("INVALID_MESSAGE", "Preview handle kind does not match the operation.");
-  }
-  closeAll() {
-    if (this.closed) return;
-    this.closed = true;
-    clearInterval(this.timer);
-    for (const id4 of this.handles.keys()) this.close(id4);
-    this.onClose?.();
-  }
-  close(id4, expected) {
-    const handle = this.handles.get(id4);
-    if (expected !== void 0 && handle !== expected) return;
-    this.handles.delete(id4);
-    if (handle?.kind === "http") {
-      handle.response?.destroy();
-      handle.request.destroy();
-    }
-    if (handle?.kind === "ws") {
-      handle.closed = true;
-      handle.messages = [];
-      handle.bytes = 0;
-      handle.wake?.();
-      handle.socket.terminate();
-    }
-  }
-  openHttp(value) {
-    const body = value.body === void 0 ? void 0 : Buffer.from(value.body, "base64");
-    if ((body?.length ?? 0) > LOOPBACK_MAX_BODY_BYTES) throw new Error("body limit");
-    return new Promise((resolve4, reject) => {
-      const headers = Object.fromEntries(cleanHeaders(value.headers));
-      let handle;
-      const request = httpRequest({
-        hostname: "127.0.0.1",
-        port: value.port,
-        method: value.method,
-        path: value.path,
-        headers,
-        agent: false,
-        maxHeaderSize: 32 * 1024
-      }, (response) => {
-        if (this.handles.get(value.id) !== handle) {
-          response.destroy();
-          return;
-        }
-        handle.response = response;
-        response.on("error", () => void 0);
-        clearTimeout(timer);
-        resolve4({ status: response.statusCode ?? 502, headers: cleanHeaders(headerPairs(response.headers)) });
-      });
-      const timer = setTimeout(() => {
-        request.destroy();
-        reject(new Error("timeout"));
-      }, 2e4);
-      request.on("error", () => {
-        clearTimeout(timer);
-        reject(new Error("upstream"));
-      });
-      handle = { kind: "http", port: value.port, request, reading: false, total: 0, touched: Date.now() };
-      this.handles.set(value.id, handle);
-      request.end(body);
-    });
-  }
-  openWs(value) {
-    return new Promise((resolve4, reject) => {
-      const socket = new WebSocket2(`ws://127.0.0.1:${value.port}${value.path}`, value.protocols, {
-        headers: Object.fromEntries(cleanHeaders(value.headers)),
-        followRedirects: false,
-        handshakeTimeout: 15e3,
-        maxPayload: LOOPBACK_MAX_WS_BYTES,
-        perMessageDeflate: false
-      });
-      const handle = { kind: "ws", port: value.port, socket, messages: [], bytes: 0, reading: false, closed: false, touched: Date.now() };
-      this.handles.set(value.id, handle);
-      socket.once("open", () => resolve4({ protocol: socket.protocol }));
-      socket.on("message", (data2, binary) => {
-        if (handle.closed) return;
-        const message = { data: Buffer.from(data2).toString("base64"), binary };
-        if (handle.bytes + message.data.length > 1024 * 1024 || handle.messages.length >= 256) {
-          this.close(value.id, handle);
-          return;
-        }
-        handle.messages.push(message);
-        handle.bytes += message.data.length;
-        handle.wake?.();
-      });
-      socket.on("close", () => {
-        handle.closed = true;
-        handle.wake?.();
-        reject(new Error("closed"));
-      });
-      socket.on("error", () => {
-        handle.closed = true;
-        handle.wake?.();
-        reject(new Error("upstream"));
-      });
-    });
-  }
-};
-
-// src/loopback-preview.ts
-var LoopbackPreview = class {
-  constructor(client) {
-    this.client = client;
-  }
-  servers = /* @__PURE__ */ new Map();
-  sockets = /* @__PURE__ */ new Set();
-  lifetime = new AbortController();
-  async open(port) {
-    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new RpcError("INVALID_MESSAGE", "Enter a port between 1024 and 65535.");
-    this.lifetime.signal.throwIfAborted();
-    const description = await this.client.rpc("loopback.call", { op: "describe" }, this.lifetime.signal);
-    if (!description.ports.includes(port)) throw new RpcError("LOOPBACK_PORT_DENIED", "Allow this port in the Host Remote settings (loopback.ports), then save the access settings. / \u8BF7\u5728 Host Remote \u8BBE\u7F6E\u4E2D\u5141\u8BB8\u6B64\u7AEF\u53E3\uFF0C\u7136\u540E\u4FDD\u5B58\u8BBF\u95EE\u8BBE\u7F6E\u3002");
-    let pending = this.servers.get(port);
-    if (pending === void 0) {
-      if (this.servers.size >= 16) throw new RpcError("RATE_LIMITED", "Too many preview origins.");
-      pending = this.start(port);
-      this.servers.set(port, pending);
-      void pending.catch(() => {
-        this.servers.delete(port);
-      });
-    }
-    return { url: (await pending).url };
-  }
-  async close() {
-    this.lifetime.abort();
-    for (const socket of this.sockets) socket.destroy();
-    for (const pending of this.servers.values()) {
-      const running = await pending.catch(() => void 0);
-      if (running === void 0) continue;
-      for (const client of running.ws.clients) client.terminate();
-      running.ws.close();
-      running.server.closeAllConnections();
-      await new Promise((resolve4) => running.server.close(() => resolve4()));
-    }
-    this.servers.clear();
-  }
-  async start(port) {
-    const hostname4 = `dsh-${randomBytes(24).toString("hex")}.localhost`;
-    let authority = "";
-    const accepted = (req) => req.headers.host === authority && (req.headers.origin === void 0 || req.headers.origin === `http://${authority}`) && req.headers["service-worker"] === void 0;
-    const server = createServer((req, res) => {
-      if (!accepted(req)) {
-        res.writeHead(403);
-        res.end("Preview origin denied.");
-        return;
-      }
-      void this.http(port, authority, req, res);
-    });
-    server.requestTimeout = 3e4;
-    server.headersTimeout = 15e3;
-    server.maxHeadersCount = 64;
-    server.on("connection", (socket) => {
-      if (this.sockets.size >= 64 || this.lifetime.signal.aborted) {
-        socket.destroy();
-        return;
-      }
-      this.sockets.add(socket);
-      socket.on("close", () => this.sockets.delete(socket));
-    });
-    const selectedProtocols = /* @__PURE__ */ new WeakMap();
-    const ws = new WebSocketServer({
-      noServer: true,
-      maxPayload: LOOPBACK_MAX_WS_BYTES,
-      perMessageDeflate: false,
-      handleProtocols: (_protocols, req) => selectedProtocols.get(req) || false
-    });
-    server.on("upgrade", (req, socket, head) => {
-      if (!accepted(req)) {
-        socket.destroy();
-        return;
-      }
-      const id4 = randomUUID();
-      const headers = this.headers(req, port);
-      const protocols = (req.headers["sec-websocket-protocol"] ?? "").split(",").map((item) => item.trim()).filter(Boolean);
-      void this.client.rpc("loopback.call", { op: "ws.open", id: id4, port, path: req.url ?? "/", headers, protocols }, this.lifetime.signal).then((result) => {
-        if (socket.destroyed || this.lifetime.signal.aborted) {
-          socket.destroy();
-          void this.release(id4);
-          return;
-        }
-        selectedProtocols.set(req, result.protocol);
-        ws.handleUpgrade(req, socket, head, (local) => this.websocket(id4, local));
-      }).catch(() => {
-        socket.destroy();
-        void this.release(id4);
-      });
-    });
-    await new Promise((resolve4, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-        server.off("error", reject);
-        resolve4();
-      });
-    });
-    const address = server.address();
-    if (address === null || typeof address === "string") {
-      server.close();
-      throw new Error("Preview listener unavailable");
-    }
-    authority = `${hostname4}:${address.port}`;
-    if (this.lifetime.signal.aborted) {
-      server.close();
-      ws.close();
-      throw new Error("Preview closed");
-    }
-    return { server, ws, url: `http://${authority}/` };
-  }
-  headers(req, port) {
-    return cleanHeaders(headerPairs(req.headers)).filter(([name2]) => !["origin", "referer"].includes(name2.toLowerCase())).concat(req.headers.origin === void 0 ? [] : [["origin", `http://127.0.0.1:${port}`]]);
-  }
-  async http(port, authority, req, res) {
-    const id4 = randomUUID();
-    const controller = new AbortController();
-    const abort = () => {
-      controller.abort();
-      void this.release(id4);
-    };
-    res.once("close", abort);
-    const signal = AbortSignal.any([controller.signal, this.lifetime.signal]);
-    try {
-      const chunks = [];
-      let length = 0;
-      for await (const chunk of req) {
-        length += chunk.length;
-        if (length > LOOPBACK_MAX_BODY_BYTES) throw new RpcError("PAYLOAD_TOO_LARGE", "Preview request body is limited to 1 MiB.");
-        chunks.push(chunk);
-      }
-      const head = await this.client.rpc("loopback.call", {
-        op: "http.open",
-        id: id4,
-        port,
-        path: req.url ?? "/",
-        method: req.method ?? "GET",
-        headers: this.headers(req, port),
-        ...length === 0 ? {} : { body: Buffer.concat(chunks).toString("base64") }
-      }, signal);
-      const headers = {};
-      for (let [name2, value] of cleanHeaders(head.headers)) {
-        name2 = name2.toLowerCase();
-        if (name2 === "location") {
-          const url = new URL(value, `http://127.0.0.1:${port}/`);
-          if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || Number(url.port || 80) !== port || url.protocol !== "http:") {
-            throw new Error("Redirect is outside the authorized preview service");
-          }
-          value = `http://${authority}${url.pathname}${url.search}${url.hash}`;
-        }
-        if (name2 === "set-cookie") {
-          value = value.replace(/;\s*domain=[^;]*/ig, "");
-          const existing = headers[name2];
-          headers[name2] = [...Array.isArray(existing) ? existing : [], value];
-        } else if (!["service-worker-allowed", "clear-site-data", "alt-svc"].includes(name2)) headers[name2] = value;
-      }
-      headers["referrer-policy"] = "no-referrer";
-      res.writeHead(head.status, headers);
-      while (!signal.aborted) {
-        const chunk = await this.client.rpc("loopback.call", { op: "http.read", id: id4 }, signal);
-        if (chunk.data !== "" && !res.write(Buffer.from(chunk.data, "base64"))) {
-          await new Promise((resolve4, reject) => {
-            const ready = () => {
-              cleanup();
-              resolve4();
-            };
-            const closed = () => {
-              cleanup();
-              reject(new Error("closed"));
-            };
-            const cleanup = () => {
-              res.off("drain", ready);
-              res.off("close", closed);
-            };
-            res.once("drain", ready);
-            res.once("close", closed);
-          });
-        }
-        if (chunk.done) break;
-      }
-      res.end();
-    } catch {
-      if (!res.headersSent) {
-        res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end("Remote preview unavailable. Check the Host service and connection, then reload.");
-      } else res.destroy();
-    } finally {
-      res.off("close", abort);
-      await this.release(id4);
-    }
-  }
-  websocket(id4, socket) {
-    let input2 = Promise.resolve();
-    let queued = 0;
-    let count = 0;
-    const controller = new AbortController();
-    const signal = AbortSignal.any([controller.signal, this.lifetime.signal]);
-    const close = () => {
-      controller.abort();
-      socket.terminate();
-      void this.release(id4);
-    };
-    socket.on("error", close);
-    socket.on("close", close);
-    socket.on("message", (data2, binary) => {
-      const bytes = Buffer.from(data2);
-      queued += bytes.length;
-      count += 1;
-      if (queued > 1024 * 1024 || count > 256) {
-        close();
-        return;
-      }
-      input2 = input2.then(async () => {
-        await this.client.rpc("loopback.call", { op: "ws.send", id: id4, data: bytes.toString("base64"), binary }, signal);
-        queued -= bytes.length;
-        count -= 1;
-      }).catch(close);
-    });
-    void (async () => {
-      try {
-        while (!signal.aborted) {
-          const result = await this.client.rpc("loopback.call", { op: "ws.read", id: id4 }, signal);
-          for (const message of result.messages) {
-            if (socket.bufferedAmount > 1024 * 1024) throw new Error("slow preview");
-            await new Promise((resolve4, reject) => socket.send(Buffer.from(message.data, "base64"), { binary: message.binary }, (error) => error ? reject(error) : resolve4()));
-          }
-          if (result.closed) break;
-        }
-      } catch {
-      } finally {
-        close();
-      }
-    })();
-  }
-  async release(id4) {
-    if (!this.lifetime.signal.aborted) await this.client.rpc("loopback.call", { op: "close", id: id4 }).catch(() => void 0);
-  }
-};
-
-// ../client-core/dist/remote-gateway.js
-var DIRECT_REMOTE_CALL_BYTES = 2 * 1024 * 1024;
-var RemoteGatewayError = class extends Error {
-  code;
-  details;
-  constructor(code, message, details = {}, options) {
-    super(message, options);
-    this.code = code;
-    this.details = details;
-    this.name = "RemoteGatewayError";
-  }
-};
-function createRemoteId() {
-  const crypto3 = globalThis.crypto;
-  if (crypto3?.randomUUID !== void 0)
-    return crypto3.randomUUID();
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-// ../client-core/dist/codex-client.js
-var MAX_DISPLAY_ITEM_TEXT = 256 * 1024;
-var CODEX_IMAGE_MEDIA_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-var DATA_IMAGE_URL = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/u;
-var CodexRemoteClient = class {
-  core;
-  constructor(core) {
-    this.core = core;
-  }
-  /** Low-level allowlisted request used by the Desktop Web loopback facade. */
-  request(method, params, signal) {
-    const largeHistory = method === "dsh/sessionHistory" || method === "thread/read" && isRecord(params) && params.includeTurns === true;
-    return this.call(method, params, largeHistory || hasImageInput(params), signal);
-  }
-  async account(signal) {
-    return this.call("account/read", { refreshToken: false }, false, signal);
-  }
-  async models(signal) {
-    return this.call("model/list", {}, false, signal);
-  }
-  async threads(params = {}, signal) {
-    const result = await this.call("thread/list", params, false, signal);
-    if (!isRecord(result) || !Array.isArray(result.data))
-      throw invalidResponse("thread list");
-    return {
-      sessions: result.data.map(projectCodexThread).filter((value) => value !== void 0),
-      ...typeof result.nextCursor === "string" ? { nextCursor: result.nextCursor } : {}
-    };
-  }
-  async history(threadId, signal) {
-    const result = await this.call("thread/read", { threadId, includeTurns: true }, true, signal);
-    if (!isRecord(result) || !isRecord(result.thread))
-      throw invalidResponse("thread history");
-    const session = projectCodexThread(result.thread);
-    if (session === void 0)
-      throw invalidResponse("thread history");
-    return { session, items: projectCodexHistory(result.thread) };
-  }
-  async start(cwd, model, signal) {
-    const result = await this.call("thread/start", { cwd, ...model === void 0 ? {} : { model } }, false, signal);
-    return requireProjectedThread(result);
-  }
-  async resume(threadId, signal) {
-    return requireProjectedThread(await this.call("thread/resume", { threadId }, false, signal));
-  }
-  async fork(threadId, lastTurnId, signal) {
-    return requireProjectedThread(await this.call("thread/fork", {
-      threadId,
-      ...lastTurnId === void 0 ? {} : { lastTurnId }
-    }, false, signal));
-  }
-  async rename(threadId, name2, signal) {
-    await this.call("thread/name/set", { threadId, name: name2 }, false, signal);
-  }
-  async prompt(threadId, text, signal) {
-    return this.call("turn/start", { threadId, input: [{ type: "text", text }] }, false, signal);
-  }
-  async steer(threadId, expectedTurnId, text, signal) {
-    return this.call("turn/steer", {
-      threadId,
-      expectedTurnId,
-      input: [{ type: "text", text }]
-    }, false, signal);
-  }
-  async interrupt(threadId, turnId, signal) {
-    await this.call("turn/interrupt", { threadId, turnId }, false, signal);
-  }
-  async respond(requestHandle, decision, signal) {
-    await this.core.rpc("codex.app.respond", { requestHandle, decision }, signal);
-  }
-  async subscribe(threadId, onFrame, signal, onClose) {
-    const streamId = createRemoteId();
-    let closed = false;
-    let unsubscribe = () => void 0;
-    const markClosed = () => {
-      if (closed)
-        return false;
-      closed = true;
-      unsubscribe();
-      return true;
-    };
-    unsubscribe = this.core.onEvent((event) => {
-      if (!isRecord(event.data) || event.data.streamId !== streamId)
-        return;
-      if (event.event === "codex.app.stream.closed") {
-        if (!markClosed())
-          return;
-        onClose?.(codexStreamCloseReason(event.data.reason));
-        return;
-      }
-      if (event.event !== "codex.app.frame" || !isRecord(event.data.frame) || typeof event.data.frame.method !== "string")
-        return;
-      onFrame(event.data.frame);
-    });
-    try {
-      await this.core.rpc("codex.app.stream.open", { streamId, threadId }, signal);
-    } catch (error) {
-      unsubscribe();
-      throw error;
-    }
-    return {
-      streamId,
-      close: async () => {
-        if (!markClosed())
-          return;
-        await this.core.rpc("codex.app.stream.close", { streamId }).catch(() => void 0);
-      }
-    };
-  }
-  async call(method, params, transfer, signal) {
-    const envelope = { method, params };
-    if (!transfer)
-      return this.core.rpc("codex.app.call", envelope, signal);
-    return this.callTransferred(new TextEncoder().encode(JSON.stringify(envelope)), signal);
-  }
-  async callTransferred(encoded, signal) {
-    if (encoded.byteLength === 0 || encoded.byteLength > MAX_CODEX_APP_TRANSFER_BYTES) {
-      throw new RemoteGatewayError("INVALID_MESSAGE", "The Codex request exceeds the transfer limit.");
-    }
-    const transferId = createCodexTransferId();
-    const totalChunks = Math.ceil(encoded.byteLength / CODEX_APP_TRANSFER_CHUNK_BYTES);
-    let opened = false;
-    try {
-      await this.core.rpc("codex.app.transfer.open", { transferId, totalBytes: encoded.byteLength, totalChunks }, signal);
-      opened = true;
-      for (let index = 0; index < totalChunks; index += 1) {
-        const start = index * CODEX_APP_TRANSFER_CHUNK_BYTES;
-        const chunk = encoded.subarray(start, Math.min(start + CODEX_APP_TRANSFER_CHUNK_BYTES, encoded.byteLength));
-        await this.core.rpc("codex.app.transfer.chunk", { transferId, index, data: bytesToBase64(chunk) }, signal);
-      }
-      const committed = await this.core.rpc("codex.app.transfer.commit", { transferId }, signal);
-      if (committed.kind === "inline")
-        return committed.response;
-      if (committed.transferId !== transferId || committed.totalBytes <= 0 || committed.totalBytes > MAX_CODEX_APP_TRANSFER_BYTES || committed.totalChunks !== Math.ceil(committed.totalBytes / CODEX_APP_TRANSFER_CHUNK_BYTES)) {
-        throw invalidResponse("transfer descriptor");
-      }
-      const response = new Uint8Array(committed.totalBytes);
-      let offset = 0;
-      for (let index = 0; index < committed.totalChunks; index += 1) {
-        const result = await this.core.rpc("codex.app.transfer.read", { transferId, index }, signal);
-        if (result.transferId !== transferId || result.index !== index)
-          throw invalidResponse("transfer ordering");
-        const chunk = base64ToBytes(result.data);
-        const expected = Math.min(CODEX_APP_TRANSFER_CHUNK_BYTES, committed.totalBytes - offset);
-        if (chunk.byteLength !== expected)
-          throw invalidResponse("transfer chunk");
-        response.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(response));
-    } finally {
-      if (opened)
-        await this.core.rpc("codex.app.transfer.close", { transferId }).catch(() => void 0);
-    }
-  }
-};
-function hasImageInput(params) {
-  return isRecord(params) && Array.isArray(params.input) && params.input.some((value) => isRecord(value) && value.type === "image");
-}
-function projectCodexThread(value) {
-  if (!isRecord(value) || typeof value.id !== "string")
-    return void 0;
-  const createdAt = normalizeTimestamp(value.createdAt);
-  const updatedAt = normalizeTimestamp(value.updatedAt) || createdAt;
-  return {
-    id: `codex:${value.id}`,
-    backend: "codex",
-    nativeId: value.id,
-    ...typeof value.sessionId === "string" ? { sessionTreeId: value.sessionId } : {},
-    ...typeof value.name === "string" && value.name.length > 0 ? { title: value.name } : {},
-    ...typeof value.preview === "string" && value.preview.length > 0 ? { preview: value.preview } : {},
-    ...typeof value.cwd === "string" ? { cwd: value.cwd } : {},
-    createdAt,
-    updatedAt,
-    status: projectThreadStatus(value.status),
-    ...typeof value.archived === "boolean" ? { archived: value.archived } : {},
-    ...typeof value.isPinned === "boolean" ? { pinned: value.isPinned } : {}
-  };
-}
-function deriveCodexCwdWorkspaces(values) {
-  const byPath = /* @__PURE__ */ new Map();
-  const usedIds = /* @__PURE__ */ new Set();
-  for (const value of values) {
-    const session = projectCodexThread(value);
-    if (session === void 0 || session.cwd === void 0 || session.cwd.length === 0)
-      continue;
-    const path = session.cwd;
-    if (!isAbsoluteWorkspacePath(path))
-      continue;
-    const key = normalizeWorkspacePath(path);
-    const existing = byPath.get(key);
-    if (existing !== void 0) {
-      existing.createdAt = earliestTimestamp(existing.createdAt, session.createdAt);
-      existing.updatedAt = Math.max(existing.updatedAt, session.updatedAt);
-      continue;
-    }
-    const baseId = `cwd-${hashWorkspacePath(key)}`;
-    let id4 = baseId;
-    for (let suffix = 2; usedIds.has(id4); suffix += 1)
-      id4 = `${baseId}-${suffix}`;
-    usedIds.add(id4);
-    byPath.set(key, {
-      id: id4,
-      name: workspaceBasename(path),
-      path,
-      position: byPath.size,
-      createdAt: session.createdAt,
-      updatedAt: session.updatedAt
-    });
-  }
-  return [...byPath.values()];
-}
-function projectCodexHistory(thread) {
-  if (!isRecord(thread) || typeof thread.id !== "string" || !Array.isArray(thread.turns))
-    return [];
-  const sessionId = `codex:${thread.id}`;
-  const output = [];
-  for (const turn of thread.turns) {
-    if (!isRecord(turn) || typeof turn.id !== "string" || !Array.isArray(turn.items))
-      continue;
-    for (let index = 0; index < turn.items.length; index += 1) {
-      const item = turn.items[index];
-      output.push(projectCodexItem(item, thread.id, turn.id, sessionId, index));
-    }
-  }
-  return output;
-}
-function projectCodexItem(value, threadId, turnId, sessionId, index) {
-  const item = isRecord(value) ? value : {};
-  const itemId = typeof item.id === "string" ? item.id : `${turnId}:${index}`;
-  const type = typeof item.type === "string" ? item.type : "unknown";
-  const base = {
-    id: `codex:${threadId}:${turnId}:${itemId}`,
-    sessionId,
-    backend: "codex",
-    nativeRef: { threadId, turnId, ...typeof item.id === "string" ? { itemId: item.id } : {} },
-    ...normalizeTimestamp(item.createdAt) > 0 ? { createdAt: normalizeTimestamp(item.createdAt) } : {}
-  };
-  if (type === "userMessage") {
-    const images = itemImages(item);
-    return {
-      ...base,
-      kind: "message",
-      role: "user",
-      text: itemText(item),
-      ...images.length === 0 ? {} : { images }
-    };
-  }
-  if (type === "agentMessage") {
-    const images = itemImages(item);
-    return {
-      ...base,
-      kind: "message",
-      role: "assistant",
-      text: itemText(item),
-      ...images.length === 0 ? {} : { images },
-      status: projectItemStatus(item.status)
-    };
-  }
-  if (type === "commandExecution") {
-    return { ...base, kind: "tool", text: commandExecutionText(item), status: projectItemStatus(item.status), details: { type } };
-  }
-  if (isToolItemType(type)) {
-    const images = toolItemImages(item);
-    return {
-      ...base,
-      kind: "tool",
-      text: toolCallText(item),
-      ...images.length === 0 ? {} : { images },
-      status: projectItemStatus(item.status),
-      details: { type }
-    };
-  }
-  if (type === "fileChange") {
-    return { ...base, kind: "file-change", text: fileChangeText(item.changes), status: projectItemStatus(item.status), details: { type } };
-  }
-  if (type === "plan" || type === "reasoning") {
-    return { ...base, kind: "status", text: itemText(item) ?? textArray(item.summary) ?? type, details: { type } };
-  }
-  if (type === "error")
-    return { ...base, kind: "error", text: itemText(item), status: "failed", details: { type } };
-  return { ...base, kind: "unknown", text: `Unsupported Codex item: ${type}`, details: { type } };
-}
-function requireProjectedThread(result) {
-  if (!isRecord(result))
-    throw invalidResponse("thread");
-  const session = projectCodexThread(result.thread);
-  if (session === void 0)
-    throw invalidResponse("thread");
-  return session;
-}
-function projectThreadStatus(value) {
-  if (!isRecord(value) || typeof value.type !== "string")
-    return "idle";
-  if (value.type === "systemError")
-    return "failed";
-  if (value.type !== "active")
-    return "idle";
-  return Array.isArray(value.activeFlags) && value.activeFlags.includes("waitingOnApproval") ? "waiting" : "running";
-}
-function projectItemStatus(value) {
-  if (value === "inProgress")
-    return "running";
-  if (value === "failed")
-    return "failed";
-  if (value === "declined")
-    return "declined";
-  return "completed";
-}
-function itemText(item) {
-  if (typeof item.text === "string")
-    return boundedText(item.text);
-  if (typeof item.content === "string")
-    return boundedText(item.content);
-  const content = Array.isArray(item.content) ? item.content : Array.isArray(item.input) ? item.input : void 0;
-  if (content === void 0)
-    return void 0;
-  const parts = content.flatMap((value) => {
-    if (typeof value === "string")
-      return [value];
-    if (!isRecord(value))
-      return [];
-    if (typeof value.text === "string")
-      return [value.text];
-    return typeof value.content === "string" ? [value.content] : [];
-  });
-  return parts.length > 0 ? boundedText(parts.join("\n")) : void 0;
-}
-function itemImages(item) {
-  const content = Array.isArray(item.content) ? item.content : Array.isArray(item.input) ? item.input : [];
-  return content.flatMap((value) => {
-    if (!isRecord(value) || !isImageContent(value))
-      return [];
-    const uri = imageDataUri(value);
-    if (uri === void 0)
-      return [];
-    return [{
-      uri,
-      ...typeof value.name === "string" && value.name.length > 0 ? { name: value.name } : {}
-    }];
-  });
-}
-function toolItemImages(item) {
-  const candidates = [
-    isRecord(item.result) ? item.result : void 0,
-    isRecord(item.output) ? item.output : void 0,
-    Array.isArray(item.contentItems) ? { content: item.contentItems } : void 0,
-    Array.isArray(item.output) ? { content: item.output } : void 0
-  ];
-  for (const candidate of candidates) {
-    if (candidate === void 0 || !Array.isArray(candidate.content))
-      continue;
-    const images = itemImages(candidate);
-    if (images.length > 0)
-      return images;
-  }
-  return [];
-}
-function isImageContent(value) {
-  return value.type === "image" || value.type === "input_image";
-}
-function imageDataUri(value) {
-  const url = typeof value.url === "string" ? value.url : typeof value.image_url === "string" ? value.image_url : isRecord(value.image_url) && typeof value.image_url.url === "string" ? value.image_url.url : void 0;
-  const parsed = url === void 0 ? void 0 : parseDataImageUrl(url);
-  if (parsed !== void 0)
-    return parsed.url;
-  if (typeof value.data !== "string" || !isCanonicalBase64(value.data))
-    return void 0;
-  const mediaType = typeof value.mediaType === "string" ? value.mediaType : typeof value.mimeType === "string" ? value.mimeType : sniffImageMediaType(value.data);
-  return mediaType !== void 0 && CODEX_IMAGE_MEDIA_TYPES.has(mediaType) ? `data:${mediaType};base64,${value.data}` : void 0;
-}
-function parseDataImageUrl(value) {
-  const match = DATA_IMAGE_URL.exec(value);
-  if (match === null)
-    return void 0;
-  const mediaType = match[1];
-  const data2 = match[2];
-  if (!CODEX_IMAGE_MEDIA_TYPES.has(mediaType) || !isCanonicalBase64(data2))
-    return void 0;
-  return { url: `data:${mediaType};base64,${data2}`, mediaType, data: data2 };
-}
-function isCanonicalBase64(value) {
-  return value.length >= 4 && value.length % 4 === 0 && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value);
-}
-function sniffImageMediaType(data2) {
-  const bytes = base64PrefixBytes(data2, 32);
-  if (bytes.length >= 8 && bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71 && bytes[4] === 13 && bytes[5] === 10 && bytes[6] === 26 && bytes[7] === 10)
-    return "image/png";
-  if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255)
-    return "image/jpeg";
-  if (bytes.length >= 6 && bytes[0] === 71 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 56 && (bytes[4] === 55 || bytes[4] === 57) && bytes[5] === 97)
-    return "image/gif";
-  if (bytes.length >= 12 && bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80)
-    return "image/webp";
-  return void 0;
-}
-function base64PrefixBytes(value, maxBytes) {
-  const chars = value.slice(0, Math.ceil(maxBytes / 3) * 4);
-  let binary;
-  try {
-    binary = atob(chars);
-  } catch {
-    return new Uint8Array();
-  }
-  const bytes = new Uint8Array(Math.min(binary.length, maxBytes));
-  for (let index = 0; index < bytes.length; index += 1)
-    bytes[index] = binary.charCodeAt(index);
-  return bytes;
-}
-function isToolItemType(type) {
-  return type === "mcpToolCall" || type === "dynamicToolCall" || type === "functionCallOutput" || type === "hookPrompt" || type === "collabAgentToolCall" || type === "subAgentActivity" || type === "webSearch" || type === "imageView" || type === "imageGeneration" || type === "sleep" || type === "enteredReviewMode" || type === "exitedReviewMode" || type === "contextCompaction";
-}
-function toolLabel(item) {
-  if (typeof item.tool === "string")
-    return item.tool;
-  if (typeof item.server === "string" && typeof item.name === "string")
-    return `${item.server}: ${item.name}`;
-  if (typeof item.command === "string")
-    return item.command;
-  if (Array.isArray(item.command) && item.command.every((value) => typeof value === "string"))
-    return item.command.join(" ");
-  return typeof item.type === "string" ? item.type : void 0;
-}
-function commandExecutionText(item) {
-  const command = toolLabel(item);
-  const output = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : void 0;
-  if (command === void 0)
-    return output === void 0 ? void 0 : boundedText(output);
-  return boundedText(output === void 0 || output === "" ? command : `${command}
-
-${output}`);
-}
-function toolCallText(item) {
-  const type = typeof item.type === "string" ? item.type : void 0;
-  if (type === "webSearch") {
-    const count = Array.isArray(item.results) ? item.results.length : 0;
-    return count === 0 ? "Web search completed." : `Web search returned ${count} result${count === 1 ? "" : "s"}.`;
-  }
-  if (type === "imageView")
-    return `Viewed image: ${typeof item.path === "string" ? item.path : "image"}`;
-  if (type === "imageGeneration") {
-    return typeof item.savedPath === "string" ? `Generated image: ${item.savedPath}` : `Image generation ${typeof item.status === "string" ? item.status : "completed"}.`;
-  }
-  if (type === "contextCompaction")
-    return "CodeX compacted the conversation context.";
-  if (type === "enteredReviewMode" || type === "exitedReviewMode") {
-    const action = type === "enteredReviewMode" ? "Entered" : "Exited";
-    return `${action} review mode${typeof item.review === "string" ? `: ${item.review}` : "."}`;
-  }
-  if (type === "sleep")
-    return `Waited ${typeof item.durationMs === "number" && Number.isFinite(item.durationMs) ? item.durationMs : 0} ms.`;
-  if (type === "subAgentActivity") {
-    const kind = isRecord(item.kind) && typeof item.kind.type === "string" ? item.kind.type : typeof item.kind === "string" ? item.kind : "Subagent activity";
-    return [kind, typeof item.agentPath === "string" ? item.agentPath : void 0].filter((value) => value !== void 0).join(": ");
-  }
-  const label = toolLabel(item);
-  const error = compactUnknown(item.error);
-  const rawResult = item.result ?? item.contentItems;
-  const result = itemText(isRecord(rawResult) ? rawResult : {}) ?? (toolItemImages(item).length > 0 ? void 0 : compactUnknown(rawResult));
-  return boundedText([label, error, result].filter((value) => value !== void 0 && value !== "").join("\n\n")) || void 0;
-}
-function fileChangeText(value) {
-  if (!Array.isArray(value))
-    return "File changes";
-  const changes = value.flatMap((change) => {
-    if (!isRecord(change) || typeof change.path !== "string")
-      return [];
-    const kind = typeof change.kind === "string" ? change.kind : "update";
-    return [`[${kind}] ${change.path}`];
-  });
-  return boundedText(changes.length === 0 ? "File changes" : changes.join("\n"));
-}
-function textArray(value) {
-  return Array.isArray(value) && value.every((part) => typeof part === "string") ? boundedText(value.join("\n")) : void 0;
-}
-function compactUnknown(value) {
-  if (value === void 0 || value === null)
-    return void 0;
-  if (typeof value === "string")
-    return boundedText(value);
-  try {
-    return boundedText(JSON.stringify(value, void 0, 2));
-  } catch {
-    return void 0;
-  }
-}
-function boundedText(value) {
-  return value.length <= MAX_DISPLAY_ITEM_TEXT ? value : `${value.slice(0, MAX_DISPLAY_ITEM_TEXT)}
-\u2026`;
-}
-function normalizeWorkspacePath(value) {
-  return value.replace(/[\\/]+$/u, "") || value;
-}
-function isAbsoluteWorkspacePath(value) {
-  return value.startsWith("/") || /^\\\\[^\\]+\\[^\\]+/u.test(value) || /^[A-Za-z]:[\\/]/u.test(value);
-}
-function workspaceBasename(value) {
-  const normalized = normalizeWorkspacePath(value);
-  return normalized.split(/[\\/]/u).at(-1) || value;
-}
-function earliestTimestamp(left, right) {
-  if (left <= 0)
-    return right;
-  if (right <= 0)
-    return left;
-  return Math.min(left, right);
-}
-function hashWorkspacePath(value) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
-}
-function normalizeTimestamp(value) {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
-    return 0;
-  return value < 1e10 ? value * 1e3 : value;
-}
-function bytesToBase64(value) {
-  let binary = "";
-  for (let index = 0; index < value.length; index += 1)
-    binary += String.fromCharCode(value[index]);
-  return btoa(binary);
-}
-function base64ToBytes(value) {
-  let binary;
-  try {
-    binary = atob(value);
-  } catch {
-    throw invalidResponse("transfer data");
-  }
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1)
-    bytes[index] = binary.charCodeAt(index);
-  if (bytesToBase64(bytes) !== value)
-    throw invalidResponse("transfer data");
-  return bytes;
-}
-function invalidResponse(part) {
-  return new RemoteGatewayError("INVALID_MESSAGE", `The Host returned an invalid Codex ${part}.`);
-}
-function codexStreamCloseReason(value) {
-  return value === "cancelled" || value === "completed" || value === "failed" || value === "peer-disconnected" ? value : "failed";
-}
-function createCodexTransferId() {
-  if (globalThis.crypto?.randomUUID !== void 0)
-    return globalThis.crypto.randomUUID();
-  const bytes = new Uint8Array(16);
-  if (globalThis.crypto?.getRandomValues !== void 0) {
-    globalThis.crypto.getRandomValues(bytes);
-  } else {
-    for (let index = 0; index < bytes.length; index += 1)
-      bytes[index] = Math.floor(Math.random() * 256);
-  }
-  bytes[6] = bytes[6] & 15 | 64;
-  bytes[8] = bytes[8] & 63 | 128;
-  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// ../client-core/dist/index.js
-var RemoteClientError = class extends Error {
-  code;
-  constructor(code, message, options) {
-    super(message, options);
-    this.code = code;
-    this.name = "RemoteClientError";
-  }
-};
-var RemoteClientCore = class {
-  transport;
-  timeoutMs;
-  pending = /* @__PURE__ */ new Map();
-  eventHandlers = /* @__PURE__ */ new Set();
-  unsubscribeTransport;
-  unsubscribeClose;
-  closeHandlers = /* @__PURE__ */ new Set();
-  closeNotified = false;
-  constructor(transport, timeoutMs = 3e4) {
-    this.transport = transport;
-    this.timeoutMs = timeoutMs;
-  }
-  async connect() {
-    if (this.unsubscribeTransport !== void 0)
-      return;
-    this.closeNotified = false;
-    this.unsubscribeTransport = this.transport.onMessage((data2) => this.handleMessage(data2));
-    this.unsubscribeClose = this.transport.onClose?.(() => this.handleTransportClose());
-    try {
-      await this.transport.connect();
-    } catch (error) {
-      this.unsubscribeTransport();
-      this.unsubscribeTransport = void 0;
-      this.unsubscribeClose?.();
-      this.unsubscribeClose = void 0;
-      throw error;
-    }
-  }
-  async rpc(method, params, signal, options) {
-    if (signal?.aborted)
-      throw rpcAbortedError(method, signal.reason);
-    const timeoutMs = callTimeoutMs(this.timeoutMs, options);
-    const request = createRpcRequest(method, params);
-    const result = new Promise((resolve4, reject) => {
-      const timer = setTimeout(() => {
-        this.rejectPending(request.id, new RemoteClientError("RPC_TIMEOUT", `RPC ${method} timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      const pending = {
-        method,
-        resolve: resolve4,
-        reject,
-        timer
-      };
-      if (signal !== void 0) {
-        const onAbort = () => {
-          if (this.pending.get(request.id) !== pending)
-            return;
-          this.rejectPending(request.id, rpcAbortedError(method, signal.reason));
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-        pending.removeAbort = () => signal.removeEventListener("abort", onAbort);
-      }
-      this.pending.set(request.id, pending);
-    });
-    try {
-      const send = this.transport.send(encodeMessage(request));
-      void send.catch((error) => {
-        this.rejectPending(request.id, transportSendError(error));
-      });
-    } catch (error) {
-      this.rejectPending(request.id, transportSendError(error));
-    }
-    return result;
-  }
-  onEvent(handler) {
-    this.eventHandlers.add(handler);
-    return () => this.eventHandlers.delete(handler);
-  }
-  onClose(handler) {
-    this.closeHandlers.add(handler);
-    return () => this.closeHandlers.delete(handler);
-  }
-  getStats() {
-    return this.transport.getStats();
-  }
-  async close() {
-    this.unsubscribeTransport?.();
-    this.unsubscribeTransport = void 0;
-    this.unsubscribeClose?.();
-    this.unsubscribeClose = void 0;
-    this.rejectAllPending((pending) => new RemoteClientError("CLIENT_CLOSED", `RPC ${pending.method} terminated because the remote client closed`));
-    this.notifyClose();
-    await this.transport.close();
-  }
-  handleTransportClose() {
-    this.rejectAllPending((pending) => new RemoteClientError("TRANSPORT_CLOSED", `RPC ${pending.method} terminated because the remote transport closed`));
-    this.notifyClose();
-  }
-  handleMessage(data2) {
-    const message = decodeMessage(data2);
-    if (message.type === "rpc.response")
-      this.handleResponse(message);
-    if (message.type === "rpc.error")
-      this.handleError(message);
-    if (message.type === "event") {
-      const event = message.payload;
-      for (const handler of this.eventHandlers)
-        handler(event);
-    }
-  }
-  handleResponse(message) {
-    const pending = this.takePending(message.payload.requestId);
-    if (pending === void 0)
-      return;
-    pending.resolve(message.payload.result);
-  }
-  handleError(message) {
-    const pending = this.takePending(message.payload.requestId);
-    if (pending === void 0)
-      return;
-    pending.reject(Object.assign(new Error(message.payload.message), { code: message.payload.code }));
-  }
-  takePending(requestId) {
-    const pending = this.pending.get(requestId);
-    if (pending === void 0)
-      return void 0;
-    this.pending.delete(requestId);
-    clearTimeout(pending.timer);
-    pending.removeAbort?.();
-    return pending;
-  }
-  rejectPending(requestId, error) {
-    const pending = this.takePending(requestId);
-    if (pending === void 0)
-      return false;
-    pending.reject(error);
-    return true;
-  }
-  rejectAllPending(createError) {
-    for (const requestId of [...this.pending.keys()]) {
-      const pending = this.takePending(requestId);
-      if (pending !== void 0)
-        pending.reject(createError(pending));
-    }
-  }
-  notifyClose() {
-    if (this.closeNotified)
-      return;
-    this.closeNotified = true;
-    for (const handler of this.closeHandlers)
-      handler();
-  }
-};
-function rpcAbortedError(method, reason) {
-  return new RemoteClientError("RPC_ABORTED", `RPC ${method} was aborted`, reason === void 0 ? void 0 : { cause: reason });
-}
-function callTimeoutMs(fallback, options) {
-  const timeoutMs = options?.timeoutMs;
-  if (typeof timeoutMs !== "number")
-    return fallback;
-  return Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 2147483647 ? timeoutMs : fallback;
-}
-function transportSendError(error) {
-  return error instanceof Error ? error : new Error("remote transport send failed", { cause: error });
-}
-
-// ../webrtc/dist/websocket-backpressure.js
-async function waitForRelayCapacity(socket) {
-  const started = Date.now();
-  while ((socket.bufferedAmount ?? 0) > 512 * 1024) {
-    if (socket.readyState !== 1 || Date.now() - started > 1e4)
-      throw new Error("Relay consumer is too slow or disconnected");
-    await new Promise((resolve4) => setTimeout(resolve4, 10));
-  }
-  if (socket.readyState !== 1)
-    throw new Error("Relay transport closed");
-}
-
 // ../webrtc/dist/transport.js
 var BaseTransport = class {
   handlers = /* @__PURE__ */ new Set();
@@ -5882,9 +4618,28 @@ var BaseTransport = class {
     this.closeHandlers.add(cb);
     return () => this.closeHandlers.delete(cb);
   }
+  /**
+   * Deliver received bytes to every data handler, isolating a handler that throws.
+   *
+   * One handler that cannot process a message used to abort the loop and escape into the frame
+   * dispatcher, where the surrounding catch read it as a transport fault: on a phone that turned a
+   * refused endpoint (`METHOD_NOT_ALLOWED`) into a torn-down link, every RPC the fast reconnect was
+   * awaiting rejected with TRANSPORT_CLOSED, and the client escalated to a full fallback on a link that
+   * was healthy. A failing handler now costs only its own message, and the handlers behind it still
+   * receive the one in flight.
+   * @param data - decrypted application bytes from the peer.
+   */
   emit(data2) {
-    for (const handler of this.handlers)
-      handler(data2);
+    for (const handler of this.handlers) {
+      try {
+        handler(data2);
+      } catch (error) {
+        console.warn("[dsh-remote] a relay listener failed; keeping the transport up", {
+          message: error instanceof Error ? error.message : String(error),
+          code: typeof error === "object" && error !== null && "code" in error ? String(error.code) : void 0
+        });
+      }
+    }
   }
   emitClose() {
     for (const handler of this.closeHandlers)
@@ -7178,7 +5933,29 @@ var AdaptiveTransport = class extends BaseTransport {
     }
     const data2 = fromBase64Url(payload.ciphertext);
     this.bytesReceived += data2.byteLength;
-    this.emit(data2);
+    this.deliver(data2);
+  }
+  /**
+   * Hand received bytes to the data listeners without letting one failure end the connection.
+   *
+   * A listener can reject a single message it cannot process - an endpoint the peer served that this
+   * side refuses, for example. While that escaped, the surrounding catch read it as a transport fault,
+   * tore the connection down, and every RPC the reconnect was awaiting rejected with
+   * TRANSPORT_CLOSED: a phone log shows `METHOD_NOT_ALLOWED` immediately followed by
+   * `fast reconnect attempt failed {"code":"INTERNAL_ERROR"}`, which escalated a healthy link to a
+   * full fallback. The stream now stays up, and a caller that cannot process a message fails on its
+   * own (its RPC times out), which is the only outcome that matches the actual fault.
+   * @param data - decrypted application bytes from the peer.
+   */
+  deliver(data2) {
+    try {
+      this.emit(data2);
+    } catch (error) {
+      console.warn("[dsh-remote] a relay listener failed; keeping the transport up", {
+        message: error instanceof Error ? error.message : String(error),
+        code: typeof error === "object" && error !== null && "code" in error ? String(error.code) : void 0
+      });
+    }
   }
   async negotiate() {
     if (this.connectionId === void 0)
@@ -7272,7 +6049,7 @@ var AdaptiveTransport = class extends BaseTransport {
     this.rtc = rtc;
     rtc.onMessage((data2) => {
       this.bytesReceived += data2.byteLength;
-      this.emit(data2);
+      this.deliver(data2);
     });
     rtc.onClose(() => {
       if (this.rtc === rtc && this.dataMode === "webrtc")
@@ -7389,109 +6166,12 @@ var SerialSend = class {
   }
 };
 
-// src/api-proxy-switch.ts
-var SWITCHED_DOMAINS = [
-  "sessions",
-  "subagents",
-  "host",
-  "workspace",
-  "skills",
-  "agentPresets",
-  "events",
-  "goals",
-  "llm",
-  "settings",
-  "credentials"
-];
-var ApiProxySwitch = class {
-  remote;
-  target;
-  mode = "local";
-  installed = false;
-  local;
-  originals;
-  localRespond;
-  constructor(local) {
-    this.local = local;
-    this.originals = new Map(SWITCHED_DOMAINS.map((domain) => [domain, local[domain]]));
-    this.localRespond = local.respond.bind(local);
-  }
-  install() {
-    if (this.installed) return;
-    for (const domain of SWITCHED_DOMAINS) {
-      const localDomain = this.local[domain];
-      const forwarder = new Proxy({}, {
-        get: (_target, key) => {
-          const selected = this.selected(domain);
-          const value = selected[key];
-          return typeof value === "function" ? value.bind(selected) : value;
-        }
-      });
-      Object.defineProperty(this.local, domain, {
-        configurable: true,
-        enumerable: true,
-        writable: true,
-        value: forwarder
-      });
-    }
-    Object.defineProperty(this.local, "respond", {
-      configurable: true,
-      enumerable: true,
-      writable: true,
-      value: (...args) => this.mode === "remote" ? this.requireRemote().respond(...args) : this.localRespond(...args)
-    });
-    this.installed = true;
-  }
-  selectRemote(api, target2) {
-    if (!this.installed) throw new Error("The Harness API switch is not installed.");
-    this.remote = api;
-    this.target = { ...target2 };
-    this.mode = "remote";
-  }
-  selectLocal() {
-    this.mode = "local";
-    this.remote = void 0;
-    this.target = void 0;
-  }
-  status() {
-    return { mode: this.mode, ...this.target === void 0 ? {} : { target: { ...this.target } } };
-  }
-  restore() {
-    if (!this.installed) return;
-    this.selectLocal();
-    for (const [domain, value] of this.originals) Object.defineProperty(this.local, domain, {
-      configurable: true,
-      enumerable: true,
-      writable: true,
-      value
-    });
-    Object.defineProperty(this.local, "respond", {
-      configurable: true,
-      enumerable: true,
-      writable: true,
-      value: this.localRespond
-    });
-    this.installed = false;
-  }
-  selected(domain) {
-    if (this.mode === "local") return this.originalDomain(domain);
-    return this.requireRemote()[domain];
-  }
-  originalDomain(domain) {
-    return this.originals.get(domain);
-  }
-  requireRemote() {
-    if (this.remote === void 0) throw new Error("No remote Harness target is selected.");
-    return this.remote;
-  }
-};
-
 // ../crypto/node_modules/@noble/ciphers/esm/cryptoNode.js
 import * as nc from "node:crypto";
 var crypto = nc && typeof nc === "object" && "webcrypto" in nc ? nc.webcrypto : nc && typeof nc === "object" && "randomBytes" in nc ? nc : void 0;
 
 // ../crypto/node_modules/@noble/ciphers/esm/webcrypto.js
-function randomBytes2(bytesLength = 32) {
+function randomBytes(bytesLength = 32) {
   if (crypto && typeof crypto.getRandomValues === "function") {
     return crypto.getRandomValues(new Uint8Array(bytesLength));
   }
@@ -7622,7 +6302,7 @@ function createHasher(hashCons) {
   hashC.create = () => hashCons();
   return hashC;
 }
-function randomBytes3(bytesLength = 32) {
+function randomBytes2(bytesLength = 32) {
   if (crypto2 && typeof crypto2.getRandomValues === "function") {
     return crypto2.getRandomValues(new Uint8Array(bytesLength));
   }
@@ -9058,7 +7738,7 @@ function eddsa(Point, cHash, eddsaOpts = {}) {
   });
   const { prehash } = eddsaOpts;
   const { BASE, Fp: Fp2, Fn: Fn2 } = Point;
-  const randomBytes8 = eddsaOpts.randomBytes || randomBytes3;
+  const randomBytes8 = eddsaOpts.randomBytes || randomBytes2;
   const adjustScalarBytes3 = eddsaOpts.adjustScalarBytes || ((bytes) => bytes);
   const domain = eddsaOpts.domain || ((data2, ctx, phflag) => {
     _abool2(phflag, "phflag");
@@ -9259,7 +7939,7 @@ function montgomery(curveDef) {
   const is25519 = type === "x25519";
   if (!is25519 && type !== "x448")
     throw new Error("invalid type");
-  const randomBytes_ = rand || randomBytes3;
+  const randomBytes_ = rand || randomBytes2;
   const montgomeryBits = is25519 ? 255 : 448;
   const fieldLen = is25519 ? 32 : 56;
   const Gu = is25519 ? BigInt(9) : BigInt(5);
@@ -10338,7 +9018,7 @@ function createHasher2(hashCons, info = {}) {
   Object.assign(hashC, info);
   return Object.freeze(hashC);
 }
-function randomBytes4(bytesLength = 32) {
+function randomBytes3(bytesLength = 32) {
   anumber2(bytesLength, "bytesLength");
   const cr = typeof globalThis === "object" ? globalThis.crypto : null;
   if (typeof cr?.getRandomValues !== "function")
@@ -10905,7 +9585,7 @@ function afunction(value, title) {
 var bytesToHex3 = bytesToHex2;
 var hexToBytes3 = (hex) => hexToBytes2(hex);
 var isBytes3 = isBytes2;
-var randomBytes5 = (bytesLength) => randomBytes4(bytesLength);
+var randomBytes4 = (bytesLength) => randomBytes3(bytesLength);
 var _0n7 = /* @__PURE__ */ BigInt(0);
 var _1n7 = /* @__PURE__ */ BigInt(1);
 var atitle2 = (title) => title ? `"${title}" ` : "";
@@ -11841,7 +10521,7 @@ function edwards2(params, extraOpts = {}) {
   if (FpLegendre2(Fp2, CURVE.d) !== -1)
     throw new Error("edwards: CURVE.d must be a non-square in Fp for complete addition formulas");
   validateObject2(opts, {}, { uvRatio: "function", randomBytes: "function" });
-  const randomBytes8 = opts.randomBytes === void 0 ? randomBytes5 : opts.randomBytes;
+  const randomBytes8 = opts.randomBytes === void 0 ? randomBytes4 : opts.randomBytes;
   const MASK = _2n6 << BigInt(Fp2.BYTES * 8) - _1n10;
   function isOdd(n) {
     if (!Fp2.isOdd)
@@ -12145,7 +10825,7 @@ function montgomery2(curveDef) {
   const is25519 = type === "x25519";
   if (!is25519 && type !== "x448")
     throw new Error("invalid type");
-  const randomBytes_ = rand === void 0 ? randomBytes5 : rand;
+  const randomBytes_ = rand === void 0 ? randomBytes4 : rand;
   const montgomeryBits = is25519 ? 255 : 448;
   const swap = cswap(P);
   const fieldLen = is25519 ? 32 : 56;
@@ -14352,7 +13032,7 @@ var NoiseIkSession = class {
       ...initiator ? { rs: Uint8Array.from(this.expectedRemoteStatic) } : {},
       cipher: chachaPoly,
       hash: sha256H,
-      rng: options.random ?? randomBytes2
+      rng: options.random ?? randomBytes
     });
     if (this.handshake.getName() !== NOISE_IK_PROTOCOL) {
       throw new NoiseSessionError("NOISE_SUITE_MISMATCH", "The Noise provider selected an unexpected cipher suite.");
@@ -14489,6 +13169,3052 @@ function fromBase64Url2(value) {
   }
   return new Uint8Array(Buffer.from(padded, "base64"));
 }
+
+// src/server-api.ts
+import { platform } from "node:os";
+
+// src/server-credentials.ts
+import { chmod, mkdir, readFile, rm as rm2, stat as stat2, writeFile } from "node:fs/promises";
+import { dirname, join as join2 } from "node:path";
+
+// src/atomic-file.ts
+import { readdir, rename, rm, stat } from "node:fs/promises";
+import { join } from "node:path";
+var TRANSIENT_REPLACE_CODES = /* @__PURE__ */ new Set(["EPERM", "EBUSY", "EACCES"]);
+var REPLACE_RETRY_DELAYS_MS = [20, 40, 80, 160, 320];
+var TEMPORARY_NAME = /\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/iu;
+var STALE_TEMPORARY_AGE_MS = 10 * 60 * 1e3;
+async function replaceFile(temporary, target2, options = {}) {
+  const delays = options.delaysMs ?? REPLACE_RETRY_DELAYS_MS;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(temporary, target2);
+      return;
+    } catch (error) {
+      const delay = delays[attempt];
+      if (delay === void 0 || !TRANSIENT_REPLACE_CODES.has(errorCode(error) ?? "")) throw error;
+      await sleep2(delay);
+    }
+  }
+}
+async function sweepStaleTemporaries(directory, options = {}) {
+  const maxAgeMs = options.maxAgeMs ?? STALE_TEMPORARY_AGE_MS;
+  const removed = [];
+  let entries;
+  try {
+    entries = await readdir(directory);
+  } catch {
+    return removed;
+  }
+  for (const entry of entries) {
+    if (!TEMPORARY_NAME.test(entry)) continue;
+    const path = join(directory, entry);
+    try {
+      const info = await stat(path);
+      if (!info.isFile() || Date.now() - info.mtimeMs < maxAgeMs) continue;
+      await rm(path, { force: true });
+      removed.push(path);
+    } catch {
+    }
+  }
+  return removed;
+}
+function errorCode(error) {
+  if (typeof error !== "object" || error === null || !("code" in error)) return void 0;
+  const code = error.code;
+  return typeof code === "string" ? code : void 0;
+}
+function sleep2(ms) {
+  return new Promise((resolve4) => {
+    setTimeout(resolve4, ms);
+  });
+}
+
+// src/ids.ts
+import { randomBytes as randomBytes6 } from "node:crypto";
+function uuidV7(now = Date.now()) {
+  if (!Number.isSafeInteger(now) || now < 0 || now > 281474976710655) {
+    throw new RangeError("UUIDv7 timestamp must be a non-negative 48-bit integer");
+  }
+  const bytes = randomBytes6(16);
+  let timestamp = BigInt(now);
+  for (let index = 5; index >= 0; index -= 1) {
+    bytes[index] = Number(timestamp & 0xffn);
+    timestamp >>= 8n;
+  }
+  bytes[6] = 112 | bytes[6] & 15;
+  bytes[8] = 128 | bytes[8] & 63;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+// src/server-credentials.ts
+var credentialSchema = external_exports.object({
+  schemaVersion: external_exports.literal(1),
+  serverUrl: external_exports.string().url(),
+  deviceId: external_exports.string().min(1),
+  authorizationMethod: external_exports.enum(["account", "host_registration_code", "owned_device"]),
+  account: external_exports.string().min(1).max(254).optional(),
+  accessToken: external_exports.string().min(16),
+  accessTokenExpiresAt: external_exports.number().int().positive(),
+  refreshToken: external_exports.string().min(16),
+  refreshTokenExpiresAt: external_exports.number().int().positive()
+}).strict();
+var ServerCredentialStore = class {
+  path;
+  constructor(directory) {
+    this.path = join2(directory, "server-credentials.json");
+  }
+  /** Serialize the complete read/refresh/write transaction across processes.
+   * Never steal an old lock: a suspended owner may still consume a one-use token.
+   * After a crash, stop all instances before removing the orphaned lock.
+   */
+  async withRefreshLock(operation) {
+    const lock = `${this.path}.refresh-lock`;
+    await mkdir(dirname(this.path), { recursive: true, mode: 448 });
+    const deadline = Date.now() + 15e3;
+    for (; ; ) {
+      try {
+        await mkdir(lock, { mode: 448 });
+        break;
+      } catch (error) {
+        if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
+        if (Date.now() >= deadline) throw new ServerCredentialsBusyError();
+        await new Promise((resolve4) => setTimeout(resolve4, 50));
+      }
+    }
+    try {
+      return await operation();
+    } finally {
+      await rm2(lock, { recursive: true });
+    }
+  }
+  async load(serverUrl, deviceId) {
+    if (!await exists(this.path)) return void 0;
+    await assertPrivateMode(this.path);
+    let parsed;
+    try {
+      parsed = credentialSchema.parse(JSON.parse(await readFile(this.path, "utf8")));
+    } catch (error) {
+      throw new ServerCredentialsInvalidError(`server credentials are invalid: ${safeMessage(error)}`);
+    }
+    return parsed.serverUrl === serverUrl && parsed.deviceId === deviceId ? parsed : void 0;
+  }
+  async save(credentials) {
+    const record7 = credentialSchema.parse({ schemaVersion: 1, ...credentials });
+    await atomicWrite(this.path, `${JSON.stringify(record7, null, 2)}
+`);
+    return record7;
+  }
+  async clear() {
+    await rm2(this.path, { force: true });
+  }
+};
+var ServerCredentialsInvalidError = class extends Error {
+  code = "SERVER_CREDENTIALS_INVALID";
+};
+var ServerCredentialsBusyError = class extends Error {
+  code = "SERVER_CREDENTIALS_BUSY";
+  constructor() {
+    super("Credential refresh is locked. Stop other instances; after a crash, stop all instances before removing server-credentials.json.refresh-lock and authorizing again.");
+  }
+};
+async function atomicWrite(path, contents) {
+  const directory = dirname(path);
+  await mkdir(directory, { recursive: true, mode: 448 });
+  await sweepStaleTemporaries(directory);
+  const temporary = `${path}.${process.pid}.${uuidV7()}.tmp`;
+  await writeFile(temporary, contents, { encoding: "utf8", mode: 384, flag: "wx" });
+  await chmod(temporary, 384);
+  await replaceFile(temporary, path);
+  await chmod(path, 384);
+}
+async function assertPrivateMode(path) {
+  if (process.platform === "win32") return;
+  const mode = (await stat2(path)).mode & 511;
+  if ((mode & 63) !== 0) throw new ServerCredentialsInvalidError("server credentials permissions must be 0600");
+}
+async function exists(path) {
+  try {
+    await stat2(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+function safeMessage(error) {
+  return error instanceof Error ? error.message : "invalid credential data";
+}
+
+// src/config.ts
+import { hostname } from "node:os";
+import s from "@deepseek-ai/schemastery";
+
+// src/defaults.ts
+var DEFAULT_REMOTE_SERVER_URL = "https://sakakibara.ink:8443";
+
+// src/config.ts
+var entryConfigSchema = s.object({
+  enabled: s.boolean(),
+  role: s.union(["host", "client", "both"]),
+  serverUrl: s.string(),
+  deviceName: s.string(),
+  terminal: s.object({ enabled: s.boolean() }),
+  hostControl: s.object({ enabled: s.boolean(), paused: s.boolean() }),
+  loopback: s.object({ ports: s.array(s.number()) }),
+  forceRelay: s.boolean(),
+  logLevel: s.union(["debug", "info", "warn", "error"]),
+  reconnect: s.union([
+    s.boolean(),
+    s.object({
+      initialDelayMs: s.number(),
+      maxDelayMs: s.number(),
+      jitter: s.number()
+    })
+  ]),
+  codex: s.object({
+    enabled: s.boolean(),
+    binary: s.string()
+  }),
+  acp: s.object({ enabled: s.boolean(), backends: s.array(s.object({ id: s.string(), enabled: s.boolean(), command: s.string(), args: s.array(s.string()), cwd: s.string() })) })
+});
+function withVolatileSchema(schema) {
+  const volatile = schema.volatile;
+  return typeof volatile === "function" ? volatile.call(schema) : schema;
+}
+var Config = withVolatileSchema(entryConfigSchema);
+var reconnectSchema = external_exports.union([
+  external_exports.boolean(),
+  external_exports.object({
+    initialDelayMs: external_exports.number().int().min(100).max(6e4).optional(),
+    maxDelayMs: external_exports.number().int().min(1e3).max(3e5).optional(),
+    jitter: external_exports.number().min(0).max(1).optional()
+  }).strict()
+]);
+var configSchema = external_exports.object({
+  enabled: external_exports.boolean().optional(),
+  role: external_exports.enum(["host", "client", "both"]).optional(),
+  serverUrl: external_exports.string().url().optional(),
+  deviceName: external_exports.string().trim().min(1).max(80).optional(),
+  terminal: external_exports.object({ enabled: external_exports.boolean().optional() }).strict().optional(),
+  hostControl: external_exports.object({ enabled: external_exports.boolean().optional(), paused: external_exports.boolean().optional() }).strict().optional(),
+  loopback: external_exports.object({ ports: external_exports.array(external_exports.number().int().min(1024).max(65535)).max(16).optional() }).strict().optional(),
+  forceRelay: external_exports.boolean().optional(),
+  logLevel: external_exports.enum(["debug", "info", "warn", "error"]).optional(),
+  reconnect: reconnectSchema.optional(),
+  codex: external_exports.object({
+    enabled: external_exports.boolean().optional(),
+    binary: external_exports.string().trim().min(1).max(4096).optional()
+  }).strict().optional(),
+  acp: external_exports.object({ enabled: external_exports.boolean().optional(), backends: external_exports.array(external_exports.object({ id: external_exports.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,31}$/i), enabled: external_exports.boolean().optional(), command: external_exports.string().trim().min(1).max(4096).optional(), args: external_exports.array(external_exports.string().max(4096)).max(32).optional(), cwd: external_exports.string().max(4096).optional() }).strict()).max(12).optional(), backend: external_exports.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,31}$/i).optional(), command: external_exports.string().trim().min(1).max(4096).optional(), args: external_exports.array(external_exports.string().max(4096)).max(32).optional(), cwd: external_exports.string().max(4096).optional() }).strict().optional()
+}).strict();
+function resolveConfig(input2 = {}, env = process.env) {
+  const parsed = configSchema.parse(input2);
+  const reconnect = typeof parsed.reconnect === "object" ? parsed.reconnect : {};
+  const configuredServerUrl = parsed.serverUrl ?? env.DSH_REMOTE_SERVER;
+  const serverUrl = configuredServerUrl === void 0 ? void 0 : normalizeServerUrl(configuredServerUrl);
+  const initialDelayMs = reconnect.initialDelayMs ?? 1e3;
+  const maxDelayMs = reconnect.maxDelayMs ?? 3e4;
+  if (maxDelayMs < initialDelayMs) {
+    throw new TypeError("reconnect.maxDelayMs must be greater than or equal to reconnect.initialDelayMs");
+  }
+  return {
+    enabled: parsed.enabled ?? true,
+    role: parsed.role ?? "host",
+    ...serverUrl === void 0 ? {} : { serverUrl },
+    deviceName: parsed.deviceName ?? hostname(),
+    // `paused` keeps this machine unreachable without releasing its credentials:
+    // it must survive a restart, or "do not connect me" would quietly expire.
+    hostControl: { enabled: parsed.hostControl?.enabled ?? true, paused: parsed.hostControl?.paused ?? false },
+    terminal: { enabled: parsed.terminal?.enabled ?? (env.DSH_REMOTE_TERMINAL_ENABLED === void 0 || env.DSH_REMOTE_TERMINAL_ENABLED === "true") },
+    loopback: { ports: [...new Set(parsed.loopback?.ports ?? [])] },
+    forceRelay: parsed.forceRelay ?? false,
+    logLevel: parsed.logLevel ?? "info",
+    reconnect: {
+      enabled: parsed.reconnect !== false,
+      initialDelayMs,
+      maxDelayMs,
+      jitter: reconnect.jitter ?? 0.2
+    },
+    codex: {
+      enabled: parsed.codex?.enabled ?? true,
+      binary: parsed.codex?.binary ?? "codex"
+    },
+    acp: { enabled: parsed.acp?.enabled ?? true, backends: [.../* @__PURE__ */ new Set(["codex", "cursor", "kimi", ...parsed.acp?.backends?.map((item) => item.id) ?? []])].map((id4) => {
+      const d = parsed.acp?.backends?.find((x) => x.id === id4);
+      const legacy = parsed.acp?.backend === id4 ? parsed.acp : void 0;
+      return { id: id4, enabled: d?.enabled ?? legacy?.enabled ?? true, command: d?.command ?? legacy?.command ?? { codex: "codex", cursor: "agent", kimi: "kimi" }[id4] ?? id4, args: d?.args ?? legacy?.args ?? ["acp"], ...d?.cwd ?? legacy?.cwd ? { cwd: d?.cwd ?? legacy?.cwd } : {} };
+    }) }
+  };
+}
+function normalizeServerUrl(value) {
+  const url = new URL(value);
+  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1";
+  if (url.protocol !== "https:" && !(local && url.protocol === "http:")) {
+    throw new TypeError("serverUrl must use HTTPS (HTTP is allowed only for localhost)");
+  }
+  if (url.username !== "" || url.password !== "") {
+    throw new TypeError("serverUrl must not contain credentials");
+  }
+  if (url.search !== "" || url.hash !== "") {
+    throw new TypeError("serverUrl must not contain query parameters or fragments");
+  }
+  if (url.pathname !== "" && url.pathname !== "/") {
+    throw new TypeError("serverUrl must be an origin without a path");
+  }
+  return url.origin;
+}
+
+// src/version.ts
+var PLUGIN_VERSION = "0.4.32";
+
+// src/server-api.ts
+var ENABLED_QR_PROVIDERS = ["github"];
+function isEnabledQrProvider(value) {
+  return ENABLED_QR_PROVIDERS.includes(value);
+}
+function oauthProviderName(provider) {
+  return provider === "github" ? "GitHub" : provider === "zhihu" ? "Zhihu" : "WeChat";
+}
+var TERMINAL_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
+var HostServerApi = class {
+  constructor(serverUrl, store, fetchImplementation = fetch, role = "host") {
+    this.store = store;
+    this.fetchImplementation = fetchImplementation;
+    this.role = role;
+    this.baseUrl = normalizeServerUrl(serverUrl);
+  }
+  baseUrl;
+  identity;
+  credentials;
+  credentialsPromise;
+  harnessVersion;
+  bindIdentity(identity) {
+    this.identity = identity;
+  }
+  setHarnessVersion(version) {
+    this.harnessVersion = version;
+  }
+  currentAuthorization() {
+    if (this.credentials === void 0) return void 0;
+    return {
+      method: this.credentials.authorizationMethod,
+      ...this.credentials.account === void 0 ? {} : { account: this.credentials.account }
+    };
+  }
+  /** Check the persisted device credential without issuing or refreshing one. */
+  async hasStoredAuthorization() {
+    const identity = this.requireIdentity();
+    return await this.store.load(this.baseUrl, identity.deviceId) !== void 0;
+  }
+  async clearAuthorization() {
+    this.credentials = void 0;
+    this.credentialsPromise = void 0;
+    await this.store.clear();
+  }
+  async revokeCurrentDevice() {
+    const identity = this.requireIdentity();
+    if (await this.store.load(this.baseUrl, identity.deviceId) === void 0) {
+      await this.clearAuthorization();
+      return;
+    }
+    try {
+      await this.request("/api/v1/devices/self", { method: "DELETE" });
+    } finally {
+      await this.clearAuthorization();
+    }
+  }
+  async authorizeWithAccount(identity, email, password) {
+    this.bindIdentity(identity);
+    const account = email.trim();
+    if (account.length === 0 || password.length === 0) {
+      throw new ServerApiError("INVALID_MESSAGE", "Email and password are required.", false);
+    }
+    const login2 = validateWebLogin(await this.publicRequest("/api/v1/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email: account, password })
+    }));
+    await this.register(identity, {
+      accountToken: login2.token,
+      account: login2.account,
+      authorizationMethod: "account"
+    });
+    return {
+      method: "account",
+      account: login2.account,
+      expiresAt: login2.expiresAt,
+      isAdmin: login2.isAdmin
+    };
+  }
+  /**
+   * Authorize this device with the DSH DeepSeek account grant.
+   *
+   * The grant is forwarded once so the Server can ask the account platform who
+   * it belongs to; the Server then discards it and issues its own account
+   * session, exactly like a password sign-in.
+   */
+  async authorizeWithDeepSeek(identity, token) {
+    this.bindIdentity(identity);
+    if (token.trim().length === 0) {
+      throw new ServerApiError("INVALID_MESSAGE", "A DeepSeek account grant is required.", false);
+    }
+    const login2 = validateWebLogin(await this.publicRequest("/api/v1/auth/deepseek", {
+      method: "POST",
+      body: JSON.stringify({ token })
+    }));
+    await this.register(identity, {
+      accountToken: login2.token,
+      account: login2.account,
+      authorizationMethod: "account"
+    });
+    return {
+      method: "account",
+      account: login2.account,
+      expiresAt: login2.expiresAt,
+      isAdmin: login2.isAdmin
+    };
+  }
+  async startOAuthQrLogin(provider = "wechat") {
+    const value = requireRecord(await this.publicRequest(`/api/v1/auth/oauth/qr/start?provider=${provider}`, {
+      method: "POST",
+      body: "{}"
+    }), "QR login");
+    const scanUrl = normalizeOAuthScanUrl(value.scanUrl, this.baseUrl);
+    if (typeof value.qrId !== "string" || value.qrId.length < 20 || scanUrl === void 0 || !Number.isSafeInteger(value.expiresIn) || value.provider !== void 0 && value.provider !== provider) {
+      throw new ServerApiError("INVALID_MESSAGE", "The Server returned an invalid QR login session.", false);
+    }
+    return { qrId: value.qrId, scanUrl, expiresIn: value.expiresIn };
+  }
+  async pollOAuthQrLogin(identity, qrId, recoverIdentity) {
+    this.bindIdentity(identity);
+    const value = requireRecord(await this.publicRequest(
+      `/api/v1/auth/oauth/qr/${encodeURIComponent(qrId)}`,
+      { method: "GET" }
+    ), "QR login status");
+    if (value.status === "pending" || value.status === "expired") return { status: value.status };
+    if (value.status !== "complete" || typeof value.token !== "string" || value.token.length < 16) {
+      throw new ServerApiError("INVALID_MESSAGE", "The Server returned an invalid QR login status.", false);
+    }
+    const account = requireRecord(await this.publicRequest(
+      "/api/v1/auth/me",
+      { method: "GET" },
+      value.token
+    ), "account profile");
+    if (typeof account.account !== "string" || account.account.length === 0 || typeof account.isAdmin !== "boolean") {
+      throw new ServerApiError("INVALID_MESSAGE", "The Server returned an invalid account profile.", false);
+    }
+    const authorization = {
+      accountToken: value.token,
+      account: account.account,
+      authorizationMethod: "account"
+    };
+    try {
+      await this.register(identity, authorization);
+    } catch (error) {
+      if (!(error instanceof ServerApiError) || error.code !== "DEVICE_REVOKED" || recoverIdentity === void 0) throw error;
+      const nextIdentity = await recoverIdentity();
+      this.bindIdentity(nextIdentity);
+      await this.register(nextIdentity, authorization);
+    }
+    return {
+      status: "complete",
+      authorization: { method: "account", account: account.account, isAdmin: account.isAdmin }
+    };
+  }
+  async authorizeHostWithCode(identity, code) {
+    if (this.role !== "host") {
+      throw new ServerApiError("METHOD_NOT_ALLOWED", "Host registration codes can only authorize a Host device.", false);
+    }
+    const registrationCode = code.trim().toUpperCase();
+    if (registrationCode.length === 0) {
+      throw new ServerApiError("INVALID_MESSAGE", "A Host registration code is required.", false);
+    }
+    this.bindIdentity(identity);
+    const tokens = await this.publicRequest("/api/v1/devices/register-with-code", {
+      method: "POST",
+      body: JSON.stringify({ v: 1, code: registrationCode, device: this.deviceDescriptor(identity) })
+    });
+    this.credentials = await this.saveTokens(identity, validateTokens(tokens), {
+      authorizationMethod: "host_registration_code"
+    });
+    return { method: "host_registration_code" };
+  }
+  async authorizeOwnedRole(identity, authorizingAccessToken, account) {
+    this.bindIdentity(identity);
+    const tokens = await this.publicRequest("/api/v1/devices/register-owned-role", {
+      method: "POST",
+      body: JSON.stringify({ v: 1, device: this.deviceDescriptor(identity) })
+    }, authorizingAccessToken);
+    this.credentials = await this.saveTokens(identity, validateTokens(tokens), {
+      authorizationMethod: "owned_device",
+      ...account === void 0 ? {} : { account }
+    });
+    return {
+      method: "owned_device",
+      ...account === void 0 ? {} : { account }
+    };
+  }
+  async authenticate(identity = this.requireIdentity()) {
+    this.bindIdentity(identity);
+    if (this.credentials !== void 0 && this.credentials.accessTokenExpiresAt > Date.now() + 3e4) {
+      return this.credentials;
+    }
+    this.credentialsPromise ??= this.loadOrIssue(identity).finally(() => {
+      this.credentialsPromise = void 0;
+    });
+    this.credentials = await this.credentialsPromise;
+    return this.credentials;
+  }
+  async refreshCredentials(rejectedAccessToken = this.credentials?.accessToken) {
+    const identity = this.requireIdentity();
+    this.credentials = await this.withRefreshLock(async () => {
+      const stored = await this.store.load(this.baseUrl, identity.deviceId);
+      if (stored === void 0 || stored.refreshTokenExpiresAt <= Date.now()) return this.register(identity);
+      if (stored.accessToken !== rejectedAccessToken && stored.accessTokenExpiresAt > Date.now() + 3e4) {
+        return stored;
+      }
+      return this.rotateCredentials(identity, stored);
+    });
+    return this.credentials;
+  }
+  async withRefreshLock(operation) {
+    try {
+      return await this.store.withRefreshLock(operation);
+    } catch (error) {
+      if (error instanceof ServerCredentialsBusyError) {
+        throw new ServerApiError(error.code, error.message, false);
+      }
+      throw error;
+    }
+  }
+  async rotateCredentials(identity, stored) {
+    let tokens;
+    try {
+      tokens = await this.publicRequest("/api/v1/auth/refresh", {
+        method: "POST",
+        body: JSON.stringify({ deviceId: identity.deviceId, refreshToken: stored.refreshToken })
+      });
+    } catch (error) {
+      if (error instanceof ServerApiError) {
+        throw new ServerApiError(error.code, error.message, error.retryable, error.status, "credential_refresh");
+      }
+      throw error;
+    }
+    return this.store.save({
+      serverUrl: this.baseUrl,
+      deviceId: identity.deviceId,
+      authorizationMethod: stored.authorizationMethod,
+      ...stored.account === void 0 ? {} : { account: stored.account },
+      ...validateTokens(tokens)
+    });
+  }
+  async listDevices() {
+    const result = await this.request("/api/v1/devices");
+    if (!Array.isArray(result.items)) throw new ServerApiError("INVALID_MESSAGE", "The Server returned an invalid device list.", false);
+    return result.items.map(parseHostDevice);
+  }
+  async deviceFor(peerDeviceId) {
+    const result = await this.request(`/api/v1/devices/${encodeURIComponent(peerDeviceId)}`);
+    return parseAuthorizedPeer(result);
+  }
+  async turnCredentials(connectionId) {
+    const result = await this.request(
+      `/api/v1/turn/credentials?connection_id=${encodeURIComponent(connectionId)}`
+    );
+    if (!Array.isArray(result.iceServers)) return [];
+    return result.iceServers.map(parseIceServer);
+  }
+  async presenceFor(deviceId) {
+    const result = await this.request(`/api/v1/devices/${encodeURIComponent(deviceId)}/presence`);
+    if (typeof result.online !== "boolean" || result.lastSeenAt !== null && result.lastSeenAt !== void 0 && !Number.isSafeInteger(result.lastSeenAt)) {
+      throw new ServerApiError("INVALID_MESSAGE", "The Server returned invalid device presence.", false);
+    }
+    return { online: result.online, ...typeof result.lastSeenAt === "number" ? { lastSeenAt: result.lastSeenAt } : {} };
+  }
+  async loadOrIssue(identity) {
+    return this.withRefreshLock(async () => {
+      const stored = await this.store.load(this.baseUrl, identity.deviceId);
+      if (stored === void 0 || stored.refreshTokenExpiresAt <= Date.now() + 3e4) {
+        return this.register(identity);
+      }
+      if (stored.accessTokenExpiresAt > Date.now() + 3e4) return stored;
+      return this.rotateCredentials(identity, stored);
+    });
+  }
+  async register(identity, authorization) {
+    const tokens = await this.publicRequest("/api/v1/devices/register", {
+      method: "POST",
+      body: JSON.stringify({
+        v: 1,
+        device: this.deviceDescriptor(identity)
+      })
+    }, authorization?.accountToken);
+    this.credentials = await this.saveTokens(identity, validateTokens(tokens), {
+      authorizationMethod: authorization?.authorizationMethod ?? "account",
+      ...authorization?.account === void 0 ? {} : { account: authorization.account }
+    });
+    return this.credentials;
+  }
+  deviceDescriptor(identity) {
+    return {
+      deviceId: identity.deviceId,
+      name: identity.name,
+      role: this.role,
+      platform: platform(),
+      identityKey: identity.publicKey,
+      clientVersion: PLUGIN_VERSION,
+      ...this.role === "host" && this.harnessVersion !== void 0 ? { harnessVersion: this.harnessVersion } : {}
+    };
+  }
+  saveTokens(identity, tokens, authorization) {
+    return this.store.save({
+      serverUrl: this.baseUrl,
+      deviceId: identity.deviceId,
+      authorizationMethod: authorization.authorizationMethod,
+      ...authorization.account === void 0 ? {} : { account: authorization.account },
+      ...tokens
+    });
+  }
+  async request(path, init = {}) {
+    const credentials = await this.authenticate();
+    return this.publicRequest(path, init, credentials.accessToken);
+  }
+  async publicRequest(path, init, accessToken) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1e4);
+    let response;
+    try {
+      response = await this.fetchImplementation(`${this.baseUrl}${path}`, {
+        ...init,
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          ...accessToken === void 0 ? {} : { Authorization: `Bearer ${accessToken}` },
+          ...init.headers
+        }
+      });
+    } catch (error) {
+      throw new ServerApiError("CONNECTION_FAILED", error instanceof Error ? error.message : "Server request failed.", true);
+    } finally {
+      clearTimeout(timer);
+    }
+    const body = await parseBody(response);
+    if (!response.ok) {
+      const envelope = body ?? {};
+      throw new ServerApiError(
+        typeof envelope.error?.code === "string" ? envelope.error.code : mapStatus(response.status),
+        typeof envelope.error?.message === "string" ? envelope.error.message : "The Server rejected the request.",
+        envelope.error?.retryable === true || response.status >= 500,
+        response.status
+      );
+    }
+    return body;
+  }
+  requireIdentity() {
+    if (this.identity === void 0) throw new ServerApiError("IDENTITY_INVALID", "The device identity is not loaded.", false);
+    return this.identity;
+  }
+};
+function normalizeOAuthScanUrl(value, baseUrl) {
+  if (typeof value !== "string" || TERMINAL_CONTROL_CHARACTERS.test(value)) return void 0;
+  try {
+    const normalized = new URL(value);
+    if (normalized.protocol === "https:") return normalized.href;
+    if (normalized.protocol !== "http:") return void 0;
+    const server = new URL(baseUrl);
+    const loopback = server.hostname === "localhost" || server.hostname === "127.0.0.1" || server.hostname === "::1";
+    return loopback ? normalized.href : void 0;
+  } catch {
+    return void 0;
+  }
+}
+var ClientServerApi = class extends HostServerApi {
+  constructor(serverUrl, store, fetchImplementation = fetch) {
+    super(serverUrl, store, fetchImplementation, "client");
+  }
+};
+var ServerApiError = class extends Error {
+  constructor(code, message, retryable, status2, phase) {
+    super(message);
+    this.code = code;
+    this.retryable = retryable;
+    this.status = status2;
+    this.phase = phase;
+  }
+};
+function validateTokens(value) {
+  const parsed = deviceTokenPairSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new ServerApiError("INVALID_MESSAGE", "The Server returned invalid device credentials.", false);
+  }
+  return parsed.data;
+}
+function validateWebLogin(value) {
+  const item = requireRecord(value, "account login");
+  if (typeof item.token !== "string" || item.token.length < 16 || !Number.isSafeInteger(item.expiresAt) || typeof item.account !== "string" || item.account.length === 0 || item.account.length > 254 || typeof item.isAdmin !== "boolean") {
+    throw new ServerApiError("INVALID_MESSAGE", "The Server returned an invalid account session.", false);
+  }
+  return {
+    token: item.token,
+    expiresAt: item.expiresAt,
+    account: item.account,
+    profile: item.profile,
+    isAdmin: item.isAdmin
+  };
+}
+async function parseBody(response) {
+  const text = await response.text();
+  if (text.length === 0) return void 0;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new ServerApiError("INVALID_MESSAGE", "The Server returned invalid JSON.", false, response.status);
+  }
+}
+function mapStatus(status2) {
+  if (status2 === 401) return "AUTH_INVALID";
+  if (status2 === 403) return "AUTH_REQUIRED";
+  if (status2 === 404) return "DEVICE_NOT_FOUND";
+  if (status2 === 429) return "RATE_LIMITED";
+  return status2 >= 500 ? "CONNECTION_FAILED" : "INVALID_MESSAGE";
+}
+function parseHostDevice(value) {
+  const item = requireRecord(value, "host device");
+  if (item.role !== "host" || typeof item.deviceId !== "string" || typeof item.name !== "string" || typeof item.platform !== "string" || typeof item.membershipId !== "string" || item.membershipId.length === 0) {
+    throw new ServerApiError("INVALID_MESSAGE", "The Server returned invalid host device data.", false);
+  }
+  return {
+    deviceId: item.deviceId,
+    name: item.name,
+    platform: item.platform,
+    membershipId: item.membershipId,
+    ...typeof item.online === "boolean" ? { online: item.online } : {},
+    ...typeof item.lastSeenAt === "number" && Number.isSafeInteger(item.lastSeenAt) ? { lastSeenAt: item.lastSeenAt } : {},
+    ...typeof item.clientVersion === "string" ? { clientVersion: item.clientVersion } : {},
+    ...typeof item.harnessVersion === "string" ? { harnessVersion: item.harnessVersion } : {}
+  };
+}
+function parseAuthorizedPeer(value) {
+  const item = requireRecord(value, "authorized peer");
+  if (item.role !== "host" && item.role !== "client" || typeof item.deviceId !== "string" || item.deviceId.length === 0 || typeof item.name !== "string" || item.name.length === 0 || typeof item.platform !== "string" || item.platform.length === 0 || typeof item.identityKey !== "string" || !isIdentityKey(item.identityKey) || typeof item.membershipId !== "string" || item.membershipId.length === 0) {
+    throw new ServerApiError("INVALID_MESSAGE", "The Server returned invalid authorized peer data.", false);
+  }
+  return {
+    deviceId: item.deviceId,
+    name: item.name,
+    role: item.role,
+    platform: item.platform,
+    identityKey: item.identityKey,
+    membershipId: item.membershipId,
+    ...typeof item.online === "boolean" ? { online: item.online } : {},
+    ...typeof item.lastSeenAt === "number" && Number.isSafeInteger(item.lastSeenAt) ? { lastSeenAt: item.lastSeenAt } : {}
+  };
+}
+function parseIceServer(value) {
+  const item = requireRecord(value, "ICE server");
+  const urls = item.urls;
+  if (typeof urls !== "string" && !(Array.isArray(urls) && urls.every((url) => typeof url === "string"))) {
+    throw new ServerApiError("INVALID_MESSAGE", "The Server returned an invalid ICE server.", false);
+  }
+  return {
+    urls,
+    ...typeof item.username === "string" ? { username: item.username } : {},
+    ...typeof item.credential === "string" ? { credential: item.credential } : {}
+  };
+}
+function isIdentityKey(value) {
+  try {
+    const decoded = fromBase64Url2(value);
+    return decoded.length === 32 && toBase64Url2(decoded) === value;
+  } catch {
+    return false;
+  }
+}
+function requireRecord(value, name2) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ServerApiError("INVALID_MESSAGE", `The Server returned invalid ${name2} data.`, false);
+  }
+  return value;
+}
+
+// src/server-connection.ts
+var DEFAULT_WEBRTC_NEGOTIATE_TIMEOUT_MS = 12e3;
+var HostServerConnection = class {
+  constructor(config, identity, identities, api, connections, logger, createWebSocket = (url) => new WebSocket(url), rtcFactoryProvider, hostCapabilities = () => ["harness.api.v1"], harnessVersion) {
+    this.config = config;
+    this.identity = identity;
+    this.identities = identities;
+    this.api = api;
+    this.connections = connections;
+    this.logger = logger;
+    this.createWebSocket = createWebSocket;
+    this.rtcFactoryProvider = rtcFactoryProvider;
+    this.hostCapabilities = hostCapabilities;
+    this.harnessVersion = harnessVersion;
+  }
+  socket;
+  running;
+  stopped = true;
+  online = false;
+  retryWake;
+  tunnels = /* @__PURE__ */ new Map();
+  terminalError;
+  lastActiveAt;
+  reconnectRequested = false;
+  resumeQueued = false;
+  authRecoveryAttempted = false;
+  rtcFactory;
+  negotiatedCapabilities = ["transport.relay"];
+  controlFrameLimits = {};
+  start() {
+    if (this.running !== void 0) return;
+    this.stopped = false;
+    this.running = this.run().finally(() => {
+      this.running = void 0;
+    });
+  }
+  resume() {
+    this.terminalError = void 0;
+    this.stopped = false;
+    if (this.running === void 0) {
+      this.start();
+      return;
+    }
+    if (this.resumeQueued) return;
+    this.resumeQueued = true;
+    void this.running.finally(() => {
+      this.resumeQueued = false;
+      if (!this.stopped) this.start();
+    });
+  }
+  async stop() {
+    this.stopped = true;
+    this.reconnectRequested = false;
+    this.retryWake?.();
+    this.retryWake = void 0;
+    this.socket?.close(1e3, "plugin stopped");
+    await this.running;
+    await this.dropTunnels();
+  }
+  isOnline() {
+    return this.online;
+  }
+  lastError() {
+    return this.terminalError;
+  }
+  lastActivity() {
+    return this.lastActiveAt;
+  }
+  isReconnecting() {
+    return !this.online && !this.stopped && this.running !== void 0;
+  }
+  reconnect() {
+    this.terminalError = void 0;
+    this.stopped = false;
+    if (this.running === void 0) {
+      this.start();
+      return;
+    }
+    this.reconnectRequested = true;
+    this.retryWake?.();
+    this.socket?.close(4e3, "manual reconnect");
+    void this.running.finally(() => {
+      if (!this.reconnectRequested || this.stopped) return;
+      this.reconnectRequested = false;
+      this.start();
+    });
+  }
+  async run() {
+    let delayMs = this.config.reconnect.initialDelayMs;
+    this.authRecoveryAttempted = false;
+    while (!this.stopped) {
+      try {
+        await this.connectOnce();
+        delayMs = this.config.reconnect.initialDelayMs;
+      } catch (error) {
+        const code = errorCode2(error);
+        if (code === "CREDENTIALS_REFRESHED") continue;
+        this.terminalError = code;
+        this.logger.warn("server control connection failed", {
+          code,
+          retryable: isRetryable(error),
+          ...error instanceof ServerApiError && error.phase !== void 0 ? { phase: error.phase } : {},
+          ...connectionFailureDetail(error)
+        });
+        if (TERMINAL_AUTH_ERRORS.has(code)) {
+          this.logger.warn(code === "CONNECTION_REPLACED" ? "Another instance is using this Host identity. Stop it or use a separate DSH_HOME; automatic reconnect is paused." : code === "SERVER_CREDENTIALS_BUSY" ? "Credential refresh is locked. Stop other instances; after a crash, stop all instances before removing server-credentials.json.refresh-lock and authorizing again." : "Host authorization failed. Run /remote login or authorize this Host again in Remote settings.");
+        }
+        if (code === "DEVICE_REVOKED") {
+          try {
+            await this.api.clearAuthorization();
+          } catch (clearError) {
+            this.logger.error("failed to clear revoked Host authorization", { code: errorCode2(clearError) });
+          }
+        }
+        if (TERMINAL_AUTH_ERRORS.has(code) || !this.config.reconnect.enabled) return;
+      }
+      if (this.stopped) return;
+      if (this.reconnectRequested) {
+        this.reconnectRequested = false;
+        delayMs = this.config.reconnect.initialDelayMs;
+        continue;
+      }
+      if (!this.config.reconnect.enabled) return;
+      await this.waitBeforeRetry(delayMs);
+      if (this.reconnectRequested) {
+        this.reconnectRequested = false;
+        delayMs = this.config.reconnect.initialDelayMs;
+        continue;
+      }
+      delayMs = Math.min(this.config.reconnect.maxDelayMs, delayMs * 2);
+    }
+  }
+  async connectOnce() {
+    const credentials = await this.api.authenticate(this.identity);
+    if (this.stopped) return;
+    const offeredCapabilities = this.rtcFactoryProvider === void 0 || this.config.forceRelay ? ["transport.relay", ...this.hostCapabilities()] : ["transport.lan", "transport.p2p", "transport.turn", "transport.relay", ...this.hostCapabilities()];
+    const socket = this.createWebSocket(websocketUrl(this.api.baseUrl));
+    this.socket = socket;
+    this.controlFrameLimits = {};
+    let acknowledged = false;
+    let messageQueue = Promise.resolve();
+    await new Promise((resolve4, reject) => {
+      let settled = false;
+      const helloTimer = setTimeout(() => socket.close(4001, "hello timeout"), 1e4);
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(helloTimer);
+        this.online = false;
+        if (this.socket === socket) this.socket = void 0;
+        void this.dropTunnels().finally(() => error === void 0 ? resolve4() : reject(error));
+      };
+      socket.onopen = () => {
+        this.sendControl("hello", {
+          role: "host",
+          deviceId: this.identity.deviceId,
+          accessToken: credentials.accessToken,
+          protocols: [PROTOCOL_VERSION],
+          clientVersion: PLUGIN_VERSION,
+          ...this.harnessVersion === void 0 ? {} : { harnessVersion: this.harnessVersion },
+          capabilities: offeredCapabilities
+        });
+      };
+      socket.onmessage = (event) => {
+        messageQueue = messageQueue.then(async () => {
+          const frame = decodeControl(event.data, this.controlFrameLimits);
+          this.lastActiveAt = Date.now();
+          if (frame.type === "hello.ack") {
+            const payload = requireHelloAck(frame.payload);
+            this.authRecoveryAttempted = false;
+            this.controlFrameLimits = {
+              maxControlFrameBytes: payload.maxControlFrameBytes,
+              maxRelayFrameBytes: payload.maxRelayFrameBytes
+            };
+            this.negotiatedCapabilities = acceptNegotiatedCapabilities(offeredCapabilities, payload.capabilities);
+            if (!this.negotiatedCapabilities.some((capability) => capability === "transport.relay" || capability === "transport.lan" || capability === "transport.p2p" || capability === "transport.turn")) {
+              throw new ControlConnectionError("INVALID_MESSAGE", "Server did not negotiate a transport capability.");
+            }
+            acknowledged = true;
+            clearTimeout(helloTimer);
+            this.online = true;
+            this.terminalError = void 0;
+            this.logger.info("server control connection online", {
+              serverVersion: payload.serverVersion,
+              connectionSessionId: shortId(payload.connectionSessionId)
+            });
+            return;
+          }
+          if (!acknowledged) throw new ControlConnectionError("INVALID_MESSAGE", "Server sent a frame before hello.ack.");
+          await this.handleFrame(frame);
+        }).catch((error) => {
+          const code = errorCode2(error);
+          this.terminalError = code;
+          this.logger.error("server control frame failed", {
+            code,
+            reason: diagnosticReason(error)
+          });
+          socket.close(4008, "invalid control frame");
+        });
+      };
+      socket.onerror = () => {
+        if (!acknowledged) finish(new ControlConnectionError("CONNECTION_FAILED", "Unable to open the Server WebSocket."));
+      };
+      socket.onclose = (event) => {
+        const close = async () => {
+          await messageQueue.catch(() => void 0);
+          if (this.stopped) {
+            finish();
+            return;
+          }
+          if (event.code === 4003) {
+            finish(new ControlConnectionError("CONNECTION_REPLACED", "Another instance connected with this Host identity."));
+            return;
+          }
+          if (event.code === 4002) {
+            if (this.authRecoveryAttempted) {
+              finish(new ControlConnectionError("AUTH_INVALID", "Server rejected refreshed credentials."));
+              return;
+            }
+            try {
+              await this.api.refreshCredentials(credentials.accessToken);
+            } catch (error) {
+              finish(asError2(error));
+              return;
+            }
+            this.authRecoveryAttempted = true;
+            finish(new ControlConnectionError("CREDENTIALS_REFRESHED", "Retry hello with refreshed credentials."));
+            return;
+          }
+          if (event.code === 4004) {
+            finish(new ControlConnectionError("DEVICE_REVOKED", "The Server revoked this Host device."));
+            return;
+          }
+          if (acknowledged) this.terminalError = closeCode(event.code);
+          finish(acknowledged ? void 0 : new ControlConnectionError(closeCode(event.code), event.reason || "Server control connection closed."));
+        };
+        void close();
+      };
+    });
+  }
+  async handleFrame(frame) {
+    if (frame.type === "ping") {
+      const nonce = objectValue(frame.payload, "nonce");
+      if (typeof nonce !== "string") throw new ControlConnectionError("INVALID_MESSAGE", "Control ping has no nonce.");
+      this.sendControl("pong", { nonce });
+      return;
+    }
+    if (frame.type === "pong") return;
+    if (frame.type === "connect.incoming") {
+      await this.handleConnectIncoming(requireConnectIncoming(frame.payload));
+      return;
+    }
+    if (frame.type === "secure.handshake") {
+      await this.handleHandshake(requireHandshake(frame.payload));
+      return;
+    }
+    if (frame.type === "relay") {
+      await this.handleRelay(requireRelay(frame.payload));
+      return;
+    }
+    if (frame.type === "signal.offer") {
+      await this.handleSignalOffer(requireSignal(frame.payload));
+      return;
+    }
+    if (frame.type === "signal.ice") {
+      this.handleSignalIce(requireSignalIce(frame.payload));
+      return;
+    }
+    if (frame.type === "transport.selected") {
+      await this.handleTransportSelected(requireTransportSelected(frame.payload));
+      return;
+    }
+    if (frame.type === "signal.answer") return;
+    if (frame.type === "error") {
+      const payload = requireControlError(frame.payload);
+      if (payload.code === "DEVICE_REVOKED") {
+        this.terminalError = payload.code;
+        this.socket?.close(4004, "device revoked");
+      } else if (payload.connectionId !== void 0) {
+        await this.dropTunnel(payload.connectionId, payload.code);
+        const fields = {
+          code: payload.code,
+          connectionId: shortId(payload.connectionId),
+          retryable: payload.retryable
+        };
+        if (payload.retryable) this.logger.debug("server closed a remote connection", fields);
+        else this.logger.warn("server closed a remote connection", fields);
+      } else {
+        this.terminalError = payload.code;
+        this.logger.warn("server returned a control error", { code: payload.code, retryable: payload.retryable });
+      }
+      return;
+    }
+    throw new ControlConnectionError("INVALID_MESSAGE", `Unexpected Server control frame: ${frame.type}`);
+  }
+  async handleConnectIncoming(payload) {
+    let descriptor;
+    try {
+      descriptor = await this.api.deviceFor(payload.clientDeviceId);
+    } catch (error) {
+      this.sendControl("connect.rejected", { connectionId: payload.connectionId });
+      this.logger.warn("connection rejected by account authorization", {
+        clientDeviceId: shortId(payload.clientDeviceId),
+        code: errorCode2(error)
+      });
+      return;
+    }
+    if (descriptor.role !== "client" || descriptor.deviceId !== payload.clientDeviceId || descriptor.identityKey !== payload.clientIdentityKey) {
+      this.sendControl("connect.rejected", { connectionId: payload.connectionId });
+      this.logger.warn("connection rejected by peer identity validation", {
+        clientDeviceId: shortId(payload.clientDeviceId)
+      });
+      return;
+    }
+    const existing = this.identities.trustedPeer(descriptor.deviceId);
+    if (existing !== void 0 && existing.publicKey !== descriptor.identityKey) {
+      this.sendControl("connect.rejected", { connectionId: payload.connectionId });
+      this.logger.warn("connection rejected by pinned peer identity", {
+        clientDeviceId: shortId(payload.clientDeviceId)
+      });
+      return;
+    }
+    const peer = existing !== void 0 && existing.membershipId === descriptor.membershipId && existing.name === descriptor.name && existing.platform === descriptor.platform ? existing : await this.identities.trustPeer({
+      deviceId: descriptor.deviceId,
+      name: descriptor.name,
+      platform: descriptor.platform,
+      publicKey: descriptor.identityKey,
+      membershipId: descriptor.membershipId
+    });
+    const previous = this.tunnels.get(payload.connectionId);
+    previous?.noise.destroy();
+    const noise = new NoiseIkSession({
+      role: "responder",
+      localPrivateKey: this.identity.privateKey,
+      localPublicKey: this.identity.publicKey,
+      remotePublicKey: peer.publicKey,
+      prologue: createNoisePrologue(payload.connectionId, this.identity.deviceId, peer.deviceId)
+    });
+    this.tunnels.set(payload.connectionId, {
+      connectionId: payload.connectionId,
+      membershipId: descriptor.membershipId,
+      peer,
+      preferredTransports: payload.preferredTransports,
+      noise,
+      transport: "negotiating"
+    });
+    this.sendControl("connect.accepted", { connectionId: payload.connectionId });
+  }
+  async handleHandshake(payload) {
+    const tunnel = this.tunnels.get(payload.connectionId);
+    if (tunnel !== void 0 && tunnel.channel !== void 0 && payload.targetDeviceId === this.identity.deviceId && payload.step === 1) {
+      this.logger.warn("duplicate secure handshake ignored", {
+        connectionId: shortId(tunnel.connectionId),
+        peerDeviceId: shortId(tunnel.peer.deviceId)
+      });
+      return;
+    }
+    if (tunnel === void 0 || payload.targetDeviceId !== this.identity.deviceId || payload.step !== 1) {
+      throw new ControlConnectionError("SECURE_CHANNEL_FAILED", "Noise IK handshake is not valid for this connection.");
+    }
+    if (tunnel.transport === "negotiating" && tunnel.rtc !== void 0) {
+      if (tunnel.pendingHandshake === void 0) tunnel.pendingHandshake = payload;
+      else this.logger.warn("duplicate pending secure handshake ignored", {
+        connectionId: shortId(tunnel.connectionId),
+        peerDeviceId: shortId(tunnel.peer.deviceId)
+      });
+      return;
+    }
+    await this.completeHandshake(tunnel, payload);
+  }
+  async completeHandshake(tunnel, payload) {
+    tunnel.noise.readHandshake(fromBase64Url2(payload.data));
+    const reply = tunnel.noise.writeHandshake();
+    if (!tunnel.noise.complete) throw new ControlConnectionError("SECURE_CHANNEL_FAILED", "Noise IK handshake did not complete.");
+    const viaWebRtc = tunnel.rtc !== void 0 && (tunnel.transport === "lan" || tunnel.transport === "p2p" || tunnel.transport === "turn");
+    if (!viaWebRtc && tunnel.transport === "negotiating") tunnel.transport = "relay";
+    const mode = viaWebRtc ? tunnel.transportMode ?? (tunnel.transport === "turn" ? "TURN" : tunnel.transport === "lan" ? "LAN" : "P2P") : "Relay";
+    const transmit = viaWebRtc ? (ciphertext) => tunnel.rtc.send(ciphertext) : (ciphertext) => this.sendRelay(tunnel, ciphertext);
+    const channel = new ServerNoiseChannel(tunnel, transmit, () => {
+      if (this.tunnels.get(tunnel.connectionId) === tunnel) this.tunnels.delete(tunnel.connectionId);
+    }, mode);
+    tunnel.channel = channel;
+    await this.connections.accept(channel);
+    this.sendControl("secure.handshake", {
+      connectionId: tunnel.connectionId,
+      targetDeviceId: tunnel.peer.deviceId,
+      step: 2,
+      data: toBase64Url2(reply)
+    });
+    this.logger.info("authenticated peer channel ready", {
+      connectionId: shortId(tunnel.connectionId),
+      peerDeviceId: shortId(tunnel.peer.deviceId),
+      transport: mode
+    });
+  }
+  async resumePendingHandshake(tunnel) {
+    const payload = tunnel.pendingHandshake;
+    if (payload === void 0 || tunnel.channel !== void 0 || tunnel.transport === "negotiating") return;
+    tunnel.pendingHandshake = void 0;
+    await this.completeHandshake(tunnel, payload);
+  }
+  async handleRelay(payload) {
+    if (!this.negotiatedCapabilities.includes("transport.relay")) {
+      throw new ControlConnectionError("INVALID_MESSAGE", "Server forwarded Relay without negotiating it.");
+    }
+    if (payload.targetDeviceId !== this.identity.deviceId) {
+      throw new ControlConnectionError("INVALID_MESSAGE", "Relay frame target does not match this Host.");
+    }
+    const tunnel = this.tunnels.get(payload.connectionId);
+    if (tunnel?.channel === void 0) {
+      this.logger.warn("stale relay frame ignored", {
+        connectionId: shortId(payload.connectionId)
+      });
+      return;
+    }
+    try {
+      tunnel.channel.receive(payload.counter, fromBase64Url2(payload.ciphertext));
+    } catch (error) {
+      await tunnel.channel.close();
+      throw new ControlConnectionError("SECURE_CHANNEL_FAILED", asError2(error).message);
+    }
+  }
+  async handleSignalOffer(payload) {
+    if (!this.canUseWebRtc()) {
+      throw new ControlConnectionError("INVALID_MESSAGE", "Server forwarded WebRTC signaling without negotiating it.");
+    }
+    const tunnel = this.tunnels.get(payload.connectionId);
+    if (tunnel === void 0 || payload.targetDeviceId !== this.identity.deviceId) {
+      this.logger.warn("stale webrtc offer ignored", { connectionId: shortId(payload.connectionId) });
+      return;
+    }
+    if (tunnel.channel !== void 0 || tunnel.rtc !== void 0) {
+      this.logger.warn("duplicate webrtc offer ignored", { connectionId: shortId(tunnel.connectionId) });
+      return;
+    }
+    if (this.config.forceRelay) {
+      this.logger.warn("webrtc offer ignored: forceRelay is enabled", { connectionId: shortId(tunnel.connectionId) });
+      return;
+    }
+    if (this.rtcFactory === void 0 && this.rtcFactoryProvider !== void 0) {
+      this.rtcFactory = await this.rtcFactoryProvider().catch(() => void 0);
+    }
+    if (this.rtcFactory === void 0) {
+      this.logger.warn("webrtc offer ignored: no RTC backend available", { connectionId: shortId(tunnel.connectionId) });
+      return;
+    }
+    let iceServers = [];
+    try {
+      iceServers = await this.api.turnCredentials(tunnel.connectionId);
+    } catch (error) {
+      this.logger.warn("TURN credentials unavailable; trying direct candidates", {
+        connectionId: shortId(tunnel.connectionId),
+        code: errorCode2(error)
+      });
+    }
+    if (!tunnel.preferredTransports.includes("turn")) iceServers = stunOnlyIceServers(iceServers);
+    const rtc = new RtcDataChannelTransport({
+      role: "responder",
+      factory: this.rtcFactory,
+      iceServers,
+      onSignal: (signal) => this.sendRtcSignal(tunnel, signal),
+      negotiateTimeoutMs: DEFAULT_WEBRTC_NEGOTIATE_TIMEOUT_MS,
+      label: `host<-${tunnel.peer.deviceId}`,
+      onDiagnostic: (event) => {
+        if (event.type !== "local-candidate-filtered" && event.type !== "candidate-pair-filtered") return;
+        this.logger.debug("webrtc candidate filtered", {
+          connectionId: shortId(tunnel.connectionId),
+          peerDeviceId: shortId(tunnel.peer.deviceId),
+          type: event.type,
+          reason: event.reason,
+          candidate: event.type === "local-candidate-filtered" ? event.candidate : event.localCandidate
+        });
+      }
+    });
+    tunnel.rtc = rtc;
+    rtc.onMessage((data2) => tunnel.channel?.receive(void 0, data2));
+    rtc.onClose(() => {
+      void this.handleRtcFailed(tunnel, rtc, new Error("WebRTC data channel closed."));
+    });
+    void rtc.connect().then(() => {
+      this.handleRtcOpened(tunnel, rtc.selectedTransport() ?? "p2p");
+    }).catch((error) => {
+      void this.handleRtcFailed(tunnel, rtc, asError2(error));
+    });
+    rtc.handleSignal({ type: "offer", sdp: payload.sdp });
+  }
+  handleSignalIce(payload) {
+    if (!this.canUseWebRtc()) {
+      throw new ControlConnectionError("INVALID_MESSAGE", "Server forwarded WebRTC signaling without negotiating it.");
+    }
+    const tunnel = this.tunnels.get(payload.connectionId);
+    if (tunnel === void 0 || payload.targetDeviceId !== this.identity.deviceId) return;
+    tunnel.rtc?.handleSignal({ type: "ice", candidate: payload.candidate });
+  }
+  async handleTransportSelected(payload) {
+    const tunnel = this.tunnels.get(payload.connectionId);
+    if (tunnel === void 0 || payload.targetDeviceId !== this.identity.deviceId) {
+      this.logger.warn("stale transport selection ignored", { connectionId: shortId(payload.connectionId) });
+      return;
+    }
+    if (tunnel.channel !== void 0) {
+      if (tunnel.transport !== payload.transport) {
+        this.logger.warn("late transport selection ignored", {
+          connectionId: shortId(tunnel.connectionId),
+          selected: payload.transport
+        });
+      }
+      return;
+    }
+    const requiredCapability = `transport.${payload.transport}`;
+    if (!this.negotiatedCapabilities.includes(requiredCapability)) {
+      throw new ControlConnectionError(
+        "INVALID_MESSAGE",
+        `Client selected unnegotiated transport: ${payload.transport}`
+      );
+    }
+    if (payload.transport === "relay") {
+      const rtc = tunnel.rtc;
+      tunnel.rtc = void 0;
+      tunnel.transport = "relay";
+      tunnel.transportMode = void 0;
+      await rtc?.close();
+      await this.resumePendingHandshake(tunnel);
+      return;
+    }
+    if (tunnel.rtc === void 0) {
+      throw new ControlConnectionError("INVALID_MESSAGE", "Client selected WebRTC before creating a data channel.");
+    }
+    tunnel.transport = payload.transport;
+    tunnel.transportMode = tunnel.rtc.selectedPathMode();
+    await this.resumePendingHandshake(tunnel);
+  }
+  canUseWebRtc() {
+    return this.negotiatedCapabilities.includes("transport.lan") || this.negotiatedCapabilities.includes("transport.p2p") || this.negotiatedCapabilities.includes("transport.turn");
+  }
+  sendRtcSignal(tunnel, signal) {
+    if (signal.type === "answer") {
+      this.sendControl("signal.answer", {
+        connectionId: tunnel.connectionId,
+        targetDeviceId: tunnel.peer.deviceId,
+        sdp: signal.sdp
+      });
+    } else if (signal.type === "ice") {
+      this.sendControl("signal.ice", {
+        connectionId: tunnel.connectionId,
+        targetDeviceId: tunnel.peer.deviceId,
+        candidate: signal.candidate
+      });
+    }
+  }
+  handleRtcOpened(tunnel, selected) {
+    if (this.tunnels.get(tunnel.connectionId) !== tunnel || tunnel.rtc === void 0) return;
+    const wireSelected = selected === "lan" && !this.negotiatedCapabilities.includes("transport.lan") && this.negotiatedCapabilities.includes("transport.p2p") ? "p2p" : selected;
+    const requiredCapability = wireSelected === "lan" ? "transport.lan" : wireSelected === "turn" ? "transport.turn" : "transport.p2p";
+    if (!this.negotiatedCapabilities.includes(requiredCapability)) {
+      const error = new Error(`WebRTC selected unnegotiated transport: ${selected}`);
+      if (!this.negotiatedCapabilities.includes("transport.relay")) {
+        void this.dropTunnel(tunnel.connectionId, "CONNECTION_FAILED");
+        return;
+      }
+      void this.handleRtcFailed(
+        tunnel,
+        tunnel.rtc,
+        error
+      );
+      return;
+    }
+    tunnel.transport = wireSelected;
+    tunnel.transportMode = tunnel.rtc.selectedPathMode();
+    this.sendTransportSelected(tunnel, wireSelected);
+    const diagnostics = rtcDiagnostics(tunnel.rtc);
+    this.logger.info("webrtc data channel ready", {
+      connectionId: shortId(tunnel.connectionId),
+      peerDeviceId: shortId(tunnel.peer.deviceId),
+      transport: tunnel.transportMode ?? wireSelected
+    });
+    if (diagnostics !== void 0) {
+      this.logger.debug("webrtc data channel diagnostics", {
+        connectionId: shortId(tunnel.connectionId),
+        ...webrtcDiagnosticsLogFields(diagnostics)
+      });
+    }
+    void this.resumePendingHandshake(tunnel).catch((error) => {
+      this.logger.warn("pending secure handshake failed", {
+        connectionId: shortId(tunnel.connectionId),
+        reason: diagnosticReason(error)
+      });
+      void this.dropTunnel(tunnel.connectionId, "SECURE_CHANNEL_FAILED");
+    });
+  }
+  async handleRtcFailed(tunnel, rtc, error) {
+    if (this.tunnels.get(tunnel.connectionId) !== tunnel || tunnel.rtc !== rtc) return;
+    const diagnostics = rtcDiagnostics(rtc);
+    if (tunnel.transport === "lan" || tunnel.transport === "p2p" || tunnel.transport === "turn") {
+      this.logger.warn("webrtc data channel failed; disconnecting peer", {
+        connectionId: shortId(tunnel.connectionId),
+        reason: diagnosticReason(error)
+      });
+      if (diagnostics !== void 0) {
+        this.logger.debug("webrtc data channel failure diagnostics", {
+          connectionId: shortId(tunnel.connectionId),
+          ...webrtcDiagnosticsLogFields(diagnostics)
+        });
+      }
+      await this.dropTunnel(tunnel.connectionId, "CONNECTION_FAILED");
+      return;
+    }
+    tunnel.rtc = void 0;
+    tunnel.transport = "relay";
+    await rtc.close();
+    this.logger.warn("webrtc negotiation failed; falling back to relay", {
+      connectionId: shortId(tunnel.connectionId),
+      reason: diagnosticReason(error)
+    });
+    if (diagnostics !== void 0) {
+      this.logger.debug("webrtc negotiation failure diagnostics", {
+        connectionId: shortId(tunnel.connectionId),
+        ...webrtcDiagnosticsLogFields(diagnostics)
+      });
+    }
+    await this.resumePendingHandshake(tunnel);
+  }
+  sendTransportSelected(tunnel, transport) {
+    this.sendControl("transport.selected", {
+      connectionId: tunnel.connectionId,
+      targetDeviceId: tunnel.peer.deviceId,
+      transport
+    });
+  }
+  async sendRelay(tunnel, ciphertext) {
+    const counter = Number(tunnel.noise.sendingCounter() - 1n);
+    if (!Number.isSafeInteger(counter) || counter < 0) throw new ControlConnectionError("FRAME_TOO_LARGE", "Noise transport counter overflowed.");
+    const socket = this.socket;
+    if (socket === void 0) throw new Error("Relay transport closed");
+    await waitForRelayCapacity(socket);
+    if (this.socket !== socket) throw new Error("Relay transport replaced");
+    this.sendControl("relay", {
+      connectionId: tunnel.connectionId,
+      targetDeviceId: tunnel.peer.deviceId,
+      counter,
+      ciphertext: toBase64Url2(ciphertext)
+    });
+  }
+  sendControl(type, payload) {
+    const socket = this.socket;
+    if (socket === void 0 || socket.readyState !== 1) throw new ControlConnectionError("CONNECTION_FAILED", "Server control socket is not open.");
+    socket.send(encodeControlFrame(createControlFrame(type, payload), this.controlFrameLimits));
+  }
+  async dropTunnels() {
+    const tunnels = [...this.tunnels.values()];
+    this.tunnels.clear();
+    await Promise.all(tunnels.map(async (tunnel) => {
+      if (tunnel.rtc !== void 0) await tunnel.rtc.close();
+      if (tunnel.channel !== void 0) await tunnel.channel.close();
+      else tunnel.noise.destroy();
+    }));
+    await this.connections.close();
+  }
+  async dropTunnel(connectionId, code) {
+    const tunnel = this.tunnels.get(connectionId);
+    if (tunnel === void 0) return;
+    this.tunnels.delete(connectionId);
+    try {
+      await tunnel.rtc?.close();
+    } catch (error) {
+      this.logger.warn("remote connection RTC cleanup failed", {
+        connectionId: shortId(connectionId),
+        reason: diagnosticReason(error)
+      });
+    }
+    if (tunnel.channel !== void 0) {
+      try {
+        const closed = await this.connections.closeConnection(connectionId, code);
+        if (!closed) await tunnel.channel.close(code);
+      } catch (error) {
+        await tunnel.channel.close(code).catch(() => void 0);
+        this.logger.warn("remote connection channel cleanup failed", {
+          connectionId: shortId(connectionId),
+          reason: diagnosticReason(error)
+        });
+      }
+    } else {
+      tunnel.noise.destroy();
+    }
+  }
+  waitBeforeRetry(baseDelay) {
+    const spread = baseDelay * this.config.reconnect.jitter;
+    const delay = Math.max(0, Math.round(baseDelay - spread + Math.random() * spread * 2));
+    return new Promise((resolve4) => {
+      const timer = setTimeout(() => {
+        this.retryWake = void 0;
+        resolve4();
+      }, delay);
+      this.retryWake = () => {
+        clearTimeout(timer);
+        resolve4();
+      };
+    });
+  }
+};
+var TERMINAL_AUTH_ERRORS = /* @__PURE__ */ new Set([
+  "CONNECTION_REPLACED",
+  "SERVER_CREDENTIALS_BUSY",
+  "ACCOUNT_AUTH_REQUIRED",
+  "AUTH_INVALID",
+  "DEVICE_OWNERSHIP_REQUIRED",
+  "DEVICE_REVOKED",
+  "TOKEN_EXPIRED"
+]);
+var ServerNoiseChannel = class {
+  constructor(tunnel, transmit, onClose, mode) {
+    this.tunnel = tunnel;
+    this.transmit = transmit;
+    this.onClose = onClose;
+    this.mode = mode;
+    this.security = {
+      protocol: "Noise_IK_25519_ChaChaPoly_SHA256",
+      connectionId: tunnel.connectionId,
+      membershipId: tunnel.membershipId
+    };
+    this.peerDeviceId = tunnel.peer.deviceId;
+    this.peerIdentityKey = tunnel.peer.publicKey;
+  }
+  sends = new SerialSend();
+  security;
+  peerDeviceId;
+  peerIdentityKey;
+  mode;
+  handlers = /* @__PURE__ */ new Set();
+  incoming = new SecureMessageCodec();
+  outgoing = new SecureMessageCodec();
+  closed = false;
+  async send(message) {
+    if (this.closed) throw new Error("secure channel is closed");
+    const encoded = encodeMessage(message);
+    try {
+      await this.sends.run(encoded.byteLength, async () => {
+        if (this.closed) throw new Error("Secure channel closed");
+        for (const plaintext of this.outgoing.encode(encoded)) await this.transmit(this.tunnel.noise.encrypt(plaintext));
+      });
+    } catch (error) {
+      await this.close().catch(() => void 0);
+      throw error;
+    }
+  }
+  onMessage(handler) {
+    this.handlers.add(handler);
+    return () => this.handlers.delete(handler);
+  }
+  receive(counter, ciphertext) {
+    if (this.closed) return;
+    if (counter !== void 0) {
+      const expected = Number(this.tunnel.noise.receivingCounter());
+      if (!Number.isSafeInteger(counter) || counter !== expected) {
+        throw new ControlConnectionError("INVALID_MESSAGE", "Relay counter is duplicated or out of order.");
+      }
+    }
+    const plaintext = this.incoming.decode(this.tunnel.noise.decrypt(ciphertext));
+    if (plaintext === void 0) return;
+    const message = decodeMessage(plaintext);
+    for (const handler of this.handlers) handler(message);
+  }
+  async close(_code) {
+    if (this.closed) return;
+    this.closed = true;
+    this.handlers.clear();
+    this.incoming.reset();
+    this.outgoing.reset();
+    this.tunnel.noise.destroy();
+    this.onClose();
+  }
+};
+var ControlConnectionError = class extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+};
+function websocketUrl(baseUrl) {
+  const url = new URL(baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/ws/v1/connect`;
+  return url.toString();
+}
+function decodeControl(data2, limits) {
+  if (typeof data2 !== "string") throw new ControlConnectionError("INVALID_MESSAGE", "Server control frames must be text JSON.");
+  try {
+    return decodeControlFrame(data2, limits);
+  } catch {
+    throw new ControlConnectionError("INVALID_MESSAGE", "Server sent an invalid control frame.");
+  }
+}
+function requireHelloAck(value) {
+  const payload = requireObject(value);
+  if (payload.protocol !== PROTOCOL_VERSION || typeof payload.serverVersion !== "string" || typeof payload.connectionSessionId !== "string" || !Number.isSafeInteger(payload.heartbeatIntervalMs) || !Number.isSafeInteger(payload.maxControlFrameBytes) || !Number.isSafeInteger(payload.maxRelayFrameBytes)) {
+    throw new ControlConnectionError("INVALID_MESSAGE", "hello.ack payload is invalid.");
+  }
+  return payload;
+}
+function requireConnectIncoming(value) {
+  const payload = requireObject(value);
+  if (typeof payload.connectionId !== "string" || typeof payload.clientDeviceId !== "string" || typeof payload.clientIdentityKey !== "string" || payload.authorization !== "account" || !Array.isArray(payload.preferredTransports)) {
+    throw new ControlConnectionError("INVALID_MESSAGE", "connect.incoming payload is invalid.");
+  }
+  return payload;
+}
+function requireHandshake(value) {
+  const payload = requireObject(value);
+  if (typeof payload.connectionId !== "string" || typeof payload.targetDeviceId !== "string" || !Number.isSafeInteger(payload.step) || typeof payload.data !== "string") {
+    throw new ControlConnectionError("INVALID_MESSAGE", "secure.handshake payload is invalid.");
+  }
+  return payload;
+}
+function requireRelay(value) {
+  const payload = requireObject(value);
+  if (typeof payload.connectionId !== "string" || typeof payload.targetDeviceId !== "string" || !Number.isSafeInteger(payload.counter) || typeof payload.ciphertext !== "string") {
+    throw new ControlConnectionError("INVALID_MESSAGE", "relay payload is invalid.");
+  }
+  return payload;
+}
+function requireSignal(value) {
+  const payload = requireObject(value);
+  if (typeof payload.connectionId !== "string" || typeof payload.targetDeviceId !== "string" || typeof payload.sdp !== "string" || payload.sdp.length === 0) {
+    throw new ControlConnectionError("INVALID_MESSAGE", "signal offer/answer payload is invalid.");
+  }
+  return payload;
+}
+function requireSignalIce(value) {
+  const payload = requireObject(value);
+  if (typeof payload.connectionId !== "string" || typeof payload.targetDeviceId !== "string" || typeof payload.candidate !== "object" || payload.candidate === null || Array.isArray(payload.candidate)) {
+    throw new ControlConnectionError("INVALID_MESSAGE", "signal.ice payload is invalid.");
+  }
+  return payload;
+}
+function requireTransportSelected(value) {
+  const payload = requireObject(value);
+  if (typeof payload.connectionId !== "string" || typeof payload.targetDeviceId !== "string" || payload.transport !== "lan" && payload.transport !== "p2p" && payload.transport !== "turn" && payload.transport !== "relay") {
+    throw new ControlConnectionError("INVALID_MESSAGE", "transport.selected payload is invalid.");
+  }
+  return payload;
+}
+function requireControlError(value) {
+  const payload = requireObject(value);
+  if (typeof payload.code !== "string" || typeof payload.message !== "string" || payload.connectionId !== void 0 && (typeof payload.connectionId !== "string" || payload.connectionId === "")) {
+    throw new ControlConnectionError("INVALID_MESSAGE", "error payload is invalid.");
+  }
+  return payload;
+}
+function requireObject(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ControlConnectionError("INVALID_MESSAGE", "Control payload must be an object.");
+  }
+  return value;
+}
+function objectValue(value, key) {
+  return requireObject(value)[key];
+}
+function shortId(value) {
+  return value.length <= 12 ? value : `${value.slice(0, 8)}\u2026${value.slice(-4)}`;
+}
+function asError2(error) {
+  return error instanceof Error ? error : new Error("Unknown Server connection error.");
+}
+function diagnosticReason(error) {
+  const message = asError2(error).message.replace(/[\r\n]+/g, " ").slice(0, 160);
+  return message || "Unknown Server connection error.";
+}
+function webrtcDiagnosticsLogFields(diagnostics) {
+  if (diagnostics === void 0) return {};
+  return {
+    rtcConnectionState: diagnostics.connectionState,
+    rtcIceConnectionState: diagnostics.iceConnectionState,
+    rtcIceGatheringState: diagnostics.iceGatheringState,
+    rtcLocalCandidates: diagnostics.localCandidates,
+    rtcRemoteCandidates: diagnostics.remoteCandidates,
+    rtcCandidatePairs: diagnostics.candidatePairs,
+    rtcFilteredLocalCandidates: diagnostics.filteredLocalCandidates,
+    rtcFilteredCandidatePairs: diagnostics.filteredCandidatePairs,
+    ...diagnostics.selectedPath === void 0 ? {} : { rtcSelectedPath: diagnostics.selectedPath }
+  };
+}
+function rtcDiagnostics(rtc) {
+  try {
+    const candidate = rtc;
+    return typeof candidate.diagnostics === "function" ? candidate.diagnostics() : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function connectionFailureDetail(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error ? error.cause : void 0;
+  const causeCode = cause !== null && typeof cause === "object" && "code" in cause && typeof cause.code === "string" ? cause.code : void 0;
+  const ownCode = error !== null && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : void 0;
+  return {
+    message,
+    ...error instanceof Error && error.name !== "Error" ? { name: error.name } : {},
+    ...ownCode === void 0 ? {} : { systemCode: ownCode },
+    ...causeCode === void 0 ? {} : { causeCode }
+  };
+}
+function errorCode2(error) {
+  return error instanceof ServerApiError || error instanceof ControlConnectionError ? error.code : "CONNECTION_FAILED";
+}
+function isRetryable(error) {
+  return !TERMINAL_AUTH_ERRORS.has(errorCode2(error)) && (!(error instanceof ServerApiError) || error.retryable);
+}
+function closeCode(code) {
+  if (code === 4002) return "AUTH_INVALID";
+  if (code === 4003) return "CONNECTION_REPLACED";
+  if (code === 4004) return "DEVICE_REVOKED";
+  if (code === 4007) return "RATE_LIMITED";
+  if (code === 4011) return "UNSUPPORTED_VERSION";
+  return "CONNECTION_FAILED";
+}
+
+// src/loopback-preview.ts
+import { randomBytes as randomBytes7, randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import { WebSocketServer } from "ws";
+
+// src/loopback-host.ts
+import { request as httpRequest } from "node:http";
+import { WebSocket as WebSocket2 } from "ws";
+
+// src/safe-error.ts
+var RpcError = class extends Error {
+  constructor(code, message, details, retryable = false) {
+    super(message);
+    this.code = code;
+    this.details = details;
+    this.retryable = retryable;
+  }
+};
+function safeErrorCode(error) {
+  if (error instanceof RpcError) return error.code;
+  if (error instanceof external_exports.ZodError) return "INVALID_MESSAGE";
+  return "INTERNAL_ERROR";
+}
+
+// src/loopback-host.ts
+var HOP_HEADERS = /* @__PURE__ */ new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "host",
+  "content-length",
+  "forwarded",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto"
+]);
+function cleanHeaders(headers) {
+  const removed = new Set(HOP_HEADERS);
+  for (const [name2, value] of headers) if (name2.toLowerCase() === "connection") {
+    for (const token of value.split(",")) removed.add(token.trim().toLowerCase());
+  }
+  return headers.filter(([name2]) => !removed.has(name2.toLowerCase()) && !name2.toLowerCase().startsWith("sec-websocket-"));
+}
+function headerPairs(headers) {
+  return Object.entries(headers).flatMap(([name2, value]) => value === void 0 ? [] : (Array.isArray(value) ? value : [value]).map((item) => [name2, item]));
+}
+var LoopbackHost = class {
+  constructor(getPorts, onClose) {
+    this.onClose = onClose;
+    this.ports = [...getPorts()];
+    this.timer = setInterval(() => {
+      for (const [id4, handle] of this.handles) if (Date.now() - handle.touched > 6e4) this.close(id4);
+    }, 1e4);
+    this.timer.unref();
+  }
+  handles = /* @__PURE__ */ new Map();
+  ports;
+  closed = false;
+  timer;
+  setPorts(ports) {
+    this.ports = [...ports];
+    const allowed = new Set(ports);
+    for (const [id4, handle] of this.handles) if (!allowed.has(handle.port)) this.close(id4);
+  }
+  async call(input2) {
+    if (this.closed) throw new RpcError("TRANSPORT_CLOSED", "Preview connection closed.");
+    const value = loopbackRequestSchema.parse(input2);
+    if (value.op === "describe") return { ports: [...this.ports] };
+    if (value.op === "close") {
+      this.close(value.id);
+      return { closed: true };
+    }
+    if (value.op === "http.open" || value.op === "ws.open") {
+      if (!this.ports.includes(value.port)) throw new RpcError(
+        "LOOPBACK_PORT_DENIED",
+        "This preview port is not allowed. Add it to loopback.ports in the Host Remote settings and save the access settings. / \u8BF7\u5728 Host Remote \u8BBE\u7F6E\u4E2D\u5141\u8BB8\u6B64\u9884\u89C8\u7AEF\u53E3\u5E76\u4FDD\u5B58\u8BBF\u95EE\u8BBE\u7F6E\u3002"
+      );
+      if (this.handles.has(value.id)) throw new RpcError("REQUEST_CONFLICT", "Preview handle is already in use.");
+      if (this.handles.size >= LOOPBACK_MAX_CONNECTIONS) throw new RpcError("RATE_LIMITED", "Too many active preview requests.");
+      let openedHandle;
+      try {
+        const opening = value.op === "http.open" ? this.openHttp(value) : this.openWs(value);
+        openedHandle = this.handles.get(value.id);
+        return await opening;
+      } catch {
+        this.close(value.id, openedHandle);
+        throw new RpcError("LOOPBACK_UNAVAILABLE", "The allowed loopback service did not respond. Check that it is running on the Host.");
+      }
+    }
+    const handle = this.handles.get(value.id);
+    if (handle === void 0) throw new RpcError("LOOPBACK_CLOSED", "Preview request closed; reload the preview.");
+    handle.touched = Date.now();
+    if (value.op === "http.read" && handle.kind === "http") {
+      if (handle.reading) throw new RpcError("REQUEST_CONFLICT", "Only one preview read may be pending.");
+      handle.reading = true;
+      try {
+        const response = handle.response;
+        let chunk = response.read(Math.min(response.readableLength || LOOPBACK_CHUNK_BYTES, LOOPBACK_CHUNK_BYTES));
+        if (chunk === null && !response.readableEnded && !response.destroyed) {
+          await new Promise((resolve4, reject) => {
+            const timer = setTimeout(() => finish(new Error("timeout")), 2e4);
+            const ready = () => finish();
+            const fail4 = () => finish(new Error("closed"));
+            const finish = (error) => {
+              clearTimeout(timer);
+              response.off("readable", ready);
+              response.off("end", ready);
+              response.off("close", ready);
+              response.off("error", fail4);
+              error === void 0 ? resolve4() : reject(error);
+            };
+            response.once("readable", ready);
+            response.once("end", ready);
+            response.once("close", ready);
+            response.once("error", fail4);
+          });
+          if (this.handles.get(value.id) !== handle) throw new Error("closed");
+          chunk = response.read(Math.min(response.readableLength || LOOPBACK_CHUNK_BYTES, LOOPBACK_CHUNK_BYTES));
+          if (chunk === null && response.readableLength > 0) chunk = response.read(Math.min(response.readableLength, LOOPBACK_CHUNK_BYTES));
+        }
+        const done = chunk === null && (response.readableEnded || response.destroyed);
+        if (done && !response.complete) throw new Error("truncated");
+        handle.total += chunk?.length ?? 0;
+        if (handle.total > 64 * 1024 * 1024) throw new Error("size");
+        if (done) this.close(value.id, handle);
+        return { data: chunk?.toString("base64") ?? "", done };
+      } catch {
+        this.close(value.id, handle);
+        throw new RpcError("LOOPBACK_READ_FAILED", "Preview response ended or exceeded its limit; reload to retry.");
+      } finally {
+        handle.reading = false;
+      }
+    }
+    if (handle.kind === "ws") {
+      if (value.op === "ws.send") {
+        const data2 = Buffer.from(value.data, "base64");
+        if (data2.length > LOOPBACK_MAX_WS_BYTES || handle.socket.bufferedAmount > 1024 * 1024) {
+          this.close(value.id);
+          throw new RpcError("RATE_LIMITED", "Preview WebSocket buffer exceeded its limit.");
+        }
+        await new Promise((resolve4, reject) => handle.socket.send(data2, { binary: value.binary }, (error) => error ? reject(new RpcError("LOOPBACK_CLOSED", "Preview socket closed.")) : resolve4()));
+        return { sent: true };
+      }
+      if (value.op === "ws.read") {
+        if (handle.reading) throw new RpcError("REQUEST_CONFLICT", "Only one preview read may be pending.");
+        handle.reading = true;
+        try {
+          if (handle.messages.length === 0 && !handle.closed) await new Promise((resolve4) => {
+            const timer = setTimeout(() => {
+              handle.wake = void 0;
+              resolve4();
+            }, 2e4);
+            handle.wake = () => {
+              clearTimeout(timer);
+              handle.wake = void 0;
+              resolve4();
+            };
+          });
+          let bytes = 0;
+          const messages = [];
+          while (handle.messages.length > 0 && bytes < LOOPBACK_MAX_WS_BYTES) {
+            const message = handle.messages.shift();
+            bytes += message.data.length;
+            messages.push(message);
+          }
+          handle.bytes -= bytes;
+          const closed = handle.closed && handle.messages.length === 0;
+          if (closed) this.close(value.id, handle);
+          return { messages, closed };
+        } finally {
+          handle.reading = false;
+        }
+      }
+    }
+    throw new RpcError("INVALID_MESSAGE", "Preview handle kind does not match the operation.");
+  }
+  closeAll() {
+    if (this.closed) return;
+    this.closed = true;
+    clearInterval(this.timer);
+    for (const id4 of this.handles.keys()) this.close(id4);
+    this.onClose?.();
+  }
+  close(id4, expected) {
+    const handle = this.handles.get(id4);
+    if (expected !== void 0 && handle !== expected) return;
+    this.handles.delete(id4);
+    if (handle?.kind === "http") {
+      handle.response?.destroy();
+      handle.request.destroy();
+    }
+    if (handle?.kind === "ws") {
+      handle.closed = true;
+      handle.messages = [];
+      handle.bytes = 0;
+      handle.wake?.();
+      handle.socket.terminate();
+    }
+  }
+  openHttp(value) {
+    const body = value.body === void 0 ? void 0 : Buffer.from(value.body, "base64");
+    if ((body?.length ?? 0) > LOOPBACK_MAX_BODY_BYTES) throw new Error("body limit");
+    return new Promise((resolve4, reject) => {
+      const headers = Object.fromEntries(cleanHeaders(value.headers));
+      let handle;
+      const request = httpRequest({
+        hostname: "127.0.0.1",
+        port: value.port,
+        method: value.method,
+        path: value.path,
+        headers,
+        agent: false,
+        maxHeaderSize: 32 * 1024
+      }, (response) => {
+        if (this.handles.get(value.id) !== handle) {
+          response.destroy();
+          return;
+        }
+        handle.response = response;
+        response.on("error", () => void 0);
+        clearTimeout(timer);
+        resolve4({ status: response.statusCode ?? 502, headers: cleanHeaders(headerPairs(response.headers)) });
+      });
+      const timer = setTimeout(() => {
+        request.destroy();
+        reject(new Error("timeout"));
+      }, 2e4);
+      request.on("error", () => {
+        clearTimeout(timer);
+        reject(new Error("upstream"));
+      });
+      handle = { kind: "http", port: value.port, request, reading: false, total: 0, touched: Date.now() };
+      this.handles.set(value.id, handle);
+      request.end(body);
+    });
+  }
+  openWs(value) {
+    return new Promise((resolve4, reject) => {
+      const socket = new WebSocket2(`ws://127.0.0.1:${value.port}${value.path}`, value.protocols, {
+        headers: Object.fromEntries(cleanHeaders(value.headers)),
+        followRedirects: false,
+        handshakeTimeout: 15e3,
+        maxPayload: LOOPBACK_MAX_WS_BYTES,
+        perMessageDeflate: false
+      });
+      const handle = { kind: "ws", port: value.port, socket, messages: [], bytes: 0, reading: false, closed: false, touched: Date.now() };
+      this.handles.set(value.id, handle);
+      socket.once("open", () => resolve4({ protocol: socket.protocol }));
+      socket.on("message", (data2, binary) => {
+        if (handle.closed) return;
+        const message = { data: Buffer.from(data2).toString("base64"), binary };
+        if (handle.bytes + message.data.length > 1024 * 1024 || handle.messages.length >= 256) {
+          this.close(value.id, handle);
+          return;
+        }
+        handle.messages.push(message);
+        handle.bytes += message.data.length;
+        handle.wake?.();
+      });
+      socket.on("close", () => {
+        handle.closed = true;
+        handle.wake?.();
+        reject(new Error("closed"));
+      });
+      socket.on("error", () => {
+        handle.closed = true;
+        handle.wake?.();
+        reject(new Error("upstream"));
+      });
+    });
+  }
+};
+
+// src/loopback-preview.ts
+var LoopbackPreview = class {
+  constructor(client) {
+    this.client = client;
+  }
+  servers = /* @__PURE__ */ new Map();
+  sockets = /* @__PURE__ */ new Set();
+  lifetime = new AbortController();
+  async open(port) {
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new RpcError("INVALID_MESSAGE", "Enter a port between 1024 and 65535.");
+    this.lifetime.signal.throwIfAborted();
+    const description = await this.client.rpc("loopback.call", { op: "describe" }, this.lifetime.signal);
+    if (!description.ports.includes(port)) throw new RpcError("LOOPBACK_PORT_DENIED", "Allow this port in the Host Remote settings (loopback.ports), then save the access settings. / \u8BF7\u5728 Host Remote \u8BBE\u7F6E\u4E2D\u5141\u8BB8\u6B64\u7AEF\u53E3\uFF0C\u7136\u540E\u4FDD\u5B58\u8BBF\u95EE\u8BBE\u7F6E\u3002");
+    let pending = this.servers.get(port);
+    if (pending === void 0) {
+      if (this.servers.size >= 16) throw new RpcError("RATE_LIMITED", "Too many preview origins.");
+      pending = this.start(port);
+      this.servers.set(port, pending);
+      void pending.catch(() => {
+        this.servers.delete(port);
+      });
+    }
+    return { url: (await pending).url };
+  }
+  async close() {
+    this.lifetime.abort();
+    for (const socket of this.sockets) socket.destroy();
+    for (const pending of this.servers.values()) {
+      const running = await pending.catch(() => void 0);
+      if (running === void 0) continue;
+      for (const client of running.ws.clients) client.terminate();
+      running.ws.close();
+      running.server.closeAllConnections();
+      await new Promise((resolve4) => running.server.close(() => resolve4()));
+    }
+    this.servers.clear();
+  }
+  async start(port) {
+    const hostname4 = `dsh-${randomBytes7(24).toString("hex")}.localhost`;
+    let authority = "";
+    const accepted = (req) => req.headers.host === authority && (req.headers.origin === void 0 || req.headers.origin === `http://${authority}`) && req.headers["service-worker"] === void 0;
+    const server = createServer((req, res) => {
+      if (!accepted(req)) {
+        res.writeHead(403);
+        res.end("Preview origin denied.");
+        return;
+      }
+      void this.http(port, authority, req, res);
+    });
+    server.requestTimeout = 3e4;
+    server.headersTimeout = 15e3;
+    server.maxHeadersCount = 64;
+    server.on("connection", (socket) => {
+      if (this.sockets.size >= 64 || this.lifetime.signal.aborted) {
+        socket.destroy();
+        return;
+      }
+      this.sockets.add(socket);
+      socket.on("close", () => this.sockets.delete(socket));
+    });
+    const selectedProtocols = /* @__PURE__ */ new WeakMap();
+    const ws = new WebSocketServer({
+      noServer: true,
+      maxPayload: LOOPBACK_MAX_WS_BYTES,
+      perMessageDeflate: false,
+      handleProtocols: (_protocols, req) => selectedProtocols.get(req) || false
+    });
+    server.on("upgrade", (req, socket, head) => {
+      if (!accepted(req)) {
+        socket.destroy();
+        return;
+      }
+      const id4 = randomUUID();
+      const headers = this.headers(req, port);
+      const protocols = (req.headers["sec-websocket-protocol"] ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+      void this.client.rpc("loopback.call", { op: "ws.open", id: id4, port, path: req.url ?? "/", headers, protocols }, this.lifetime.signal).then((result) => {
+        if (socket.destroyed || this.lifetime.signal.aborted) {
+          socket.destroy();
+          void this.release(id4);
+          return;
+        }
+        selectedProtocols.set(req, result.protocol);
+        ws.handleUpgrade(req, socket, head, (local) => this.websocket(id4, local));
+      }).catch(() => {
+        socket.destroy();
+        void this.release(id4);
+      });
+    });
+    await new Promise((resolve4, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", reject);
+        resolve4();
+      });
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      server.close();
+      throw new Error("Preview listener unavailable");
+    }
+    authority = `${hostname4}:${address.port}`;
+    if (this.lifetime.signal.aborted) {
+      server.close();
+      ws.close();
+      throw new Error("Preview closed");
+    }
+    return { server, ws, url: `http://${authority}/` };
+  }
+  headers(req, port) {
+    return cleanHeaders(headerPairs(req.headers)).filter(([name2]) => !["origin", "referer"].includes(name2.toLowerCase())).concat(req.headers.origin === void 0 ? [] : [["origin", `http://127.0.0.1:${port}`]]);
+  }
+  async http(port, authority, req, res) {
+    const id4 = randomUUID();
+    const controller = new AbortController();
+    const abort = () => {
+      controller.abort();
+      void this.release(id4);
+    };
+    res.once("close", abort);
+    const signal = AbortSignal.any([controller.signal, this.lifetime.signal]);
+    try {
+      const chunks = [];
+      let length = 0;
+      for await (const chunk of req) {
+        length += chunk.length;
+        if (length > LOOPBACK_MAX_BODY_BYTES) throw new RpcError("PAYLOAD_TOO_LARGE", "Preview request body is limited to 1 MiB.");
+        chunks.push(chunk);
+      }
+      const head = await this.client.rpc("loopback.call", {
+        op: "http.open",
+        id: id4,
+        port,
+        path: req.url ?? "/",
+        method: req.method ?? "GET",
+        headers: this.headers(req, port),
+        ...length === 0 ? {} : { body: Buffer.concat(chunks).toString("base64") }
+      }, signal);
+      const headers = {};
+      for (let [name2, value] of cleanHeaders(head.headers)) {
+        name2 = name2.toLowerCase();
+        if (name2 === "location") {
+          const url = new URL(value, `http://127.0.0.1:${port}/`);
+          if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || Number(url.port || 80) !== port || url.protocol !== "http:") {
+            throw new Error("Redirect is outside the authorized preview service");
+          }
+          value = `http://${authority}${url.pathname}${url.search}${url.hash}`;
+        }
+        if (name2 === "set-cookie") {
+          value = value.replace(/;\s*domain=[^;]*/ig, "");
+          const existing = headers[name2];
+          headers[name2] = [...Array.isArray(existing) ? existing : [], value];
+        } else if (!["service-worker-allowed", "clear-site-data", "alt-svc"].includes(name2)) headers[name2] = value;
+      }
+      headers["referrer-policy"] = "no-referrer";
+      res.writeHead(head.status, headers);
+      while (!signal.aborted) {
+        const chunk = await this.client.rpc("loopback.call", { op: "http.read", id: id4 }, signal);
+        if (chunk.data !== "" && !res.write(Buffer.from(chunk.data, "base64"))) {
+          await new Promise((resolve4, reject) => {
+            const ready = () => {
+              cleanup();
+              resolve4();
+            };
+            const closed = () => {
+              cleanup();
+              reject(new Error("closed"));
+            };
+            const cleanup = () => {
+              res.off("drain", ready);
+              res.off("close", closed);
+            };
+            res.once("drain", ready);
+            res.once("close", closed);
+          });
+        }
+        if (chunk.done) break;
+      }
+      res.end();
+    } catch {
+      if (!res.headersSent) {
+        res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Remote preview unavailable. Check the Host service and connection, then reload.");
+      } else res.destroy();
+    } finally {
+      res.off("close", abort);
+      await this.release(id4);
+    }
+  }
+  websocket(id4, socket) {
+    let input2 = Promise.resolve();
+    let queued = 0;
+    let count = 0;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, this.lifetime.signal]);
+    const close = () => {
+      controller.abort();
+      socket.terminate();
+      void this.release(id4);
+    };
+    socket.on("error", close);
+    socket.on("close", close);
+    socket.on("message", (data2, binary) => {
+      const bytes = Buffer.from(data2);
+      queued += bytes.length;
+      count += 1;
+      if (queued > 1024 * 1024 || count > 256) {
+        close();
+        return;
+      }
+      input2 = input2.then(async () => {
+        await this.client.rpc("loopback.call", { op: "ws.send", id: id4, data: bytes.toString("base64"), binary }, signal);
+        queued -= bytes.length;
+        count -= 1;
+      }).catch(close);
+    });
+    void (async () => {
+      try {
+        while (!signal.aborted) {
+          const result = await this.client.rpc("loopback.call", { op: "ws.read", id: id4 }, signal);
+          for (const message of result.messages) {
+            if (socket.bufferedAmount > 1024 * 1024) throw new Error("slow preview");
+            await new Promise((resolve4, reject) => socket.send(Buffer.from(message.data, "base64"), { binary: message.binary }, (error) => error ? reject(error) : resolve4()));
+          }
+          if (result.closed) break;
+        }
+      } catch {
+      } finally {
+        close();
+      }
+    })();
+  }
+  async release(id4) {
+    if (!this.lifetime.signal.aborted) await this.client.rpc("loopback.call", { op: "close", id: id4 }).catch(() => void 0);
+  }
+};
+
+// ../client-core/dist/remote-gateway.js
+var DIRECT_REMOTE_CALL_BYTES = 2 * 1024 * 1024;
+var RemoteGatewayError = class extends Error {
+  code;
+  details;
+  constructor(code, message, details = {}, options) {
+    super(message, options);
+    this.code = code;
+    this.details = details;
+    this.name = "RemoteGatewayError";
+  }
+};
+function createRemoteId() {
+  const crypto3 = globalThis.crypto;
+  if (crypto3?.randomUUID !== void 0)
+    return crypto3.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// ../client-core/dist/codex-client.js
+var MAX_DISPLAY_ITEM_TEXT = 256 * 1024;
+var CODEX_IMAGE_MEDIA_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+var DATA_IMAGE_URL = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/u;
+var CodexRemoteClient = class {
+  core;
+  constructor(core) {
+    this.core = core;
+  }
+  /** Low-level allowlisted request used by the Desktop Web loopback facade. */
+  request(method, params, signal) {
+    const largeHistory = method === "dsh/sessionHistory" || method === "thread/read" && isRecord(params) && params.includeTurns === true;
+    return this.call(method, params, largeHistory || hasImageInput(params), signal);
+  }
+  async account(signal) {
+    return this.call("account/read", { refreshToken: false }, false, signal);
+  }
+  async models(signal) {
+    return this.call("model/list", {}, false, signal);
+  }
+  async threads(params = {}, signal) {
+    const result = await this.call("thread/list", params, false, signal);
+    if (!isRecord(result) || !Array.isArray(result.data))
+      throw invalidResponse("thread list");
+    return {
+      sessions: result.data.map(projectCodexThread).filter((value) => value !== void 0),
+      ...typeof result.nextCursor === "string" ? { nextCursor: result.nextCursor } : {}
+    };
+  }
+  async history(threadId, signal) {
+    const result = await this.call("thread/read", { threadId, includeTurns: true }, true, signal);
+    if (!isRecord(result) || !isRecord(result.thread))
+      throw invalidResponse("thread history");
+    const session = projectCodexThread(result.thread);
+    if (session === void 0)
+      throw invalidResponse("thread history");
+    return { session, items: projectCodexHistory(result.thread) };
+  }
+  async start(cwd, model, signal) {
+    const result = await this.call("thread/start", { cwd, ...model === void 0 ? {} : { model } }, false, signal);
+    return requireProjectedThread(result);
+  }
+  async resume(threadId, signal) {
+    return requireProjectedThread(await this.call("thread/resume", { threadId }, false, signal));
+  }
+  async fork(threadId, lastTurnId, signal) {
+    return requireProjectedThread(await this.call("thread/fork", {
+      threadId,
+      ...lastTurnId === void 0 ? {} : { lastTurnId }
+    }, false, signal));
+  }
+  async rename(threadId, name2, signal) {
+    await this.call("thread/name/set", { threadId, name: name2 }, false, signal);
+  }
+  async prompt(threadId, text, signal) {
+    return this.call("turn/start", { threadId, input: [{ type: "text", text }] }, false, signal);
+  }
+  async steer(threadId, expectedTurnId, text, signal) {
+    return this.call("turn/steer", {
+      threadId,
+      expectedTurnId,
+      input: [{ type: "text", text }]
+    }, false, signal);
+  }
+  async interrupt(threadId, turnId, signal) {
+    await this.call("turn/interrupt", { threadId, turnId }, false, signal);
+  }
+  async respond(requestHandle, decision, signal) {
+    await this.core.rpc("codex.app.respond", { requestHandle, decision }, signal);
+  }
+  async subscribe(threadId, onFrame, signal, onClose) {
+    const streamId = createRemoteId();
+    let closed = false;
+    let unsubscribe = () => void 0;
+    const markClosed = () => {
+      if (closed)
+        return false;
+      closed = true;
+      unsubscribe();
+      return true;
+    };
+    unsubscribe = this.core.onEvent((event) => {
+      if (!isRecord(event.data) || event.data.streamId !== streamId)
+        return;
+      if (event.event === "codex.app.stream.closed") {
+        if (!markClosed())
+          return;
+        onClose?.(codexStreamCloseReason(event.data.reason));
+        return;
+      }
+      if (event.event !== "codex.app.frame" || !isRecord(event.data.frame) || typeof event.data.frame.method !== "string")
+        return;
+      onFrame(event.data.frame);
+    });
+    try {
+      await this.core.rpc("codex.app.stream.open", { streamId, threadId }, signal);
+    } catch (error) {
+      unsubscribe();
+      throw error;
+    }
+    return {
+      streamId,
+      close: async () => {
+        if (!markClosed())
+          return;
+        await this.core.rpc("codex.app.stream.close", { streamId }).catch(() => void 0);
+      }
+    };
+  }
+  async call(method, params, transfer, signal) {
+    const envelope = { method, params };
+    if (!transfer)
+      return this.core.rpc("codex.app.call", envelope, signal);
+    return this.callTransferred(new TextEncoder().encode(JSON.stringify(envelope)), signal);
+  }
+  async callTransferred(encoded, signal) {
+    if (encoded.byteLength === 0 || encoded.byteLength > MAX_CODEX_APP_TRANSFER_BYTES) {
+      throw new RemoteGatewayError("INVALID_MESSAGE", "The Codex request exceeds the transfer limit.");
+    }
+    const transferId = createCodexTransferId();
+    const totalChunks = Math.ceil(encoded.byteLength / CODEX_APP_TRANSFER_CHUNK_BYTES);
+    let opened = false;
+    try {
+      await this.core.rpc("codex.app.transfer.open", { transferId, totalBytes: encoded.byteLength, totalChunks }, signal);
+      opened = true;
+      for (let index = 0; index < totalChunks; index += 1) {
+        const start = index * CODEX_APP_TRANSFER_CHUNK_BYTES;
+        const chunk = encoded.subarray(start, Math.min(start + CODEX_APP_TRANSFER_CHUNK_BYTES, encoded.byteLength));
+        await this.core.rpc("codex.app.transfer.chunk", { transferId, index, data: bytesToBase64(chunk) }, signal);
+      }
+      const committed = await this.core.rpc("codex.app.transfer.commit", { transferId }, signal);
+      if (committed.kind === "inline")
+        return committed.response;
+      if (committed.transferId !== transferId || committed.totalBytes <= 0 || committed.totalBytes > MAX_CODEX_APP_TRANSFER_BYTES || committed.totalChunks !== Math.ceil(committed.totalBytes / CODEX_APP_TRANSFER_CHUNK_BYTES)) {
+        throw invalidResponse("transfer descriptor");
+      }
+      const response = new Uint8Array(committed.totalBytes);
+      let offset = 0;
+      for (let index = 0; index < committed.totalChunks; index += 1) {
+        const result = await this.core.rpc("codex.app.transfer.read", { transferId, index }, signal);
+        if (result.transferId !== transferId || result.index !== index)
+          throw invalidResponse("transfer ordering");
+        const chunk = base64ToBytes(result.data);
+        const expected = Math.min(CODEX_APP_TRANSFER_CHUNK_BYTES, committed.totalBytes - offset);
+        if (chunk.byteLength !== expected)
+          throw invalidResponse("transfer chunk");
+        response.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(response));
+    } finally {
+      if (opened)
+        await this.core.rpc("codex.app.transfer.close", { transferId }).catch(() => void 0);
+    }
+  }
+};
+function hasImageInput(params) {
+  return isRecord(params) && Array.isArray(params.input) && params.input.some((value) => isRecord(value) && value.type === "image");
+}
+function projectCodexThread(value) {
+  if (!isRecord(value) || typeof value.id !== "string")
+    return void 0;
+  const createdAt = normalizeTimestamp(value.createdAt);
+  const updatedAt = normalizeTimestamp(value.updatedAt) || createdAt;
+  return {
+    id: `codex:${value.id}`,
+    backend: "codex",
+    nativeId: value.id,
+    ...typeof value.sessionId === "string" ? { sessionTreeId: value.sessionId } : {},
+    ...typeof value.name === "string" && value.name.length > 0 ? { title: value.name } : {},
+    ...typeof value.preview === "string" && value.preview.length > 0 ? { preview: value.preview } : {},
+    ...typeof value.cwd === "string" ? { cwd: value.cwd } : {},
+    createdAt,
+    updatedAt,
+    status: projectThreadStatus(value.status),
+    ...typeof value.archived === "boolean" ? { archived: value.archived } : {},
+    ...typeof value.isPinned === "boolean" ? { pinned: value.isPinned } : {}
+  };
+}
+function deriveCodexCwdWorkspaces(values) {
+  const byPath = /* @__PURE__ */ new Map();
+  const usedIds = /* @__PURE__ */ new Set();
+  for (const value of values) {
+    const session = projectCodexThread(value);
+    if (session === void 0 || session.cwd === void 0 || session.cwd.length === 0)
+      continue;
+    const path = session.cwd;
+    if (!isAbsoluteWorkspacePath(path))
+      continue;
+    const key = normalizeWorkspacePath(path);
+    const existing = byPath.get(key);
+    if (existing !== void 0) {
+      existing.createdAt = earliestTimestamp(existing.createdAt, session.createdAt);
+      existing.updatedAt = Math.max(existing.updatedAt, session.updatedAt);
+      continue;
+    }
+    const baseId = `cwd-${hashWorkspacePath(key)}`;
+    let id4 = baseId;
+    for (let suffix = 2; usedIds.has(id4); suffix += 1)
+      id4 = `${baseId}-${suffix}`;
+    usedIds.add(id4);
+    byPath.set(key, {
+      id: id4,
+      name: workspaceBasename(path),
+      path,
+      position: byPath.size,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt
+    });
+  }
+  return [...byPath.values()];
+}
+function projectCodexHistory(thread) {
+  if (!isRecord(thread) || typeof thread.id !== "string" || !Array.isArray(thread.turns))
+    return [];
+  const sessionId = `codex:${thread.id}`;
+  const output = [];
+  for (const turn of thread.turns) {
+    if (!isRecord(turn) || typeof turn.id !== "string" || !Array.isArray(turn.items))
+      continue;
+    for (let index = 0; index < turn.items.length; index += 1) {
+      const item = turn.items[index];
+      output.push(projectCodexItem(item, thread.id, turn.id, sessionId, index));
+    }
+  }
+  return output;
+}
+function projectCodexItem(value, threadId, turnId, sessionId, index) {
+  const item = isRecord(value) ? value : {};
+  const itemId = typeof item.id === "string" ? item.id : `${turnId}:${index}`;
+  const type = typeof item.type === "string" ? item.type : "unknown";
+  const base = {
+    id: `codex:${threadId}:${turnId}:${itemId}`,
+    sessionId,
+    backend: "codex",
+    nativeRef: { threadId, turnId, ...typeof item.id === "string" ? { itemId: item.id } : {} },
+    ...normalizeTimestamp(item.createdAt) > 0 ? { createdAt: normalizeTimestamp(item.createdAt) } : {}
+  };
+  if (type === "userMessage") {
+    const images = itemImages(item);
+    return {
+      ...base,
+      kind: "message",
+      role: "user",
+      text: itemText(item),
+      ...images.length === 0 ? {} : { images }
+    };
+  }
+  if (type === "agentMessage") {
+    const images = itemImages(item);
+    return {
+      ...base,
+      kind: "message",
+      role: "assistant",
+      text: itemText(item),
+      ...images.length === 0 ? {} : { images },
+      status: projectItemStatus(item.status)
+    };
+  }
+  if (type === "commandExecution") {
+    return { ...base, kind: "tool", text: commandExecutionText(item), status: projectItemStatus(item.status), details: { type } };
+  }
+  if (isToolItemType(type)) {
+    const images = toolItemImages(item);
+    return {
+      ...base,
+      kind: "tool",
+      text: toolCallText(item),
+      ...images.length === 0 ? {} : { images },
+      status: projectItemStatus(item.status),
+      details: { type }
+    };
+  }
+  if (type === "fileChange") {
+    return { ...base, kind: "file-change", text: fileChangeText(item.changes), status: projectItemStatus(item.status), details: { type } };
+  }
+  if (type === "plan" || type === "reasoning") {
+    return { ...base, kind: "status", text: itemText(item) ?? textArray(item.summary) ?? type, details: { type } };
+  }
+  if (type === "error")
+    return { ...base, kind: "error", text: itemText(item), status: "failed", details: { type } };
+  return { ...base, kind: "unknown", text: `Unsupported Codex item: ${type}`, details: { type } };
+}
+function requireProjectedThread(result) {
+  if (!isRecord(result))
+    throw invalidResponse("thread");
+  const session = projectCodexThread(result.thread);
+  if (session === void 0)
+    throw invalidResponse("thread");
+  return session;
+}
+function projectThreadStatus(value) {
+  if (!isRecord(value) || typeof value.type !== "string")
+    return "idle";
+  if (value.type === "systemError")
+    return "failed";
+  if (value.type !== "active")
+    return "idle";
+  return Array.isArray(value.activeFlags) && value.activeFlags.includes("waitingOnApproval") ? "waiting" : "running";
+}
+function projectItemStatus(value) {
+  if (value === "inProgress")
+    return "running";
+  if (value === "failed")
+    return "failed";
+  if (value === "declined")
+    return "declined";
+  return "completed";
+}
+function itemText(item) {
+  if (typeof item.text === "string")
+    return boundedText(item.text);
+  if (typeof item.content === "string")
+    return boundedText(item.content);
+  const content = Array.isArray(item.content) ? item.content : Array.isArray(item.input) ? item.input : void 0;
+  if (content === void 0)
+    return void 0;
+  const parts = content.flatMap((value) => {
+    if (typeof value === "string")
+      return [value];
+    if (!isRecord(value))
+      return [];
+    if (typeof value.text === "string")
+      return [value.text];
+    return typeof value.content === "string" ? [value.content] : [];
+  });
+  return parts.length > 0 ? boundedText(parts.join("\n")) : void 0;
+}
+function itemImages(item) {
+  const content = Array.isArray(item.content) ? item.content : Array.isArray(item.input) ? item.input : [];
+  return content.flatMap((value) => {
+    if (!isRecord(value) || !isImageContent(value))
+      return [];
+    const uri = imageDataUri(value);
+    if (uri === void 0)
+      return [];
+    return [{
+      uri,
+      ...typeof value.name === "string" && value.name.length > 0 ? { name: value.name } : {}
+    }];
+  });
+}
+function toolItemImages(item) {
+  const candidates = [
+    isRecord(item.result) ? item.result : void 0,
+    isRecord(item.output) ? item.output : void 0,
+    Array.isArray(item.contentItems) ? { content: item.contentItems } : void 0,
+    Array.isArray(item.output) ? { content: item.output } : void 0
+  ];
+  for (const candidate of candidates) {
+    if (candidate === void 0 || !Array.isArray(candidate.content))
+      continue;
+    const images = itemImages(candidate);
+    if (images.length > 0)
+      return images;
+  }
+  return [];
+}
+function isImageContent(value) {
+  return value.type === "image" || value.type === "input_image";
+}
+function imageDataUri(value) {
+  const url = typeof value.url === "string" ? value.url : typeof value.image_url === "string" ? value.image_url : isRecord(value.image_url) && typeof value.image_url.url === "string" ? value.image_url.url : void 0;
+  const parsed = url === void 0 ? void 0 : parseDataImageUrl(url);
+  if (parsed !== void 0)
+    return parsed.url;
+  if (typeof value.data !== "string" || !isCanonicalBase64(value.data))
+    return void 0;
+  const mediaType = typeof value.mediaType === "string" ? value.mediaType : typeof value.mimeType === "string" ? value.mimeType : sniffImageMediaType(value.data);
+  return mediaType !== void 0 && CODEX_IMAGE_MEDIA_TYPES.has(mediaType) ? `data:${mediaType};base64,${value.data}` : void 0;
+}
+function parseDataImageUrl(value) {
+  const match = DATA_IMAGE_URL.exec(value);
+  if (match === null)
+    return void 0;
+  const mediaType = match[1];
+  const data2 = match[2];
+  if (!CODEX_IMAGE_MEDIA_TYPES.has(mediaType) || !isCanonicalBase64(data2))
+    return void 0;
+  return { url: `data:${mediaType};base64,${data2}`, mediaType, data: data2 };
+}
+function isCanonicalBase64(value) {
+  return value.length >= 4 && value.length % 4 === 0 && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value);
+}
+function sniffImageMediaType(data2) {
+  const bytes = base64PrefixBytes(data2, 32);
+  if (bytes.length >= 8 && bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71 && bytes[4] === 13 && bytes[5] === 10 && bytes[6] === 26 && bytes[7] === 10)
+    return "image/png";
+  if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255)
+    return "image/jpeg";
+  if (bytes.length >= 6 && bytes[0] === 71 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 56 && (bytes[4] === 55 || bytes[4] === 57) && bytes[5] === 97)
+    return "image/gif";
+  if (bytes.length >= 12 && bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80)
+    return "image/webp";
+  return void 0;
+}
+function base64PrefixBytes(value, maxBytes) {
+  const chars = value.slice(0, Math.ceil(maxBytes / 3) * 4);
+  let binary;
+  try {
+    binary = atob(chars);
+  } catch {
+    return new Uint8Array();
+  }
+  const bytes = new Uint8Array(Math.min(binary.length, maxBytes));
+  for (let index = 0; index < bytes.length; index += 1)
+    bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+function isToolItemType(type) {
+  return type === "mcpToolCall" || type === "dynamicToolCall" || type === "functionCallOutput" || type === "hookPrompt" || type === "collabAgentToolCall" || type === "subAgentActivity" || type === "webSearch" || type === "imageView" || type === "imageGeneration" || type === "sleep" || type === "enteredReviewMode" || type === "exitedReviewMode" || type === "contextCompaction";
+}
+function toolLabel(item) {
+  if (typeof item.tool === "string")
+    return item.tool;
+  if (typeof item.server === "string" && typeof item.name === "string")
+    return `${item.server}: ${item.name}`;
+  if (typeof item.command === "string")
+    return item.command;
+  if (Array.isArray(item.command) && item.command.every((value) => typeof value === "string"))
+    return item.command.join(" ");
+  return typeof item.type === "string" ? item.type : void 0;
+}
+function commandExecutionText(item) {
+  const command = toolLabel(item);
+  const output = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : void 0;
+  if (command === void 0)
+    return output === void 0 ? void 0 : boundedText(output);
+  return boundedText(output === void 0 || output === "" ? command : `${command}
+
+${output}`);
+}
+function toolCallText(item) {
+  const type = typeof item.type === "string" ? item.type : void 0;
+  if (type === "webSearch") {
+    const count = Array.isArray(item.results) ? item.results.length : 0;
+    return count === 0 ? "Web search completed." : `Web search returned ${count} result${count === 1 ? "" : "s"}.`;
+  }
+  if (type === "imageView")
+    return `Viewed image: ${typeof item.path === "string" ? item.path : "image"}`;
+  if (type === "imageGeneration") {
+    return typeof item.savedPath === "string" ? `Generated image: ${item.savedPath}` : `Image generation ${typeof item.status === "string" ? item.status : "completed"}.`;
+  }
+  if (type === "contextCompaction")
+    return "CodeX compacted the conversation context.";
+  if (type === "enteredReviewMode" || type === "exitedReviewMode") {
+    const action = type === "enteredReviewMode" ? "Entered" : "Exited";
+    return `${action} review mode${typeof item.review === "string" ? `: ${item.review}` : "."}`;
+  }
+  if (type === "sleep")
+    return `Waited ${typeof item.durationMs === "number" && Number.isFinite(item.durationMs) ? item.durationMs : 0} ms.`;
+  if (type === "subAgentActivity") {
+    const kind = isRecord(item.kind) && typeof item.kind.type === "string" ? item.kind.type : typeof item.kind === "string" ? item.kind : "Subagent activity";
+    return [kind, typeof item.agentPath === "string" ? item.agentPath : void 0].filter((value) => value !== void 0).join(": ");
+  }
+  const label = toolLabel(item);
+  const error = compactUnknown(item.error);
+  const rawResult = item.result ?? item.contentItems;
+  const result = itemText(isRecord(rawResult) ? rawResult : {}) ?? (toolItemImages(item).length > 0 ? void 0 : compactUnknown(rawResult));
+  return boundedText([label, error, result].filter((value) => value !== void 0 && value !== "").join("\n\n")) || void 0;
+}
+function fileChangeText(value) {
+  if (!Array.isArray(value))
+    return "File changes";
+  const changes = value.flatMap((change) => {
+    if (!isRecord(change) || typeof change.path !== "string")
+      return [];
+    const kind = typeof change.kind === "string" ? change.kind : "update";
+    return [`[${kind}] ${change.path}`];
+  });
+  return boundedText(changes.length === 0 ? "File changes" : changes.join("\n"));
+}
+function textArray(value) {
+  return Array.isArray(value) && value.every((part) => typeof part === "string") ? boundedText(value.join("\n")) : void 0;
+}
+function compactUnknown(value) {
+  if (value === void 0 || value === null)
+    return void 0;
+  if (typeof value === "string")
+    return boundedText(value);
+  try {
+    return boundedText(JSON.stringify(value, void 0, 2));
+  } catch {
+    return void 0;
+  }
+}
+function boundedText(value) {
+  return value.length <= MAX_DISPLAY_ITEM_TEXT ? value : `${value.slice(0, MAX_DISPLAY_ITEM_TEXT)}
+\u2026`;
+}
+function normalizeWorkspacePath(value) {
+  return value.replace(/[\\/]+$/u, "") || value;
+}
+function isAbsoluteWorkspacePath(value) {
+  return value.startsWith("/") || /^\\\\[^\\]+\\[^\\]+/u.test(value) || /^[A-Za-z]:[\\/]/u.test(value);
+}
+function workspaceBasename(value) {
+  const normalized = normalizeWorkspacePath(value);
+  return normalized.split(/[\\/]/u).at(-1) || value;
+}
+function earliestTimestamp(left, right) {
+  if (left <= 0)
+    return right;
+  if (right <= 0)
+    return left;
+  return Math.min(left, right);
+}
+function hashWorkspacePath(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+function normalizeTimestamp(value) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+    return 0;
+  return value < 1e10 ? value * 1e3 : value;
+}
+function bytesToBase64(value) {
+  let binary = "";
+  for (let index = 0; index < value.length; index += 1)
+    binary += String.fromCharCode(value[index]);
+  return btoa(binary);
+}
+function base64ToBytes(value) {
+  let binary;
+  try {
+    binary = atob(value);
+  } catch {
+    throw invalidResponse("transfer data");
+  }
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1)
+    bytes[index] = binary.charCodeAt(index);
+  if (bytesToBase64(bytes) !== value)
+    throw invalidResponse("transfer data");
+  return bytes;
+}
+function invalidResponse(part) {
+  return new RemoteGatewayError("INVALID_MESSAGE", `The Host returned an invalid Codex ${part}.`);
+}
+function codexStreamCloseReason(value) {
+  return value === "cancelled" || value === "completed" || value === "failed" || value === "peer-disconnected" ? value : "failed";
+}
+function createCodexTransferId() {
+  if (globalThis.crypto?.randomUUID !== void 0)
+    return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues !== void 0) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1)
+      bytes[index] = Math.floor(Math.random() * 256);
+  }
+  bytes[6] = bytes[6] & 15 | 64;
+  bytes[8] = bytes[8] & 63 | 128;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// ../client-core/dist/index.js
+var RemoteClientError = class extends Error {
+  code;
+  constructor(code, message, options) {
+    super(message, options);
+    this.code = code;
+    this.name = "RemoteClientError";
+  }
+};
+var RemoteClientCore = class {
+  transport;
+  timeoutMs;
+  pending = /* @__PURE__ */ new Map();
+  eventHandlers = /* @__PURE__ */ new Set();
+  unsubscribeTransport;
+  unsubscribeClose;
+  closeHandlers = /* @__PURE__ */ new Set();
+  closeNotified = false;
+  constructor(transport, timeoutMs = 3e4) {
+    this.transport = transport;
+    this.timeoutMs = timeoutMs;
+  }
+  async connect() {
+    if (this.unsubscribeTransport !== void 0)
+      return;
+    this.closeNotified = false;
+    this.unsubscribeTransport = this.transport.onMessage((data2) => this.handleMessage(data2));
+    this.unsubscribeClose = this.transport.onClose?.(() => this.handleTransportClose());
+    try {
+      await this.transport.connect();
+    } catch (error) {
+      this.unsubscribeTransport();
+      this.unsubscribeTransport = void 0;
+      this.unsubscribeClose?.();
+      this.unsubscribeClose = void 0;
+      throw error;
+    }
+  }
+  async rpc(method, params, signal, options) {
+    if (signal?.aborted)
+      throw rpcAbortedError(method, signal.reason);
+    const timeoutMs = callTimeoutMs(this.timeoutMs, options);
+    const request = createRpcRequest(method, params);
+    const result = new Promise((resolve4, reject) => {
+      const timer = setTimeout(() => {
+        this.rejectPending(request.id, new RemoteClientError("RPC_TIMEOUT", `RPC ${method} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      const pending = {
+        method,
+        resolve: resolve4,
+        reject,
+        timer
+      };
+      if (signal !== void 0) {
+        const onAbort = () => {
+          if (this.pending.get(request.id) !== pending)
+            return;
+          this.rejectPending(request.id, rpcAbortedError(method, signal.reason));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        pending.removeAbort = () => signal.removeEventListener("abort", onAbort);
+      }
+      this.pending.set(request.id, pending);
+    });
+    try {
+      const send = this.transport.send(encodeMessage(request));
+      void send.catch((error) => {
+        this.rejectPending(request.id, transportSendError(error));
+      });
+    } catch (error) {
+      this.rejectPending(request.id, transportSendError(error));
+    }
+    return result;
+  }
+  onEvent(handler) {
+    this.eventHandlers.add(handler);
+    return () => this.eventHandlers.delete(handler);
+  }
+  onClose(handler) {
+    this.closeHandlers.add(handler);
+    return () => this.closeHandlers.delete(handler);
+  }
+  getStats() {
+    return this.transport.getStats();
+  }
+  async close() {
+    this.unsubscribeTransport?.();
+    this.unsubscribeTransport = void 0;
+    this.unsubscribeClose?.();
+    this.unsubscribeClose = void 0;
+    this.rejectAllPending((pending) => new RemoteClientError("CLIENT_CLOSED", `RPC ${pending.method} terminated because the remote client closed`));
+    this.notifyClose();
+    await this.transport.close();
+  }
+  handleTransportClose() {
+    this.rejectAllPending((pending) => new RemoteClientError("TRANSPORT_CLOSED", `RPC ${pending.method} terminated because the remote transport closed`));
+    this.notifyClose();
+  }
+  handleMessage(data2) {
+    const message = decodeMessage(data2);
+    if (message.type === "rpc.response")
+      this.handleResponse(message);
+    if (message.type === "rpc.error")
+      this.handleError(message);
+    if (message.type === "event") {
+      const event = message.payload;
+      for (const handler of this.eventHandlers)
+        handler(event);
+    }
+  }
+  handleResponse(message) {
+    const pending = this.takePending(message.payload.requestId);
+    if (pending === void 0)
+      return;
+    pending.resolve(message.payload.result);
+  }
+  handleError(message) {
+    const pending = this.takePending(message.payload.requestId);
+    if (pending === void 0)
+      return;
+    pending.reject(Object.assign(new Error(message.payload.message), { code: message.payload.code }));
+  }
+  takePending(requestId) {
+    const pending = this.pending.get(requestId);
+    if (pending === void 0)
+      return void 0;
+    this.pending.delete(requestId);
+    clearTimeout(pending.timer);
+    pending.removeAbort?.();
+    return pending;
+  }
+  rejectPending(requestId, error) {
+    const pending = this.takePending(requestId);
+    if (pending === void 0)
+      return false;
+    pending.reject(error);
+    return true;
+  }
+  rejectAllPending(createError) {
+    for (const requestId of [...this.pending.keys()]) {
+      const pending = this.takePending(requestId);
+      if (pending !== void 0)
+        pending.reject(createError(pending));
+    }
+  }
+  notifyClose() {
+    if (this.closeNotified)
+      return;
+    this.closeNotified = true;
+    for (const handler of this.closeHandlers)
+      handler();
+  }
+};
+function rpcAbortedError(method, reason) {
+  return new RemoteClientError("RPC_ABORTED", `RPC ${method} was aborted`, reason === void 0 ? void 0 : { cause: reason });
+}
+function callTimeoutMs(fallback, options) {
+  const timeoutMs = options?.timeoutMs;
+  if (typeof timeoutMs !== "number")
+    return fallback;
+  return Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 2147483647 ? timeoutMs : fallback;
+}
+function transportSendError(error) {
+  return error instanceof Error ? error : new Error("remote transport send failed", { cause: error });
+}
+
+// src/api-proxy-switch.ts
+var SWITCHED_DOMAINS = [
+  "sessions",
+  "subagents",
+  "host",
+  "workspace",
+  "skills",
+  "agentPresets",
+  "events",
+  "goals",
+  "llm",
+  "settings",
+  "credentials"
+];
+var ApiProxySwitch = class {
+  remote;
+  target;
+  mode = "local";
+  installed = false;
+  local;
+  originals;
+  localRespond;
+  constructor(local) {
+    this.local = local;
+    this.originals = new Map(SWITCHED_DOMAINS.map((domain) => [domain, local[domain]]));
+    this.localRespond = local.respond.bind(local);
+  }
+  install() {
+    if (this.installed) return;
+    for (const domain of SWITCHED_DOMAINS) {
+      const localDomain = this.local[domain];
+      const forwarder = new Proxy({}, {
+        get: (_target, key) => {
+          const selected = this.selected(domain);
+          const value = selected[key];
+          return typeof value === "function" ? value.bind(selected) : value;
+        }
+      });
+      Object.defineProperty(this.local, domain, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: forwarder
+      });
+    }
+    Object.defineProperty(this.local, "respond", {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: (...args) => this.mode === "remote" ? this.requireRemote().respond(...args) : this.localRespond(...args)
+    });
+    this.installed = true;
+  }
+  selectRemote(api, target2) {
+    if (!this.installed) throw new Error("The Harness API switch is not installed.");
+    this.remote = api;
+    this.target = { ...target2 };
+    this.mode = "remote";
+  }
+  selectLocal() {
+    this.mode = "local";
+    this.remote = void 0;
+    this.target = void 0;
+  }
+  status() {
+    return { mode: this.mode, ...this.target === void 0 ? {} : { target: { ...this.target } } };
+  }
+  restore() {
+    if (!this.installed) return;
+    this.selectLocal();
+    for (const [domain, value] of this.originals) Object.defineProperty(this.local, domain, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value
+    });
+    Object.defineProperty(this.local, "respond", {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: this.localRespond
+    });
+    this.installed = false;
+  }
+  selected(domain) {
+    if (this.mode === "local") return this.originalDomain(domain);
+    return this.requireRemote()[domain];
+  }
+  originalDomain(domain) {
+    return this.originals.get(domain);
+  }
+  requireRemote() {
+    if (this.remote === void 0) throw new Error("No remote Harness target is selected.");
+    return this.remote;
+  }
+};
 
 // src/client-secure-transport.ts
 var ClientSecureTransport = class {
@@ -14737,28 +16463,10 @@ function writeText(res, status2, body) {
   res.end(body);
 }
 
-// src/ids.ts
-import { randomBytes as randomBytes7 } from "node:crypto";
-function uuidV7(now = Date.now()) {
-  if (!Number.isSafeInteger(now) || now < 0 || now > 281474976710655) {
-    throw new RangeError("UUIDv7 timestamp must be a non-negative 48-bit integer");
-  }
-  const bytes = randomBytes7(16);
-  let timestamp = BigInt(now);
-  for (let index = 5; index >= 0; index -= 1) {
-    bytes[index] = Number(timestamp & 0xffn);
-    timestamp >>= 8n;
-  }
-  bytes[6] = 112 | bytes[6] & 15;
-  bytes[8] = 128 | bytes[8] & 63;
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
 // src/harness-version.ts
-import { readFile, realpath as realpathEntrypoint } from "node:fs/promises";
+import { readFile as readFile2, realpath as realpathEntrypoint } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname as dirname2, isAbsolute, join as join3 } from "node:path";
 var LEGACY_PLACEHOLDER_VERSION = "0.0.1";
 var HARNESS_PACKAGE_NAME = "@deepseek-ai/dsh";
 function normalizeHarnessVersion(value) {
@@ -14782,7 +16490,7 @@ function harnessSessionGeneration(version) {
 }
 async function readHarnessManifestVersion(manifestPath) {
   try {
-    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const manifest = JSON.parse(await readFile2(manifestPath, "utf8"));
     if (manifest.name !== HARNESS_PACKAGE_NAME) return void 0;
     return normalizeHarnessVersion(manifest.version);
   } catch {
@@ -14797,11 +16505,11 @@ async function readHarnessDistributionVersion(entrypoint = process.argv[1]) {
   } catch {
   }
   if (!isAbsolute(resolvedEntrypoint)) return void 0;
-  let directory = dirname(resolvedEntrypoint);
+  let directory = dirname2(resolvedEntrypoint);
   for (let depth = 0; depth < 8; depth += 1) {
-    const version = await readHarnessManifestVersion(join(directory, "package.json"));
+    const version = await readHarnessManifestVersion(join3(directory, "package.json"));
     if (version !== void 0) return version;
-    const parent = dirname(directory);
+    const parent = dirname2(directory);
     if (parent === directory) break;
     directory = parent;
   }
@@ -15269,8 +16977,7 @@ function normalizeByteResult(method, response) {
     ...response,
     result: {
       ...result,
-      value: { ...value, data: null },
-      attachments: [{ path: ["data"], bytes: data2 }]
+      value: { ...value, data: encodeBase64(data2) }
     }
   };
 }
@@ -18331,13 +20038,13 @@ function fail(code, message, details = {}) {
 }
 function failFrom(error) {
   const source = error instanceof Error ? error : new Error(String(error));
-  return fail(errorCode(source) ?? "internal", source.message, errorDetails(source));
+  return fail(errorCode3(source) ?? "internal", source.message, errorDetails(source));
 }
 function isLegacySessionHistoryUnsupported(error) {
   if (!(error instanceof Error)) return false;
-  return errorCode(error) === "METHOD_NOT_ALLOWED" || errorCode(error) === "METHOD_NOT_FOUND" || error.message.includes("The requested Codex method is not available over Remote.");
+  return errorCode3(error) === "METHOD_NOT_ALLOWED" || errorCode3(error) === "METHOD_NOT_FOUND" || error.message.includes("The requested Codex method is not available over Remote.");
 }
-function errorCode(error) {
+function errorCode3(error) {
   return "code" in error && typeof error.code === "string" ? error.code : void 0;
 }
 function errorDetails(error) {
@@ -18398,7 +20105,7 @@ function isoTime(value) {
 }
 function isProjectListUnsupported(error) {
   if (!(error instanceof Error)) return false;
-  const code = errorCode(error);
+  const code = errorCode3(error);
   return code === "METHOD_NOT_ALLOWED" || code === "METHOD_NOT_FOUND" || code === "CODEX_UPSTREAM_ERROR" || error.message.includes("The requested Codex method is not available over Remote.");
 }
 function basename(path) {
@@ -18475,757 +20182,6 @@ function normalizeByteResult2(endpoint, result) {
     value: { ...value, data: null },
     attachments: [{ path: ["data"], bytes: data2 }]
   };
-}
-
-// src/server-api.ts
-import { platform } from "node:os";
-
-// src/server-credentials.ts
-import { chmod, mkdir, readFile as readFile2, rm as rm2, stat as stat2, writeFile } from "node:fs/promises";
-import { dirname as dirname2, join as join3 } from "node:path";
-
-// src/atomic-file.ts
-import { readdir, rename, rm, stat } from "node:fs/promises";
-import { join as join2 } from "node:path";
-var TRANSIENT_REPLACE_CODES = /* @__PURE__ */ new Set(["EPERM", "EBUSY", "EACCES"]);
-var REPLACE_RETRY_DELAYS_MS = [20, 40, 80, 160, 320];
-var TEMPORARY_NAME = /\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/iu;
-var STALE_TEMPORARY_AGE_MS = 10 * 60 * 1e3;
-async function replaceFile(temporary, target2, options = {}) {
-  const delays = options.delaysMs ?? REPLACE_RETRY_DELAYS_MS;
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await rename(temporary, target2);
-      return;
-    } catch (error) {
-      const delay = delays[attempt];
-      if (delay === void 0 || !TRANSIENT_REPLACE_CODES.has(errorCode2(error) ?? "")) throw error;
-      await sleep2(delay);
-    }
-  }
-}
-async function sweepStaleTemporaries(directory, options = {}) {
-  const maxAgeMs = options.maxAgeMs ?? STALE_TEMPORARY_AGE_MS;
-  const removed = [];
-  let entries;
-  try {
-    entries = await readdir(directory);
-  } catch {
-    return removed;
-  }
-  for (const entry of entries) {
-    if (!TEMPORARY_NAME.test(entry)) continue;
-    const path = join2(directory, entry);
-    try {
-      const info = await stat(path);
-      if (!info.isFile() || Date.now() - info.mtimeMs < maxAgeMs) continue;
-      await rm(path, { force: true });
-      removed.push(path);
-    } catch {
-    }
-  }
-  return removed;
-}
-function errorCode2(error) {
-  if (typeof error !== "object" || error === null || !("code" in error)) return void 0;
-  const code = error.code;
-  return typeof code === "string" ? code : void 0;
-}
-function sleep2(ms) {
-  return new Promise((resolve4) => {
-    setTimeout(resolve4, ms);
-  });
-}
-
-// src/server-credentials.ts
-var credentialSchema = external_exports.object({
-  schemaVersion: external_exports.literal(1),
-  serverUrl: external_exports.string().url(),
-  deviceId: external_exports.string().min(1),
-  authorizationMethod: external_exports.enum(["account", "host_registration_code", "owned_device"]),
-  account: external_exports.string().min(1).max(254).optional(),
-  accessToken: external_exports.string().min(16),
-  accessTokenExpiresAt: external_exports.number().int().positive(),
-  refreshToken: external_exports.string().min(16),
-  refreshTokenExpiresAt: external_exports.number().int().positive()
-}).strict();
-var ServerCredentialStore = class {
-  path;
-  constructor(directory) {
-    this.path = join3(directory, "server-credentials.json");
-  }
-  /** Serialize the complete read/refresh/write transaction across processes.
-   * Never steal an old lock: a suspended owner may still consume a one-use token.
-   * After a crash, stop all instances before removing the orphaned lock.
-   */
-  async withRefreshLock(operation) {
-    const lock = `${this.path}.refresh-lock`;
-    await mkdir(dirname2(this.path), { recursive: true, mode: 448 });
-    const deadline = Date.now() + 15e3;
-    for (; ; ) {
-      try {
-        await mkdir(lock, { mode: 448 });
-        break;
-      } catch (error) {
-        if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
-        if (Date.now() >= deadline) throw new ServerCredentialsBusyError();
-        await new Promise((resolve4) => setTimeout(resolve4, 50));
-      }
-    }
-    try {
-      return await operation();
-    } finally {
-      await rm2(lock, { recursive: true });
-    }
-  }
-  async load(serverUrl, deviceId) {
-    if (!await exists(this.path)) return void 0;
-    await assertPrivateMode(this.path);
-    let parsed;
-    try {
-      parsed = credentialSchema.parse(JSON.parse(await readFile2(this.path, "utf8")));
-    } catch (error) {
-      throw new ServerCredentialsInvalidError(`server credentials are invalid: ${safeMessage(error)}`);
-    }
-    return parsed.serverUrl === serverUrl && parsed.deviceId === deviceId ? parsed : void 0;
-  }
-  async save(credentials) {
-    const record7 = credentialSchema.parse({ schemaVersion: 1, ...credentials });
-    await atomicWrite(this.path, `${JSON.stringify(record7, null, 2)}
-`);
-    return record7;
-  }
-  async clear() {
-    await rm2(this.path, { force: true });
-  }
-};
-var ServerCredentialsInvalidError = class extends Error {
-  code = "SERVER_CREDENTIALS_INVALID";
-};
-var ServerCredentialsBusyError = class extends Error {
-  code = "SERVER_CREDENTIALS_BUSY";
-  constructor() {
-    super("Credential refresh is locked. Stop other instances; after a crash, stop all instances before removing server-credentials.json.refresh-lock and authorizing again.");
-  }
-};
-async function atomicWrite(path, contents) {
-  const directory = dirname2(path);
-  await mkdir(directory, { recursive: true, mode: 448 });
-  await sweepStaleTemporaries(directory);
-  const temporary = `${path}.${process.pid}.${uuidV7()}.tmp`;
-  await writeFile(temporary, contents, { encoding: "utf8", mode: 384, flag: "wx" });
-  await chmod(temporary, 384);
-  await replaceFile(temporary, path);
-  await chmod(path, 384);
-}
-async function assertPrivateMode(path) {
-  if (process.platform === "win32") return;
-  const mode = (await stat2(path)).mode & 511;
-  if ((mode & 63) !== 0) throw new ServerCredentialsInvalidError("server credentials permissions must be 0600");
-}
-async function exists(path) {
-  try {
-    await stat2(path);
-    return true;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
-    throw error;
-  }
-}
-function safeMessage(error) {
-  return error instanceof Error ? error.message : "invalid credential data";
-}
-
-// src/config.ts
-import { hostname } from "node:os";
-import s from "@deepseek-ai/schemastery";
-
-// src/defaults.ts
-var DEFAULT_REMOTE_SERVER_URL = "https://sakakibara.ink:8443";
-
-// src/config.ts
-var entryConfigSchema = s.object({
-  enabled: s.boolean(),
-  role: s.union(["host", "client", "both"]),
-  serverUrl: s.string(),
-  deviceName: s.string(),
-  terminal: s.object({ enabled: s.boolean() }),
-  hostControl: s.object({ enabled: s.boolean(), paused: s.boolean() }),
-  loopback: s.object({ ports: s.array(s.number()) }),
-  forceRelay: s.boolean(),
-  logLevel: s.union(["debug", "info", "warn", "error"]),
-  reconnect: s.union([
-    s.boolean(),
-    s.object({
-      initialDelayMs: s.number(),
-      maxDelayMs: s.number(),
-      jitter: s.number()
-    })
-  ]),
-  codex: s.object({
-    enabled: s.boolean(),
-    binary: s.string()
-  }),
-  acp: s.object({ enabled: s.boolean(), backends: s.array(s.object({ id: s.string(), enabled: s.boolean(), command: s.string(), args: s.array(s.string()), cwd: s.string() })) })
-});
-function withVolatileSchema(schema) {
-  const volatile = schema.volatile;
-  return typeof volatile === "function" ? volatile.call(schema) : schema;
-}
-var Config = withVolatileSchema(entryConfigSchema);
-var reconnectSchema = external_exports.union([
-  external_exports.boolean(),
-  external_exports.object({
-    initialDelayMs: external_exports.number().int().min(100).max(6e4).optional(),
-    maxDelayMs: external_exports.number().int().min(1e3).max(3e5).optional(),
-    jitter: external_exports.number().min(0).max(1).optional()
-  }).strict()
-]);
-var configSchema = external_exports.object({
-  enabled: external_exports.boolean().optional(),
-  role: external_exports.enum(["host", "client", "both"]).optional(),
-  serverUrl: external_exports.string().url().optional(),
-  deviceName: external_exports.string().trim().min(1).max(80).optional(),
-  terminal: external_exports.object({ enabled: external_exports.boolean().optional() }).strict().optional(),
-  hostControl: external_exports.object({ enabled: external_exports.boolean().optional(), paused: external_exports.boolean().optional() }).strict().optional(),
-  loopback: external_exports.object({ ports: external_exports.array(external_exports.number().int().min(1024).max(65535)).max(16).optional() }).strict().optional(),
-  forceRelay: external_exports.boolean().optional(),
-  logLevel: external_exports.enum(["debug", "info", "warn", "error"]).optional(),
-  reconnect: reconnectSchema.optional(),
-  codex: external_exports.object({
-    enabled: external_exports.boolean().optional(),
-    binary: external_exports.string().trim().min(1).max(4096).optional()
-  }).strict().optional(),
-  acp: external_exports.object({ enabled: external_exports.boolean().optional(), backends: external_exports.array(external_exports.object({ id: external_exports.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,31}$/i), enabled: external_exports.boolean().optional(), command: external_exports.string().trim().min(1).max(4096).optional(), args: external_exports.array(external_exports.string().max(4096)).max(32).optional(), cwd: external_exports.string().max(4096).optional() }).strict()).max(12).optional(), backend: external_exports.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,31}$/i).optional(), command: external_exports.string().trim().min(1).max(4096).optional(), args: external_exports.array(external_exports.string().max(4096)).max(32).optional(), cwd: external_exports.string().max(4096).optional() }).strict().optional()
-}).strict();
-function resolveConfig(input2 = {}, env = process.env) {
-  const parsed = configSchema.parse(input2);
-  const reconnect = typeof parsed.reconnect === "object" ? parsed.reconnect : {};
-  const configuredServerUrl = parsed.serverUrl ?? env.DSH_REMOTE_SERVER;
-  const serverUrl = configuredServerUrl === void 0 ? void 0 : normalizeServerUrl(configuredServerUrl);
-  const initialDelayMs = reconnect.initialDelayMs ?? 1e3;
-  const maxDelayMs = reconnect.maxDelayMs ?? 3e4;
-  if (maxDelayMs < initialDelayMs) {
-    throw new TypeError("reconnect.maxDelayMs must be greater than or equal to reconnect.initialDelayMs");
-  }
-  return {
-    enabled: parsed.enabled ?? true,
-    role: parsed.role ?? "host",
-    ...serverUrl === void 0 ? {} : { serverUrl },
-    deviceName: parsed.deviceName ?? hostname(),
-    // `paused` keeps this machine unreachable without releasing its credentials:
-    // it must survive a restart, or "do not connect me" would quietly expire.
-    hostControl: { enabled: parsed.hostControl?.enabled ?? true, paused: parsed.hostControl?.paused ?? false },
-    terminal: { enabled: parsed.terminal?.enabled ?? (env.DSH_REMOTE_TERMINAL_ENABLED === void 0 || env.DSH_REMOTE_TERMINAL_ENABLED === "true") },
-    loopback: { ports: [...new Set(parsed.loopback?.ports ?? [])] },
-    forceRelay: parsed.forceRelay ?? false,
-    logLevel: parsed.logLevel ?? "info",
-    reconnect: {
-      enabled: parsed.reconnect !== false,
-      initialDelayMs,
-      maxDelayMs,
-      jitter: reconnect.jitter ?? 0.2
-    },
-    codex: {
-      enabled: parsed.codex?.enabled ?? true,
-      binary: parsed.codex?.binary ?? "codex"
-    },
-    acp: { enabled: parsed.acp?.enabled ?? true, backends: [.../* @__PURE__ */ new Set(["codex", "cursor", "kimi", ...parsed.acp?.backends?.map((item) => item.id) ?? []])].map((id4) => {
-      const d = parsed.acp?.backends?.find((x) => x.id === id4);
-      const legacy = parsed.acp?.backend === id4 ? parsed.acp : void 0;
-      return { id: id4, enabled: d?.enabled ?? legacy?.enabled ?? true, command: d?.command ?? legacy?.command ?? { codex: "codex", cursor: "agent", kimi: "kimi" }[id4] ?? id4, args: d?.args ?? legacy?.args ?? ["acp"], ...d?.cwd ?? legacy?.cwd ? { cwd: d?.cwd ?? legacy?.cwd } : {} };
-    }) }
-  };
-}
-function normalizeServerUrl(value) {
-  const url = new URL(value);
-  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1";
-  if (url.protocol !== "https:" && !(local && url.protocol === "http:")) {
-    throw new TypeError("serverUrl must use HTTPS (HTTP is allowed only for localhost)");
-  }
-  if (url.username !== "" || url.password !== "") {
-    throw new TypeError("serverUrl must not contain credentials");
-  }
-  if (url.search !== "" || url.hash !== "") {
-    throw new TypeError("serverUrl must not contain query parameters or fragments");
-  }
-  if (url.pathname !== "" && url.pathname !== "/") {
-    throw new TypeError("serverUrl must be an origin without a path");
-  }
-  return url.origin;
-}
-
-// src/version.ts
-var PLUGIN_VERSION = "0.4.31";
-
-// src/server-api.ts
-var ENABLED_QR_PROVIDERS = ["github"];
-function isEnabledQrProvider(value) {
-  return ENABLED_QR_PROVIDERS.includes(value);
-}
-function oauthProviderName(provider) {
-  return provider === "github" ? "GitHub" : provider === "zhihu" ? "Zhihu" : "WeChat";
-}
-var TERMINAL_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/u;
-var HostServerApi = class {
-  constructor(serverUrl, store, fetchImplementation = fetch, role = "host") {
-    this.store = store;
-    this.fetchImplementation = fetchImplementation;
-    this.role = role;
-    this.baseUrl = normalizeServerUrl(serverUrl);
-  }
-  baseUrl;
-  identity;
-  credentials;
-  credentialsPromise;
-  harnessVersion;
-  bindIdentity(identity) {
-    this.identity = identity;
-  }
-  setHarnessVersion(version) {
-    this.harnessVersion = version;
-  }
-  currentAuthorization() {
-    if (this.credentials === void 0) return void 0;
-    return {
-      method: this.credentials.authorizationMethod,
-      ...this.credentials.account === void 0 ? {} : { account: this.credentials.account }
-    };
-  }
-  /** Check the persisted device credential without issuing or refreshing one. */
-  async hasStoredAuthorization() {
-    const identity = this.requireIdentity();
-    return await this.store.load(this.baseUrl, identity.deviceId) !== void 0;
-  }
-  async clearAuthorization() {
-    this.credentials = void 0;
-    this.credentialsPromise = void 0;
-    await this.store.clear();
-  }
-  async revokeCurrentDevice() {
-    const identity = this.requireIdentity();
-    if (await this.store.load(this.baseUrl, identity.deviceId) === void 0) {
-      await this.clearAuthorization();
-      return;
-    }
-    try {
-      await this.request("/api/v1/devices/self", { method: "DELETE" });
-    } finally {
-      await this.clearAuthorization();
-    }
-  }
-  async authorizeWithAccount(identity, email, password) {
-    this.bindIdentity(identity);
-    const account = email.trim();
-    if (account.length === 0 || password.length === 0) {
-      throw new ServerApiError("INVALID_MESSAGE", "Email and password are required.", false);
-    }
-    const login2 = validateWebLogin(await this.publicRequest("/api/v1/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ email: account, password })
-    }));
-    await this.register(identity, {
-      accountToken: login2.token,
-      account: login2.account,
-      authorizationMethod: "account"
-    });
-    return {
-      method: "account",
-      account: login2.account,
-      expiresAt: login2.expiresAt,
-      isAdmin: login2.isAdmin
-    };
-  }
-  /**
-   * Authorize this device with the DSH DeepSeek account grant.
-   *
-   * The grant is forwarded once so the Server can ask the account platform who
-   * it belongs to; the Server then discards it and issues its own account
-   * session, exactly like a password sign-in.
-   */
-  async authorizeWithDeepSeek(identity, token) {
-    this.bindIdentity(identity);
-    if (token.trim().length === 0) {
-      throw new ServerApiError("INVALID_MESSAGE", "A DeepSeek account grant is required.", false);
-    }
-    const login2 = validateWebLogin(await this.publicRequest("/api/v1/auth/deepseek", {
-      method: "POST",
-      body: JSON.stringify({ token })
-    }));
-    await this.register(identity, {
-      accountToken: login2.token,
-      account: login2.account,
-      authorizationMethod: "account"
-    });
-    return {
-      method: "account",
-      account: login2.account,
-      expiresAt: login2.expiresAt,
-      isAdmin: login2.isAdmin
-    };
-  }
-  async startOAuthQrLogin(provider = "wechat") {
-    const value = requireRecord(await this.publicRequest(`/api/v1/auth/oauth/qr/start?provider=${provider}`, {
-      method: "POST",
-      body: "{}"
-    }), "QR login");
-    const scanUrl = normalizeOAuthScanUrl(value.scanUrl, this.baseUrl);
-    if (typeof value.qrId !== "string" || value.qrId.length < 20 || scanUrl === void 0 || !Number.isSafeInteger(value.expiresIn) || value.provider !== void 0 && value.provider !== provider) {
-      throw new ServerApiError("INVALID_MESSAGE", "The Server returned an invalid QR login session.", false);
-    }
-    return { qrId: value.qrId, scanUrl, expiresIn: value.expiresIn };
-  }
-  async pollOAuthQrLogin(identity, qrId, recoverIdentity) {
-    this.bindIdentity(identity);
-    const value = requireRecord(await this.publicRequest(
-      `/api/v1/auth/oauth/qr/${encodeURIComponent(qrId)}`,
-      { method: "GET" }
-    ), "QR login status");
-    if (value.status === "pending" || value.status === "expired") return { status: value.status };
-    if (value.status !== "complete" || typeof value.token !== "string" || value.token.length < 16) {
-      throw new ServerApiError("INVALID_MESSAGE", "The Server returned an invalid QR login status.", false);
-    }
-    const account = requireRecord(await this.publicRequest(
-      "/api/v1/auth/me",
-      { method: "GET" },
-      value.token
-    ), "account profile");
-    if (typeof account.account !== "string" || account.account.length === 0 || typeof account.isAdmin !== "boolean") {
-      throw new ServerApiError("INVALID_MESSAGE", "The Server returned an invalid account profile.", false);
-    }
-    const authorization = {
-      accountToken: value.token,
-      account: account.account,
-      authorizationMethod: "account"
-    };
-    try {
-      await this.register(identity, authorization);
-    } catch (error) {
-      if (!(error instanceof ServerApiError) || error.code !== "DEVICE_REVOKED" || recoverIdentity === void 0) throw error;
-      const nextIdentity = await recoverIdentity();
-      this.bindIdentity(nextIdentity);
-      await this.register(nextIdentity, authorization);
-    }
-    return {
-      status: "complete",
-      authorization: { method: "account", account: account.account, isAdmin: account.isAdmin }
-    };
-  }
-  async authorizeHostWithCode(identity, code) {
-    if (this.role !== "host") {
-      throw new ServerApiError("METHOD_NOT_ALLOWED", "Host registration codes can only authorize a Host device.", false);
-    }
-    const registrationCode = code.trim().toUpperCase();
-    if (registrationCode.length === 0) {
-      throw new ServerApiError("INVALID_MESSAGE", "A Host registration code is required.", false);
-    }
-    this.bindIdentity(identity);
-    const tokens = await this.publicRequest("/api/v1/devices/register-with-code", {
-      method: "POST",
-      body: JSON.stringify({ v: 1, code: registrationCode, device: this.deviceDescriptor(identity) })
-    });
-    this.credentials = await this.saveTokens(identity, validateTokens(tokens), {
-      authorizationMethod: "host_registration_code"
-    });
-    return { method: "host_registration_code" };
-  }
-  async authorizeOwnedRole(identity, authorizingAccessToken, account) {
-    this.bindIdentity(identity);
-    const tokens = await this.publicRequest("/api/v1/devices/register-owned-role", {
-      method: "POST",
-      body: JSON.stringify({ v: 1, device: this.deviceDescriptor(identity) })
-    }, authorizingAccessToken);
-    this.credentials = await this.saveTokens(identity, validateTokens(tokens), {
-      authorizationMethod: "owned_device",
-      ...account === void 0 ? {} : { account }
-    });
-    return {
-      method: "owned_device",
-      ...account === void 0 ? {} : { account }
-    };
-  }
-  async authenticate(identity = this.requireIdentity()) {
-    this.bindIdentity(identity);
-    if (this.credentials !== void 0 && this.credentials.accessTokenExpiresAt > Date.now() + 3e4) {
-      return this.credentials;
-    }
-    this.credentialsPromise ??= this.loadOrIssue(identity).finally(() => {
-      this.credentialsPromise = void 0;
-    });
-    this.credentials = await this.credentialsPromise;
-    return this.credentials;
-  }
-  async refreshCredentials(rejectedAccessToken = this.credentials?.accessToken) {
-    const identity = this.requireIdentity();
-    this.credentials = await this.withRefreshLock(async () => {
-      const stored = await this.store.load(this.baseUrl, identity.deviceId);
-      if (stored === void 0 || stored.refreshTokenExpiresAt <= Date.now()) return this.register(identity);
-      if (stored.accessToken !== rejectedAccessToken && stored.accessTokenExpiresAt > Date.now() + 3e4) {
-        return stored;
-      }
-      return this.rotateCredentials(identity, stored);
-    });
-    return this.credentials;
-  }
-  async withRefreshLock(operation) {
-    try {
-      return await this.store.withRefreshLock(operation);
-    } catch (error) {
-      if (error instanceof ServerCredentialsBusyError) {
-        throw new ServerApiError(error.code, error.message, false);
-      }
-      throw error;
-    }
-  }
-  async rotateCredentials(identity, stored) {
-    let tokens;
-    try {
-      tokens = await this.publicRequest("/api/v1/auth/refresh", {
-        method: "POST",
-        body: JSON.stringify({ deviceId: identity.deviceId, refreshToken: stored.refreshToken })
-      });
-    } catch (error) {
-      if (error instanceof ServerApiError) {
-        throw new ServerApiError(error.code, error.message, error.retryable, error.status, "credential_refresh");
-      }
-      throw error;
-    }
-    return this.store.save({
-      serverUrl: this.baseUrl,
-      deviceId: identity.deviceId,
-      authorizationMethod: stored.authorizationMethod,
-      ...stored.account === void 0 ? {} : { account: stored.account },
-      ...validateTokens(tokens)
-    });
-  }
-  async listDevices() {
-    const result = await this.request("/api/v1/devices");
-    if (!Array.isArray(result.items)) throw new ServerApiError("INVALID_MESSAGE", "The Server returned an invalid device list.", false);
-    return result.items.map(parseHostDevice);
-  }
-  async deviceFor(peerDeviceId) {
-    const result = await this.request(`/api/v1/devices/${encodeURIComponent(peerDeviceId)}`);
-    return parseAuthorizedPeer(result);
-  }
-  async turnCredentials(connectionId) {
-    const result = await this.request(
-      `/api/v1/turn/credentials?connection_id=${encodeURIComponent(connectionId)}`
-    );
-    if (!Array.isArray(result.iceServers)) return [];
-    return result.iceServers.map(parseIceServer);
-  }
-  async presenceFor(deviceId) {
-    const result = await this.request(`/api/v1/devices/${encodeURIComponent(deviceId)}/presence`);
-    if (typeof result.online !== "boolean" || result.lastSeenAt !== null && result.lastSeenAt !== void 0 && !Number.isSafeInteger(result.lastSeenAt)) {
-      throw new ServerApiError("INVALID_MESSAGE", "The Server returned invalid device presence.", false);
-    }
-    return { online: result.online, ...typeof result.lastSeenAt === "number" ? { lastSeenAt: result.lastSeenAt } : {} };
-  }
-  async loadOrIssue(identity) {
-    return this.withRefreshLock(async () => {
-      const stored = await this.store.load(this.baseUrl, identity.deviceId);
-      if (stored === void 0 || stored.refreshTokenExpiresAt <= Date.now() + 3e4) {
-        return this.register(identity);
-      }
-      if (stored.accessTokenExpiresAt > Date.now() + 3e4) return stored;
-      return this.rotateCredentials(identity, stored);
-    });
-  }
-  async register(identity, authorization) {
-    const tokens = await this.publicRequest("/api/v1/devices/register", {
-      method: "POST",
-      body: JSON.stringify({
-        v: 1,
-        device: this.deviceDescriptor(identity)
-      })
-    }, authorization?.accountToken);
-    this.credentials = await this.saveTokens(identity, validateTokens(tokens), {
-      authorizationMethod: authorization?.authorizationMethod ?? "account",
-      ...authorization?.account === void 0 ? {} : { account: authorization.account }
-    });
-    return this.credentials;
-  }
-  deviceDescriptor(identity) {
-    return {
-      deviceId: identity.deviceId,
-      name: identity.name,
-      role: this.role,
-      platform: platform(),
-      identityKey: identity.publicKey,
-      clientVersion: PLUGIN_VERSION,
-      ...this.role === "host" && this.harnessVersion !== void 0 ? { harnessVersion: this.harnessVersion } : {}
-    };
-  }
-  saveTokens(identity, tokens, authorization) {
-    return this.store.save({
-      serverUrl: this.baseUrl,
-      deviceId: identity.deviceId,
-      authorizationMethod: authorization.authorizationMethod,
-      ...authorization.account === void 0 ? {} : { account: authorization.account },
-      ...tokens
-    });
-  }
-  async request(path, init = {}) {
-    const credentials = await this.authenticate();
-    return this.publicRequest(path, init, credentials.accessToken);
-  }
-  async publicRequest(path, init, accessToken) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1e4);
-    let response;
-    try {
-      response = await this.fetchImplementation(`${this.baseUrl}${path}`, {
-        ...init,
-        signal: controller.signal,
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-          ...accessToken === void 0 ? {} : { Authorization: `Bearer ${accessToken}` },
-          ...init.headers
-        }
-      });
-    } catch (error) {
-      throw new ServerApiError("CONNECTION_FAILED", error instanceof Error ? error.message : "Server request failed.", true);
-    } finally {
-      clearTimeout(timer);
-    }
-    const body = await parseBody(response);
-    if (!response.ok) {
-      const envelope = body ?? {};
-      throw new ServerApiError(
-        typeof envelope.error?.code === "string" ? envelope.error.code : mapStatus(response.status),
-        typeof envelope.error?.message === "string" ? envelope.error.message : "The Server rejected the request.",
-        envelope.error?.retryable === true || response.status >= 500,
-        response.status
-      );
-    }
-    return body;
-  }
-  requireIdentity() {
-    if (this.identity === void 0) throw new ServerApiError("IDENTITY_INVALID", "The device identity is not loaded.", false);
-    return this.identity;
-  }
-};
-function normalizeOAuthScanUrl(value, baseUrl) {
-  if (typeof value !== "string" || TERMINAL_CONTROL_CHARACTERS.test(value)) return void 0;
-  try {
-    const normalized = new URL(value);
-    if (normalized.protocol === "https:") return normalized.href;
-    if (normalized.protocol !== "http:") return void 0;
-    const server = new URL(baseUrl);
-    const loopback = server.hostname === "localhost" || server.hostname === "127.0.0.1" || server.hostname === "::1";
-    return loopback ? normalized.href : void 0;
-  } catch {
-    return void 0;
-  }
-}
-var ClientServerApi = class extends HostServerApi {
-  constructor(serverUrl, store, fetchImplementation = fetch) {
-    super(serverUrl, store, fetchImplementation, "client");
-  }
-};
-var ServerApiError = class extends Error {
-  constructor(code, message, retryable, status2, phase) {
-    super(message);
-    this.code = code;
-    this.retryable = retryable;
-    this.status = status2;
-    this.phase = phase;
-  }
-};
-function validateTokens(value) {
-  const parsed = deviceTokenPairSchema.safeParse(value);
-  if (!parsed.success) {
-    throw new ServerApiError("INVALID_MESSAGE", "The Server returned invalid device credentials.", false);
-  }
-  return parsed.data;
-}
-function validateWebLogin(value) {
-  const item = requireRecord(value, "account login");
-  if (typeof item.token !== "string" || item.token.length < 16 || !Number.isSafeInteger(item.expiresAt) || typeof item.account !== "string" || item.account.length === 0 || item.account.length > 254 || typeof item.isAdmin !== "boolean") {
-    throw new ServerApiError("INVALID_MESSAGE", "The Server returned an invalid account session.", false);
-  }
-  return {
-    token: item.token,
-    expiresAt: item.expiresAt,
-    account: item.account,
-    profile: item.profile,
-    isAdmin: item.isAdmin
-  };
-}
-async function parseBody(response) {
-  const text = await response.text();
-  if (text.length === 0) return void 0;
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new ServerApiError("INVALID_MESSAGE", "The Server returned invalid JSON.", false, response.status);
-  }
-}
-function mapStatus(status2) {
-  if (status2 === 401) return "AUTH_INVALID";
-  if (status2 === 403) return "AUTH_REQUIRED";
-  if (status2 === 404) return "DEVICE_NOT_FOUND";
-  if (status2 === 429) return "RATE_LIMITED";
-  return status2 >= 500 ? "CONNECTION_FAILED" : "INVALID_MESSAGE";
-}
-function parseHostDevice(value) {
-  const item = requireRecord(value, "host device");
-  if (item.role !== "host" || typeof item.deviceId !== "string" || typeof item.name !== "string" || typeof item.platform !== "string" || typeof item.membershipId !== "string" || item.membershipId.length === 0) {
-    throw new ServerApiError("INVALID_MESSAGE", "The Server returned invalid host device data.", false);
-  }
-  return {
-    deviceId: item.deviceId,
-    name: item.name,
-    platform: item.platform,
-    membershipId: item.membershipId,
-    ...typeof item.online === "boolean" ? { online: item.online } : {},
-    ...typeof item.lastSeenAt === "number" && Number.isSafeInteger(item.lastSeenAt) ? { lastSeenAt: item.lastSeenAt } : {},
-    ...typeof item.clientVersion === "string" ? { clientVersion: item.clientVersion } : {},
-    ...typeof item.harnessVersion === "string" ? { harnessVersion: item.harnessVersion } : {}
-  };
-}
-function parseAuthorizedPeer(value) {
-  const item = requireRecord(value, "authorized peer");
-  if (item.role !== "host" && item.role !== "client" || typeof item.deviceId !== "string" || item.deviceId.length === 0 || typeof item.name !== "string" || item.name.length === 0 || typeof item.platform !== "string" || item.platform.length === 0 || typeof item.identityKey !== "string" || !isIdentityKey(item.identityKey) || typeof item.membershipId !== "string" || item.membershipId.length === 0) {
-    throw new ServerApiError("INVALID_MESSAGE", "The Server returned invalid authorized peer data.", false);
-  }
-  return {
-    deviceId: item.deviceId,
-    name: item.name,
-    role: item.role,
-    platform: item.platform,
-    identityKey: item.identityKey,
-    membershipId: item.membershipId,
-    ...typeof item.online === "boolean" ? { online: item.online } : {},
-    ...typeof item.lastSeenAt === "number" && Number.isSafeInteger(item.lastSeenAt) ? { lastSeenAt: item.lastSeenAt } : {}
-  };
-}
-function parseIceServer(value) {
-  const item = requireRecord(value, "ICE server");
-  const urls = item.urls;
-  if (typeof urls !== "string" && !(Array.isArray(urls) && urls.every((url) => typeof url === "string"))) {
-    throw new ServerApiError("INVALID_MESSAGE", "The Server returned an invalid ICE server.", false);
-  }
-  return {
-    urls,
-    ...typeof item.username === "string" ? { username: item.username } : {},
-    ...typeof item.credential === "string" ? { credential: item.credential } : {}
-  };
-}
-function isIdentityKey(value) {
-  try {
-    const decoded = fromBase64Url2(value);
-    return decoded.length === 32 && toBase64Url2(decoded) === value;
-  } catch {
-    return false;
-  }
-}
-function requireRecord(value, name2) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new ServerApiError("INVALID_MESSAGE", `The Server returned invalid ${name2} data.`, false);
-  }
-  return value;
 }
 
 // src/typert-gateway-switch.ts
@@ -20636,16 +21592,11 @@ var CREDENTIAL_FAILURE_CODES = /* @__PURE__ */ new Set([
   "DEVICE_REVOKED",
   "MEMBERSHIP_REQUIRED"
 ]);
-var LIVENESS_INTERVAL_MS = 3e4;
-var FAST_RECONNECT_INTERVAL_MS = 5e3;
-var LIVENESS_TIMEOUT_MS = 4e3;
-var LIVENESS_TOLERATED_FAILURES = 2;
-var NO_ANSWER_CODES = /* @__PURE__ */ new Set(["RPC_TIMEOUT", "CLIENT_CLOSED", "TRANSPORT_CLOSED", "RPC_ABORTED"]);
-function livenessProbeLost(error) {
-  const code = typeof error === "object" && error !== null && "code" in error ? error.code : void 0;
-  if (typeof code !== "string") return true;
-  return NO_ANSWER_CODES.has(code);
-}
+var QUICK_RECONNECT_ATTEMPTS = 2;
+var QUICK_RECONNECT_WINDOW_MS = 1e4;
+var QUICK_RECONNECT_RETRY_DELAY_MS = 5e3;
+var QUICK_RECONNECT_FORCE_RELAY = true;
+var FALLBACK_STEADY_ATTEMPTS = 5;
 var ClientModeRuntime = class {
   constructor(config, identities, server, apiProxy, typertGateway, logger, host, rtcFactoryProvider = loadNodeRtcFactory, targetStore) {
     this.config = config;
@@ -20688,15 +21639,6 @@ var ClientModeRuntime = class {
    */
   supersededClient;
   /**
-   * True while a fast reconnect is rebuilding the link.
-   *
-   * The probe must not judge the link in the middle of its own replacement: the Server closes the
-   * older connection for the device, so a check that ran then would read our replacement's side effect
-   * as a second miss and escalate the level that is busy recovering. The rebuild's own outcome decides
-   * first; only once it has settled does the cadence resume judging.
-   */
-  fastRebuildInFlight = false;
-  /**
    * The last workspace the user opened for a Host.
    *
    * Kept so a reconnect can republish it: re-selecting the workspace is what makes the native UI
@@ -20726,9 +21668,6 @@ var ClientModeRuntime = class {
    */
   reconnecting;
   /** Periodic proof of life for the live remote session; absent while nothing is connected. */
-  livenessTimer;
-  livenessInFlight = false;
-  livenessFailures = 0;
   closed = false;
   async start() {
     if (this.closed) throw new Error("client remote-mode runtime is closed");
@@ -20737,7 +21676,7 @@ var ClientModeRuntime = class {
     this.proxySwitch?.install();
     this.gatewaySwitch.install();
     this.logger.info("client remote-mode identity ready", {
-      deviceId: shortId(this.identity.deviceId),
+      deviceId: shortId2(this.identity.deviceId),
       fingerprint: this.identity.fingerprint
     });
     if (this.config.hostControl?.enabled !== false && this.host !== void 0 && this.server.hasStoredAuthorization !== void 0) {
@@ -20941,7 +21880,6 @@ var ClientModeRuntime = class {
       await previous2?.client.close().catch(() => void 0);
       this.fellBackToLocal = false;
       this.reconnecting = void 0;
-      this.stopLivenessWatch();
       this.remoteReconnectRun += 1;
       await this.rememberTarget({ mode: "local" });
       this.logger.info("Harness target switched", { mode: "local" });
@@ -20970,63 +21908,8 @@ var ClientModeRuntime = class {
     await this.rememberTarget({ mode: "remote", hostDeviceId: next.target.deviceId, hostName: next.target.name });
     await this.closeCodexStreams(previous?.client);
     await previous?.client.close().catch(() => void 0);
-    this.logger.info("Harness target switched", { mode: "remote", targetDeviceId: shortId(next.target.deviceId) });
+    this.logger.info("Harness target switched", { mode: "remote", targetDeviceId: shortId2(next.target.deviceId) });
     return this.status();
-  }
-  /**
-   * Prove the live remote link still answers, and act on the result.
-   *
-   * Only a missing answer counts as loss: the peer's own error (a refusal, an unknown method) came
-   * back over the same link and therefore proves it is there.
-   *
-   * The two recovery levels differ in what the user keeps. The first miss rebuilds the link in
-   * place, so the session, its workspace selection and the remote carriers all stay; the second
-   * gives up and returns to the local shell.
-   */
-  async verifyRemoteLiveness() {
-    const connected = this.connected;
-    if (connected === void 0 || this.livenessInFlight || this.fastRebuildInFlight) return;
-    this.livenessInFlight = true;
-    try {
-      await connected.client.rpc("harness.transport.describe", {}, void 0, { timeoutMs: LIVENESS_TIMEOUT_MS });
-      this.livenessFailures = 0;
-      if (this.reconnecting?.phase === "fast") this.finishReconnect("the link answered again");
-    } catch (error) {
-      if (!livenessProbeLost(error)) {
-        this.livenessFailures = 0;
-        return;
-      }
-      this.livenessFailures += 1;
-      this.logger.warn("remote Harness liveness check found no answer", {
-        targetDeviceId: shortId(connected.target.deviceId),
-        attempt: this.livenessFailures
-      });
-      if (this.livenessFailures === 1) {
-        await this.enterFastReconnect(connected.target.deviceId, connected.target.name);
-        return;
-      }
-      if (this.livenessFailures >= LIVENESS_TOLERATED_FAILURES) {
-        this.handleRemoteTransportLost(connected.client, connected.target.deviceId, "unanswered-twice");
-      }
-    } finally {
-      this.livenessInFlight = false;
-    }
-  }
-  /**
-   * Rebuild the link while the session stays on screen.
-   *
-   * This is what separates the two recovery levels: nothing is handed back to the local shell, so a
-   * link that recovers does not cost the user the view they were working in.
-   * @param targetDeviceId - the Host to rebuild the link to.
-   */
-  async enterFastReconnect(targetDeviceId, targetName) {
-    if (this.reconnecting !== void 0) return;
-    this.reconnecting = { targetDeviceId, ...targetName === void 0 ? {} : { targetName }, phase: "fast" };
-    this.logger.warn("remote Harness link stopped answering; reconnecting in place", {
-      targetDeviceId: shortId(targetDeviceId)
-    });
-    this.armLivenessWatch(FAST_RECONNECT_INTERVAL_MS);
-    await this.reestablish(targetDeviceId);
   }
   /**
    * Build a new transport for the session already on screen.
@@ -21036,12 +21919,11 @@ var ClientModeRuntime = class {
    * @param targetDeviceId - the Host to reconnect to.
    * @returns true when a new session is in place.
    */
-  async reestablish(targetDeviceId) {
+  async reestablish(targetDeviceId, forceRelay = false) {
     const previous = this.connected;
     this.supersededClient = previous?.client;
-    this.fastRebuildInFlight = true;
     try {
-      const next = await this.connect(targetDeviceId);
+      const next = await this.connect(targetDeviceId, void 0, forceRelay);
       if (previous === void 0) {
         this.supersededClient = void 0;
         await next.client.close().catch(() => void 0);
@@ -21059,12 +21941,11 @@ var ClientModeRuntime = class {
     } catch (error) {
       this.supersededClient = void 0;
       this.logger.warn("fast reconnect attempt failed", {
-        targetDeviceId: shortId(targetDeviceId),
-        code: safeErrorCode(error)
+        targetDeviceId: shortId2(targetDeviceId),
+        code: safeErrorCode(error),
+        ...connectionFailureDetail(error)
       });
       return false;
-    } finally {
-      this.fastRebuildInFlight = false;
     }
   }
   rememberWorkspaceSelection(selection) {
@@ -21083,7 +21964,7 @@ var ClientModeRuntime = class {
     if (selection === void 0 || selection.targetDeviceId !== targetDeviceId) return;
     this.pendingWorkspaceSelection = { ...selection };
     this.logger.info("republishing the workspace selection to re-read the remote session list", {
-      targetDeviceId: shortId(targetDeviceId),
+      targetDeviceId: shortId2(targetDeviceId),
       workspaceId: selection.workspaceId
     });
   }
@@ -21091,10 +21972,8 @@ var ClientModeRuntime = class {
     const target2 = this.reconnecting?.targetDeviceId;
     if (target2 === void 0) return;
     this.reconnecting = void 0;
-    this.livenessFailures = 0;
-    this.armLivenessWatch(LIVENESS_INTERVAL_MS);
     this.restoreWorkspaceSelection(target2);
-    this.logger.info("remote Harness reconnect finished", { targetDeviceId: shortId(target2), reason });
+    this.logger.info("remote Harness reconnect finished", { targetDeviceId: shortId2(target2), reason });
   }
   /**
    * Check the live session now, outside the cadence.
@@ -21104,37 +21983,58 @@ var ClientModeRuntime = class {
    * @returns the status after the check.
    */
   async verifyRemoteConnection() {
-    await this.verifyRemoteLiveness();
     return this.status();
   }
-  armLivenessWatch(intervalMs) {
-    if (this.livenessTimer !== void 0) clearInterval(this.livenessTimer);
-    const timer = setInterval(() => {
-      void this.verifyRemoteLiveness();
-    }, intervalMs);
-    timer.unref?.();
-    this.livenessTimer = timer;
-  }
-  stopLivenessWatch() {
-    if (this.livenessTimer !== void 0) clearInterval(this.livenessTimer);
-    this.livenessTimer = void 0;
-    this.livenessFailures = 0;
-    this.livenessInFlight = false;
+  /**
+   * Rebuild the link inside one quick window, keeping the user's view.
+   *
+   * The session is left exactly as it is - same Workspace, same Session list, no reload - while the link
+   * is rebuilt over relay. Only the Session data is refreshed once it is back, and the caller falls back
+   * to the local shell when the window runs out.
+   * @param targetDeviceId - the Host to rebuild the link to.
+   * @returns whether a session is in place again.
+   */
+  async quickReconnect(targetDeviceId) {
+    if (this.reconnecting !== void 0) return false;
+    this.reconnecting = { targetDeviceId, phase: "fast" };
+    this.logger.warn("remote Harness link needs rebuilding; trying a quick reconnect", {
+      targetDeviceId: shortId2(targetDeviceId),
+      attempts: QUICK_RECONNECT_ATTEMPTS,
+      windowMs: QUICK_RECONNECT_WINDOW_MS
+    });
+    const deadline = Date.now() + QUICK_RECONNECT_WINDOW_MS;
+    for (let attempt = 1; attempt <= QUICK_RECONNECT_ATTEMPTS; attempt += 1) {
+      if (await this.reestablish(targetDeviceId, QUICK_RECONNECT_FORCE_RELAY)) return true;
+      if (attempt === QUICK_RECONNECT_ATTEMPTS) break;
+      const wait2 = Math.min(QUICK_RECONNECT_RETRY_DELAY_MS, Math.max(0, deadline - Date.now()));
+      if (wait2 === 0) break;
+      await new Promise((resolve4) => {
+        setTimeout(resolve4, wait2);
+      });
+    }
+    this.reconnecting = void 0;
+    return false;
   }
   /**
    * Shared cleanup for a session whose transport is gone.
    *
-   * A close event and an exhausted liveness check must leave exactly the same state behind, so both
-   * paths run this. The session is gone for good here, which is why the phase becomes 'fallback' and
-   * the retry loop keeps the UI saying that it is reconnecting.
+   * Every trigger runs this - a close on our own transport, and the quick window running out - so they all
+   * leave exactly the same state behind. The session is gone for good here, which is why the phase becomes
+   * 'fallback' and the retry schedule takes over until it is spent; once it is, the reconnect flag is
+   * cleared so the header stops advertising a reconnect that is no longer happening.
    * @param client - the client that was connected.
    * @param targetDeviceId - the Host it was bound to.
    */
-  handleRemoteTransportLost(client, targetDeviceId, reason) {
+  async handleRemoteTransportLost(client, targetDeviceId, reason) {
     if (this.connected?.client !== client) return;
     this.supersededClient = void 0;
     const targetName = this.connected.target.name;
-    this.stopLivenessWatch();
+    if (this.reconnecting === void 0 && await this.quickReconnect(targetDeviceId)) {
+      this.logger.info("remote Harness session kept its view through a quick reconnect", {
+        targetDeviceId: shortId2(targetDeviceId)
+      });
+      return;
+    }
     void this.closePreview();
     this.connected = void 0;
     this.connectionProgress = void 0;
@@ -21146,7 +22046,7 @@ var ClientModeRuntime = class {
     this.reconnecting = { targetDeviceId, ...targetName === void 0 ? {} : { targetName }, phase: "fallback" };
     void client.close().catch(() => void 0);
     this.logger.warn("remote Harness transport lost; reconnecting", {
-      targetDeviceId: shortId(targetDeviceId),
+      targetDeviceId: shortId2(targetDeviceId),
       reason
     });
     void this.reconnectRemoteSession(targetDeviceId);
@@ -21163,25 +22063,34 @@ var ClientModeRuntime = class {
    */
   async reconnectRemoteSession(targetDeviceId) {
     const run = ++this.remoteReconnectRun;
-    const fastDelays = [1e3, 2e3, 4e3, 8e3, 15e3];
+    const delays = [0, 5e3, 5e3, 1e4, 2e4];
     let attempt = 0;
     for (; ; ) {
-      const wait2 = fastDelays[attempt] ?? 3e4;
-      await new Promise((resolve4) => {
+      if (attempt - delays.length >= FALLBACK_STEADY_ATTEMPTS) {
+        this.reconnecting = void 0;
+        this.logger.warn("remote Harness reconnect gave up; staying in the local shell", {
+          targetDeviceId: shortId2(targetDeviceId),
+          attempts: attempt
+        });
+        return;
+      }
+      const wait2 = delays[attempt] ?? 3e4;
+      if (wait2 > 0) await new Promise((resolve4) => {
         setTimeout(resolve4, wait2);
       });
+      attempt += 1;
       if (run !== this.remoteReconnectRun) return;
       if (this.connected !== void 0) return;
       try {
         await this.setMode("remote", targetDeviceId);
         this.restoreWorkspaceSelection(targetDeviceId);
-        this.logger.info("remote Harness session reconnected", { targetDeviceId: shortId(targetDeviceId) });
+        this.logger.info("remote Harness session reconnected", { targetDeviceId: shortId2(targetDeviceId) });
         return;
       } catch (error) {
         const code = safeErrorCode(error);
         if (code !== void 0 && CREDENTIAL_FAILURE_CODES.has(code)) {
           this.logger.warn("remote Harness reconnect stopped: authorization is required", {
-            targetDeviceId: shortId(targetDeviceId),
+            targetDeviceId: shortId2(targetDeviceId),
             code
           });
           this.reconnecting = void 0;
@@ -21189,9 +22098,10 @@ var ClientModeRuntime = class {
         }
         if (attempt < 3 || attempt % 10 === 0) {
           this.logger.warn("remote Harness reconnect attempt failed", {
-            targetDeviceId: shortId(targetDeviceId),
+            targetDeviceId: shortId2(targetDeviceId),
             attempt,
-            code
+            code,
+            ...connectionFailureDetail(error)
           });
         }
       }
@@ -21232,7 +22142,7 @@ var ClientModeRuntime = class {
     if (record7 === void 0 || record7.mode !== "remote" || record7.hostDeviceId === void 0) return false;
     if (record7.serverUrl !== void 0 && record7.serverUrl !== this.config.serverUrl) {
       this.logger.info("recorded remote target belongs to another Server; not restoring", {
-        targetDeviceId: shortId(record7.hostDeviceId)
+        targetDeviceId: shortId2(record7.hostDeviceId)
       });
       return false;
     }
@@ -21242,7 +22152,7 @@ var ClientModeRuntime = class {
       phase: "restore"
     };
     this.logger.info("restoring the remote target of the previous run", {
-      targetDeviceId: shortId(record7.hostDeviceId)
+      targetDeviceId: shortId2(record7.hostDeviceId)
     });
     void this.reconnectRemoteSession(record7.hostDeviceId);
     return true;
@@ -21302,7 +22212,7 @@ var ClientModeRuntime = class {
     this.selectRemoteTarget(remote, transport);
     const workspaceId = workspaceRecordId(workspace.workspace);
     this.rememberWorkspaceSelection({ targetDeviceId: remote.target.deviceId, workspaceId });
-    this.logger.info("Remote workspace opened", { targetDeviceId: shortId(remote.target.deviceId) });
+    this.logger.info("Remote workspace opened", { targetDeviceId: shortId2(remote.target.deviceId) });
     return { ...this.status(), workspace };
   }
   async listCodexWorkspaces(targetDeviceId, signal) {
@@ -21341,7 +22251,7 @@ var ClientModeRuntime = class {
       backend: "codex",
       ...preferredSessionId === void 0 ? {} : { sessionId: preferredSessionId }
     });
-    this.logger.info("CodeX virtual workspace opened", { targetDeviceId: shortId(remote.target.deviceId) });
+    this.logger.info("CodeX virtual workspace opened", { targetDeviceId: shortId2(remote.target.deviceId) });
     return { ...this.status(), workspace };
   }
   async createCodexWorkspace(targetDeviceId, path, signal) {
@@ -21376,7 +22286,6 @@ var ClientModeRuntime = class {
     await this.closePreview();
     if (this.closed) return;
     this.closed = true;
-    this.stopLivenessWatch();
     this.proxySwitch?.selectLocal();
     await this.closePreview();
     this.gatewaySwitch.selectLocal();
@@ -21592,7 +22501,7 @@ var ClientModeRuntime = class {
       "This Client does not provide a compatible Harness carrier for the selected remote workspace."
     );
   }
-  async connect(targetDeviceId, signal) {
+  async connect(targetDeviceId, signal, forceRelay = false) {
     signal?.throwIfAborted();
     const progressRunId = this.connectionProgressRun + 1;
     this.connectionProgressRun = progressRunId;
@@ -21612,18 +22521,18 @@ var ClientModeRuntime = class {
       const rtcFactory = this.config.forceRelay ? void 0 : await this.rtcFactoryProvider({ routeTargets: [this.server.baseUrl] }).catch(() => void 0);
       if (!this.config.forceRelay && rtcFactory === void 0) {
         this.logger.warn("remote Harness WebRTC backend unavailable; using relay", {
-          targetDeviceId: shortId(target2.deviceId)
+          targetDeviceId: shortId2(target2.deviceId)
         });
       }
       let webRtcFallback = false;
       const createTransport = (attempt) => new AdaptiveTransport(
-        websocketUrl(this.server.baseUrl),
+        websocketUrl2(this.server.baseUrl),
         {
           role: "client",
           deviceId: identity.deviceId,
           accessToken: credentials.accessToken,
           targetDeviceId,
-          forceRelay: this.config.forceRelay || attempt === "relay",
+          forceRelay: forceRelay || this.config.forceRelay || attempt === "relay",
           preferredTransports: preferredTransportsForAttempt(attempt),
           negotiateTimeoutMs: attempt === "direct" ? DIRECT_WEBRTC_NEGOTIATE_TIMEOUT_MS : void 0,
           ...rtcFactory === void 0 || attempt === "relay" ? {} : { rtcFactory },
@@ -21631,15 +22540,15 @@ var ClientModeRuntime = class {
           onWebRtcFallback: (error, diagnostics) => {
             webRtcFallback = true;
             this.logger.warn(attempt === "direct" ? "remote Harness direct WebRTC failed; trying TURN" : "remote Harness TURN WebRTC failed; using relay", {
-              targetDeviceId: shortId(target2.deviceId),
+              targetDeviceId: shortId2(target2.deviceId),
               attempt,
-              reason: diagnosticReason(error)
+              reason: diagnosticReason2(error)
             });
             if (diagnostics !== void 0) {
               this.logger.debug("remote Harness WebRTC fallback diagnostics", {
-                targetDeviceId: shortId(target2.deviceId),
+                targetDeviceId: shortId2(target2.deviceId),
                 attempt,
-                ...webrtcDiagnosticsLogFields(diagnostics)
+                ...webrtcDiagnosticsLogFields2(diagnostics)
               });
             }
           }
@@ -21664,7 +22573,7 @@ var ClientModeRuntime = class {
         transport = void 0;
         if (attempt === "turn") {
           this.logger.info("remote Harness relay fallback re-established", {
-            targetDeviceId: shortId(target2.deviceId)
+            targetDeviceId: shortId2(target2.deviceId)
           });
         }
       }
@@ -21682,16 +22591,15 @@ var ClientModeRuntime = class {
       connectedClient.onClose(() => {
         if (this.supersededClient === connectedClient) {
           this.logger.info("ignoring the close of the transport a reconnect is replacing", {
-            targetDeviceId: shortId(target2.deviceId)
+            targetDeviceId: shortId2(target2.deviceId)
           });
           return;
         }
         this.handleRemoteTransportLost(connectedClient, target2.deviceId, "transport-closed");
       });
-      this.armLivenessWatch(LIVENESS_INTERVAL_MS);
       const connectionDetails = await connectedTransport.connectionDetails().catch(() => void 0);
       this.logger.info("remote Harness transport ready", {
-        targetDeviceId: shortId(target2.deviceId),
+        targetDeviceId: shortId2(target2.deviceId),
         transport: connectedClient.getStats().mode,
         ...connectionDetails === void 0 ? {} : {
           preferredTransports: connectionDetails.preferredTransports,
@@ -21701,8 +22609,8 @@ var ClientModeRuntime = class {
       });
       if (connectionDetails?.webRtc?.diagnostics !== void 0) {
         this.logger.debug("remote Harness transport diagnostics", {
-          targetDeviceId: shortId(target2.deviceId),
-          ...webrtcDiagnosticsLogFields(connectionDetails.webRtc.diagnostics)
+          targetDeviceId: shortId2(target2.deviceId),
+          ...webrtcDiagnosticsLogFields2(connectionDetails.webRtc.diagnostics)
         });
       }
       const features = await probeRemoteHostFeatures(connectedClient, serverDevice.clientVersion);
@@ -21947,13 +22855,13 @@ function assertAuthorizedHost(listed, descriptor) {
     throw new ClientModeError("PEER_IDENTITY_MISMATCH", "Server Host details do not match the authorized device list.");
   }
 }
-function websocketUrl(baseUrl) {
+function websocketUrl2(baseUrl) {
   const url = new URL(baseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = `${url.pathname.replace(/\/$/, "")}/ws/v1/connect`;
   return url.toString();
 }
-function webrtcDiagnosticsLogFields(diagnostics) {
+function webrtcDiagnosticsLogFields2(diagnostics) {
   if (diagnostics === void 0) return {};
   return {
     rtcConnectionState: diagnostics.connectionState,
@@ -22046,7 +22954,7 @@ function fail2(error) {
     }
   };
 }
-function shortId(value) {
+function shortId2(value) {
   return value.length <= 12 ? value : `${value.slice(0, 8)}\u2026${value.slice(-4)}`;
 }
 function remoteHostFeatures(clientVersion) {
@@ -22132,7 +23040,7 @@ function isVersionAtLeast(value, minimum) {
   }
   return true;
 }
-function diagnosticReason(error) {
+function diagnosticReason2(error) {
   const code = "code" in error && typeof error.code === "string" ? error.code : void 0;
   const message = error.message.replace(/[\r\n\t]+/g, " ").slice(0, 240);
   return code === void 0 ? message : `${code}: ${message}`;
@@ -23100,7 +24008,7 @@ var CodexRemoteDomain = class {
     } catch (error) {
       this.available = false;
       this.state = "unavailable";
-      this.unavailableCode = errorCode3(error);
+      this.unavailableCode = errorCode4(error);
       await this.disposeAppServer(this.appServer);
       this.logger.warn("Codex Remote domain unavailable", { code: this.unavailableCode });
     }
@@ -23371,7 +24279,7 @@ var CodexRemoteDomain = class {
     this.appServer = appServer;
     this.unsubscribeInbound = appServer.onInbound((message) => {
       void this.handleInbound(message).catch((error) => {
-        this.logger.warn("Codex inbound handling failed", { code: errorCode3(error) });
+        this.logger.warn("Codex inbound handling failed", { code: errorCode4(error) });
       });
     });
     this.unsubscribeUnavailable = appServer.onUnavailable((code) => {
@@ -23437,7 +24345,7 @@ var CodexRemoteDomain = class {
     } catch (error) {
       this.available = false;
       this.state = "restarting";
-      this.unavailableCode = errorCode3(error);
+      this.unavailableCode = errorCode4(error);
       this.logger.warn("Codex App Server restart failed", {
         attempt: this.restartAttempt,
         code: this.unavailableCode
@@ -23650,7 +24558,7 @@ var CodexRemoteDomain = class {
     this.logger.warn("Codex history read fallback", {
       connectionId: maskId(connectionId),
       stage,
-      code: errorCode3(error)
+      code: errorCode4(error)
     });
   }
   async assertResultThreadAllowed(result) {
@@ -23721,7 +24629,7 @@ var CodexRemoteDomain = class {
     this.approvalExpiryTimer = setTimeout(() => {
       this.approvalExpiryTimer = void 0;
       void this.expireApprovals().catch((error) => {
-        this.logger.warn("Codex approval expiry failed", { code: errorCode3(error) });
+        this.logger.warn("Codex approval expiry failed", { code: errorCode4(error) });
       });
     }, Math.max(0, nextExpiry - Date.now()));
     this.approvalExpiryTimer.unref?.();
@@ -24148,7 +25056,7 @@ function mapAppServerError(error) {
   }
   return new RpcError("CODEX_UPSTREAM_ERROR", "Codex App Server could not complete the request.");
 }
-function errorCode3(error) {
+function errorCode4(error) {
   if (error instanceof RpcError || error instanceof CodexAppServerError) return error.code;
   return "CODEX_START_FAILED";
 }
@@ -24760,9 +25668,9 @@ var ConnectionController = class {
     const replaced = [...this.active.values()].filter((connection2) => connection2.channel.peerDeviceId === channel.peerDeviceId || connection2.channel.security.connectionId === connectionId);
     if (replaced.length > 0) {
       this.logger?.warn("replacing active peer connection", {
-        peerDeviceId: shortId2(channel.peerDeviceId),
+        peerDeviceId: shortId3(channel.peerDeviceId),
         replacedCount: replaced.length,
-        replacedPeerDeviceIds: replaced.map((connection2) => shortId2(connection2.channel.peerDeviceId))
+        replacedPeerDeviceIds: replaced.map((connection2) => shortId3(connection2.channel.peerDeviceId))
       });
     }
     await Promise.all(replaced.map((connection2) => this.disconnect(connection2, "CONNECTION_REPLACED")));
@@ -24785,8 +25693,8 @@ var ConnectionController = class {
       throw error;
     }
     this.logger?.info("peer connection accepted", {
-      peerDeviceId: shortId2(channel.peerDeviceId),
-      connectionId: shortId2(connectionId),
+      peerDeviceId: shortId3(channel.peerDeviceId),
+      connectionId: shortId3(connectionId),
       mode: channel.mode
     });
   }
@@ -24853,8 +25761,8 @@ var ConnectionController = class {
       await connection.channel.send(outbound);
     } catch (error) {
       this.logger?.warn("peer message handling failed; disconnecting", {
-        peerDeviceId: shortId2(connection.channel.peerDeviceId),
-        reason: diagnosticReason2(error)
+        peerDeviceId: shortId3(connection.channel.peerDeviceId),
+        reason: diagnosticReason3(error)
       });
       await this.disconnect(connection);
     }
@@ -24870,9 +25778,9 @@ var ConnectionController = class {
       await connection.channel.send(message);
     } catch (error) {
       this.logger?.warn("peer send failed; disconnecting", {
-        peerDeviceId: shortId2(connection.channel.peerDeviceId),
+        peerDeviceId: shortId3(connection.channel.peerDeviceId),
         messageType: message.type,
-        reason: diagnosticReason2(error)
+        reason: diagnosticReason3(error)
       });
       await this.disconnect(connection);
     }
@@ -24887,8 +25795,8 @@ var ConnectionController = class {
       await connection.channel.close(code);
     }
     this.logger?.info("peer connection disconnected", {
-      peerDeviceId: shortId2(connection.channel.peerDeviceId),
-      connectionId: shortId2(connection.channel.security.connectionId),
+      peerDeviceId: shortId3(connection.channel.peerDeviceId),
+      connectionId: shortId3(connection.channel.security.connectionId),
       code: code ?? "closed"
     });
   }
@@ -24902,11 +25810,11 @@ var ConnectionRejectedError = class extends Error {
     this.code = code;
   }
 };
-function diagnosticReason2(error) {
+function diagnosticReason3(error) {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/[\r\n]+/g, " ").slice(0, 160) || "Unknown peer connection failure.";
 }
-function shortId2(value) {
+function shortId3(value) {
   return value.length <= 12 ? value : `${value.slice(0, 8)}\u2026${value.slice(-4)}`;
 }
 
@@ -25254,909 +26162,6 @@ function hostFailure(result) {
 }
 function isOversizedListing(value) {
   return typeof value === "object" && value !== null && "entries" in value && Array.isArray(value.entries) && value.entries.length > MAX_REMOTE_DIRECTORY_ENTRIES;
-}
-
-// src/server-connection.ts
-var DEFAULT_WEBRTC_NEGOTIATE_TIMEOUT_MS = 12e3;
-var HostServerConnection = class {
-  constructor(config, identity, identities, api, connections, logger, createWebSocket = (url) => new WebSocket(url), rtcFactoryProvider, hostCapabilities = () => ["harness.api.v1"], harnessVersion) {
-    this.config = config;
-    this.identity = identity;
-    this.identities = identities;
-    this.api = api;
-    this.connections = connections;
-    this.logger = logger;
-    this.createWebSocket = createWebSocket;
-    this.rtcFactoryProvider = rtcFactoryProvider;
-    this.hostCapabilities = hostCapabilities;
-    this.harnessVersion = harnessVersion;
-  }
-  socket;
-  running;
-  stopped = true;
-  online = false;
-  retryWake;
-  tunnels = /* @__PURE__ */ new Map();
-  terminalError;
-  lastActiveAt;
-  reconnectRequested = false;
-  resumeQueued = false;
-  authRecoveryAttempted = false;
-  rtcFactory;
-  negotiatedCapabilities = ["transport.relay"];
-  controlFrameLimits = {};
-  start() {
-    if (this.running !== void 0) return;
-    this.stopped = false;
-    this.running = this.run().finally(() => {
-      this.running = void 0;
-    });
-  }
-  resume() {
-    this.terminalError = void 0;
-    this.stopped = false;
-    if (this.running === void 0) {
-      this.start();
-      return;
-    }
-    if (this.resumeQueued) return;
-    this.resumeQueued = true;
-    void this.running.finally(() => {
-      this.resumeQueued = false;
-      if (!this.stopped) this.start();
-    });
-  }
-  async stop() {
-    this.stopped = true;
-    this.reconnectRequested = false;
-    this.retryWake?.();
-    this.retryWake = void 0;
-    this.socket?.close(1e3, "plugin stopped");
-    await this.running;
-    await this.dropTunnels();
-  }
-  isOnline() {
-    return this.online;
-  }
-  lastError() {
-    return this.terminalError;
-  }
-  lastActivity() {
-    return this.lastActiveAt;
-  }
-  isReconnecting() {
-    return !this.online && !this.stopped && this.running !== void 0;
-  }
-  reconnect() {
-    this.terminalError = void 0;
-    this.stopped = false;
-    if (this.running === void 0) {
-      this.start();
-      return;
-    }
-    this.reconnectRequested = true;
-    this.retryWake?.();
-    this.socket?.close(4e3, "manual reconnect");
-    void this.running.finally(() => {
-      if (!this.reconnectRequested || this.stopped) return;
-      this.reconnectRequested = false;
-      this.start();
-    });
-  }
-  async run() {
-    let delayMs = this.config.reconnect.initialDelayMs;
-    this.authRecoveryAttempted = false;
-    while (!this.stopped) {
-      try {
-        await this.connectOnce();
-        delayMs = this.config.reconnect.initialDelayMs;
-      } catch (error) {
-        const code = errorCode4(error);
-        if (code === "CREDENTIALS_REFRESHED") continue;
-        this.terminalError = code;
-        this.logger.warn("server control connection failed", {
-          code,
-          retryable: isRetryable(error),
-          ...error instanceof ServerApiError && error.phase !== void 0 ? { phase: error.phase } : {}
-        });
-        if (TERMINAL_AUTH_ERRORS.has(code)) {
-          this.logger.warn(code === "CONNECTION_REPLACED" ? "Another instance is using this Host identity. Stop it or use a separate DSH_HOME; automatic reconnect is paused." : code === "SERVER_CREDENTIALS_BUSY" ? "Credential refresh is locked. Stop other instances; after a crash, stop all instances before removing server-credentials.json.refresh-lock and authorizing again." : "Host authorization failed. Run /remote login or authorize this Host again in Remote settings.");
-        }
-        if (code === "DEVICE_REVOKED") {
-          try {
-            await this.api.clearAuthorization();
-          } catch (clearError) {
-            this.logger.error("failed to clear revoked Host authorization", { code: errorCode4(clearError) });
-          }
-        }
-        if (TERMINAL_AUTH_ERRORS.has(code) || !this.config.reconnect.enabled) return;
-      }
-      if (this.stopped) return;
-      if (this.reconnectRequested) {
-        this.reconnectRequested = false;
-        delayMs = this.config.reconnect.initialDelayMs;
-        continue;
-      }
-      if (!this.config.reconnect.enabled) return;
-      await this.waitBeforeRetry(delayMs);
-      if (this.reconnectRequested) {
-        this.reconnectRequested = false;
-        delayMs = this.config.reconnect.initialDelayMs;
-        continue;
-      }
-      delayMs = Math.min(this.config.reconnect.maxDelayMs, delayMs * 2);
-    }
-  }
-  async connectOnce() {
-    const credentials = await this.api.authenticate(this.identity);
-    if (this.stopped) return;
-    const offeredCapabilities = this.rtcFactoryProvider === void 0 || this.config.forceRelay ? ["transport.relay", ...this.hostCapabilities()] : ["transport.lan", "transport.p2p", "transport.turn", "transport.relay", ...this.hostCapabilities()];
-    const socket = this.createWebSocket(websocketUrl2(this.api.baseUrl));
-    this.socket = socket;
-    this.controlFrameLimits = {};
-    let acknowledged = false;
-    let messageQueue = Promise.resolve();
-    await new Promise((resolve4, reject) => {
-      let settled = false;
-      const helloTimer = setTimeout(() => socket.close(4001, "hello timeout"), 1e4);
-      const finish = (error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(helloTimer);
-        this.online = false;
-        if (this.socket === socket) this.socket = void 0;
-        void this.dropTunnels().finally(() => error === void 0 ? resolve4() : reject(error));
-      };
-      socket.onopen = () => {
-        this.sendControl("hello", {
-          role: "host",
-          deviceId: this.identity.deviceId,
-          accessToken: credentials.accessToken,
-          protocols: [PROTOCOL_VERSION],
-          clientVersion: PLUGIN_VERSION,
-          ...this.harnessVersion === void 0 ? {} : { harnessVersion: this.harnessVersion },
-          capabilities: offeredCapabilities
-        });
-      };
-      socket.onmessage = (event) => {
-        messageQueue = messageQueue.then(async () => {
-          const frame = decodeControl(event.data, this.controlFrameLimits);
-          this.lastActiveAt = Date.now();
-          if (frame.type === "hello.ack") {
-            const payload = requireHelloAck(frame.payload);
-            this.authRecoveryAttempted = false;
-            this.controlFrameLimits = {
-              maxControlFrameBytes: payload.maxControlFrameBytes,
-              maxRelayFrameBytes: payload.maxRelayFrameBytes
-            };
-            this.negotiatedCapabilities = acceptNegotiatedCapabilities(offeredCapabilities, payload.capabilities);
-            if (!this.negotiatedCapabilities.some((capability) => capability === "transport.relay" || capability === "transport.lan" || capability === "transport.p2p" || capability === "transport.turn")) {
-              throw new ControlConnectionError("INVALID_MESSAGE", "Server did not negotiate a transport capability.");
-            }
-            acknowledged = true;
-            clearTimeout(helloTimer);
-            this.online = true;
-            this.terminalError = void 0;
-            this.logger.info("server control connection online", {
-              serverVersion: payload.serverVersion,
-              connectionSessionId: shortId3(payload.connectionSessionId)
-            });
-            return;
-          }
-          if (!acknowledged) throw new ControlConnectionError("INVALID_MESSAGE", "Server sent a frame before hello.ack.");
-          await this.handleFrame(frame);
-        }).catch((error) => {
-          const code = errorCode4(error);
-          this.terminalError = code;
-          this.logger.error("server control frame failed", {
-            code,
-            reason: diagnosticReason3(error)
-          });
-          socket.close(4008, "invalid control frame");
-        });
-      };
-      socket.onerror = () => {
-        if (!acknowledged) finish(new ControlConnectionError("CONNECTION_FAILED", "Unable to open the Server WebSocket."));
-      };
-      socket.onclose = (event) => {
-        const close = async () => {
-          await messageQueue.catch(() => void 0);
-          if (this.stopped) {
-            finish();
-            return;
-          }
-          if (event.code === 4003) {
-            finish(new ControlConnectionError("CONNECTION_REPLACED", "Another instance connected with this Host identity."));
-            return;
-          }
-          if (event.code === 4002) {
-            if (this.authRecoveryAttempted) {
-              finish(new ControlConnectionError("AUTH_INVALID", "Server rejected refreshed credentials."));
-              return;
-            }
-            try {
-              await this.api.refreshCredentials(credentials.accessToken);
-            } catch (error) {
-              finish(asError2(error));
-              return;
-            }
-            this.authRecoveryAttempted = true;
-            finish(new ControlConnectionError("CREDENTIALS_REFRESHED", "Retry hello with refreshed credentials."));
-            return;
-          }
-          if (event.code === 4004) {
-            finish(new ControlConnectionError("DEVICE_REVOKED", "The Server revoked this Host device."));
-            return;
-          }
-          if (acknowledged) this.terminalError = closeCode(event.code);
-          finish(acknowledged ? void 0 : new ControlConnectionError(closeCode(event.code), event.reason || "Server control connection closed."));
-        };
-        void close();
-      };
-    });
-  }
-  async handleFrame(frame) {
-    if (frame.type === "ping") {
-      const nonce = objectValue(frame.payload, "nonce");
-      if (typeof nonce !== "string") throw new ControlConnectionError("INVALID_MESSAGE", "Control ping has no nonce.");
-      this.sendControl("pong", { nonce });
-      return;
-    }
-    if (frame.type === "pong") return;
-    if (frame.type === "connect.incoming") {
-      await this.handleConnectIncoming(requireConnectIncoming(frame.payload));
-      return;
-    }
-    if (frame.type === "secure.handshake") {
-      await this.handleHandshake(requireHandshake(frame.payload));
-      return;
-    }
-    if (frame.type === "relay") {
-      await this.handleRelay(requireRelay(frame.payload));
-      return;
-    }
-    if (frame.type === "signal.offer") {
-      await this.handleSignalOffer(requireSignal(frame.payload));
-      return;
-    }
-    if (frame.type === "signal.ice") {
-      this.handleSignalIce(requireSignalIce(frame.payload));
-      return;
-    }
-    if (frame.type === "transport.selected") {
-      await this.handleTransportSelected(requireTransportSelected(frame.payload));
-      return;
-    }
-    if (frame.type === "signal.answer") return;
-    if (frame.type === "error") {
-      const payload = requireControlError(frame.payload);
-      if (payload.code === "DEVICE_REVOKED") {
-        this.terminalError = payload.code;
-        this.socket?.close(4004, "device revoked");
-      } else if (payload.connectionId !== void 0) {
-        await this.dropTunnel(payload.connectionId, payload.code);
-        const fields = {
-          code: payload.code,
-          connectionId: shortId3(payload.connectionId),
-          retryable: payload.retryable
-        };
-        if (payload.retryable) this.logger.debug("server closed a remote connection", fields);
-        else this.logger.warn("server closed a remote connection", fields);
-      } else {
-        this.terminalError = payload.code;
-        this.logger.warn("server returned a control error", { code: payload.code, retryable: payload.retryable });
-      }
-      return;
-    }
-    throw new ControlConnectionError("INVALID_MESSAGE", `Unexpected Server control frame: ${frame.type}`);
-  }
-  async handleConnectIncoming(payload) {
-    let descriptor;
-    try {
-      descriptor = await this.api.deviceFor(payload.clientDeviceId);
-    } catch (error) {
-      this.sendControl("connect.rejected", { connectionId: payload.connectionId });
-      this.logger.warn("connection rejected by account authorization", {
-        clientDeviceId: shortId3(payload.clientDeviceId),
-        code: errorCode4(error)
-      });
-      return;
-    }
-    if (descriptor.role !== "client" || descriptor.deviceId !== payload.clientDeviceId || descriptor.identityKey !== payload.clientIdentityKey) {
-      this.sendControl("connect.rejected", { connectionId: payload.connectionId });
-      this.logger.warn("connection rejected by peer identity validation", {
-        clientDeviceId: shortId3(payload.clientDeviceId)
-      });
-      return;
-    }
-    const existing = this.identities.trustedPeer(descriptor.deviceId);
-    if (existing !== void 0 && existing.publicKey !== descriptor.identityKey) {
-      this.sendControl("connect.rejected", { connectionId: payload.connectionId });
-      this.logger.warn("connection rejected by pinned peer identity", {
-        clientDeviceId: shortId3(payload.clientDeviceId)
-      });
-      return;
-    }
-    const peer = existing !== void 0 && existing.membershipId === descriptor.membershipId && existing.name === descriptor.name && existing.platform === descriptor.platform ? existing : await this.identities.trustPeer({
-      deviceId: descriptor.deviceId,
-      name: descriptor.name,
-      platform: descriptor.platform,
-      publicKey: descriptor.identityKey,
-      membershipId: descriptor.membershipId
-    });
-    const previous = this.tunnels.get(payload.connectionId);
-    previous?.noise.destroy();
-    const noise = new NoiseIkSession({
-      role: "responder",
-      localPrivateKey: this.identity.privateKey,
-      localPublicKey: this.identity.publicKey,
-      remotePublicKey: peer.publicKey,
-      prologue: createNoisePrologue(payload.connectionId, this.identity.deviceId, peer.deviceId)
-    });
-    this.tunnels.set(payload.connectionId, {
-      connectionId: payload.connectionId,
-      membershipId: descriptor.membershipId,
-      peer,
-      preferredTransports: payload.preferredTransports,
-      noise,
-      transport: "negotiating"
-    });
-    this.sendControl("connect.accepted", { connectionId: payload.connectionId });
-  }
-  async handleHandshake(payload) {
-    const tunnel = this.tunnels.get(payload.connectionId);
-    if (tunnel !== void 0 && tunnel.channel !== void 0 && payload.targetDeviceId === this.identity.deviceId && payload.step === 1) {
-      this.logger.warn("duplicate secure handshake ignored", {
-        connectionId: shortId3(tunnel.connectionId),
-        peerDeviceId: shortId3(tunnel.peer.deviceId)
-      });
-      return;
-    }
-    if (tunnel === void 0 || payload.targetDeviceId !== this.identity.deviceId || payload.step !== 1) {
-      throw new ControlConnectionError("SECURE_CHANNEL_FAILED", "Noise IK handshake is not valid for this connection.");
-    }
-    if (tunnel.transport === "negotiating" && tunnel.rtc !== void 0) {
-      if (tunnel.pendingHandshake === void 0) tunnel.pendingHandshake = payload;
-      else this.logger.warn("duplicate pending secure handshake ignored", {
-        connectionId: shortId3(tunnel.connectionId),
-        peerDeviceId: shortId3(tunnel.peer.deviceId)
-      });
-      return;
-    }
-    await this.completeHandshake(tunnel, payload);
-  }
-  async completeHandshake(tunnel, payload) {
-    tunnel.noise.readHandshake(fromBase64Url2(payload.data));
-    const reply = tunnel.noise.writeHandshake();
-    if (!tunnel.noise.complete) throw new ControlConnectionError("SECURE_CHANNEL_FAILED", "Noise IK handshake did not complete.");
-    const viaWebRtc = tunnel.rtc !== void 0 && (tunnel.transport === "lan" || tunnel.transport === "p2p" || tunnel.transport === "turn");
-    if (!viaWebRtc && tunnel.transport === "negotiating") tunnel.transport = "relay";
-    const mode = viaWebRtc ? tunnel.transportMode ?? (tunnel.transport === "turn" ? "TURN" : tunnel.transport === "lan" ? "LAN" : "P2P") : "Relay";
-    const transmit = viaWebRtc ? (ciphertext) => tunnel.rtc.send(ciphertext) : (ciphertext) => this.sendRelay(tunnel, ciphertext);
-    const channel = new ServerNoiseChannel(tunnel, transmit, () => {
-      if (this.tunnels.get(tunnel.connectionId) === tunnel) this.tunnels.delete(tunnel.connectionId);
-    }, mode);
-    tunnel.channel = channel;
-    await this.connections.accept(channel);
-    this.sendControl("secure.handshake", {
-      connectionId: tunnel.connectionId,
-      targetDeviceId: tunnel.peer.deviceId,
-      step: 2,
-      data: toBase64Url2(reply)
-    });
-    this.logger.info("authenticated peer channel ready", {
-      connectionId: shortId3(tunnel.connectionId),
-      peerDeviceId: shortId3(tunnel.peer.deviceId),
-      transport: mode
-    });
-  }
-  async resumePendingHandshake(tunnel) {
-    const payload = tunnel.pendingHandshake;
-    if (payload === void 0 || tunnel.channel !== void 0 || tunnel.transport === "negotiating") return;
-    tunnel.pendingHandshake = void 0;
-    await this.completeHandshake(tunnel, payload);
-  }
-  async handleRelay(payload) {
-    if (!this.negotiatedCapabilities.includes("transport.relay")) {
-      throw new ControlConnectionError("INVALID_MESSAGE", "Server forwarded Relay without negotiating it.");
-    }
-    if (payload.targetDeviceId !== this.identity.deviceId) {
-      throw new ControlConnectionError("INVALID_MESSAGE", "Relay frame target does not match this Host.");
-    }
-    const tunnel = this.tunnels.get(payload.connectionId);
-    if (tunnel?.channel === void 0) {
-      this.logger.warn("stale relay frame ignored", {
-        connectionId: shortId3(payload.connectionId)
-      });
-      return;
-    }
-    try {
-      tunnel.channel.receive(payload.counter, fromBase64Url2(payload.ciphertext));
-    } catch (error) {
-      await tunnel.channel.close();
-      throw new ControlConnectionError("SECURE_CHANNEL_FAILED", asError2(error).message);
-    }
-  }
-  async handleSignalOffer(payload) {
-    if (!this.canUseWebRtc()) {
-      throw new ControlConnectionError("INVALID_MESSAGE", "Server forwarded WebRTC signaling without negotiating it.");
-    }
-    const tunnel = this.tunnels.get(payload.connectionId);
-    if (tunnel === void 0 || payload.targetDeviceId !== this.identity.deviceId) {
-      this.logger.warn("stale webrtc offer ignored", { connectionId: shortId3(payload.connectionId) });
-      return;
-    }
-    if (tunnel.channel !== void 0 || tunnel.rtc !== void 0) {
-      this.logger.warn("duplicate webrtc offer ignored", { connectionId: shortId3(tunnel.connectionId) });
-      return;
-    }
-    if (this.config.forceRelay) {
-      this.logger.warn("webrtc offer ignored: forceRelay is enabled", { connectionId: shortId3(tunnel.connectionId) });
-      return;
-    }
-    if (this.rtcFactory === void 0 && this.rtcFactoryProvider !== void 0) {
-      this.rtcFactory = await this.rtcFactoryProvider().catch(() => void 0);
-    }
-    if (this.rtcFactory === void 0) {
-      this.logger.warn("webrtc offer ignored: no RTC backend available", { connectionId: shortId3(tunnel.connectionId) });
-      return;
-    }
-    let iceServers = [];
-    try {
-      iceServers = await this.api.turnCredentials(tunnel.connectionId);
-    } catch (error) {
-      this.logger.warn("TURN credentials unavailable; trying direct candidates", {
-        connectionId: shortId3(tunnel.connectionId),
-        code: errorCode4(error)
-      });
-    }
-    if (!tunnel.preferredTransports.includes("turn")) iceServers = stunOnlyIceServers(iceServers);
-    const rtc = new RtcDataChannelTransport({
-      role: "responder",
-      factory: this.rtcFactory,
-      iceServers,
-      onSignal: (signal) => this.sendRtcSignal(tunnel, signal),
-      negotiateTimeoutMs: DEFAULT_WEBRTC_NEGOTIATE_TIMEOUT_MS,
-      label: `host<-${tunnel.peer.deviceId}`,
-      onDiagnostic: (event) => {
-        if (event.type !== "local-candidate-filtered" && event.type !== "candidate-pair-filtered") return;
-        this.logger.debug("webrtc candidate filtered", {
-          connectionId: shortId3(tunnel.connectionId),
-          peerDeviceId: shortId3(tunnel.peer.deviceId),
-          type: event.type,
-          reason: event.reason,
-          candidate: event.type === "local-candidate-filtered" ? event.candidate : event.localCandidate
-        });
-      }
-    });
-    tunnel.rtc = rtc;
-    rtc.onMessage((data2) => tunnel.channel?.receive(void 0, data2));
-    rtc.onClose(() => {
-      void this.handleRtcFailed(tunnel, rtc, new Error("WebRTC data channel closed."));
-    });
-    void rtc.connect().then(() => {
-      this.handleRtcOpened(tunnel, rtc.selectedTransport() ?? "p2p");
-    }).catch((error) => {
-      void this.handleRtcFailed(tunnel, rtc, asError2(error));
-    });
-    rtc.handleSignal({ type: "offer", sdp: payload.sdp });
-  }
-  handleSignalIce(payload) {
-    if (!this.canUseWebRtc()) {
-      throw new ControlConnectionError("INVALID_MESSAGE", "Server forwarded WebRTC signaling without negotiating it.");
-    }
-    const tunnel = this.tunnels.get(payload.connectionId);
-    if (tunnel === void 0 || payload.targetDeviceId !== this.identity.deviceId) return;
-    tunnel.rtc?.handleSignal({ type: "ice", candidate: payload.candidate });
-  }
-  async handleTransportSelected(payload) {
-    const tunnel = this.tunnels.get(payload.connectionId);
-    if (tunnel === void 0 || payload.targetDeviceId !== this.identity.deviceId) {
-      this.logger.warn("stale transport selection ignored", { connectionId: shortId3(payload.connectionId) });
-      return;
-    }
-    if (tunnel.channel !== void 0) {
-      if (tunnel.transport !== payload.transport) {
-        this.logger.warn("late transport selection ignored", {
-          connectionId: shortId3(tunnel.connectionId),
-          selected: payload.transport
-        });
-      }
-      return;
-    }
-    const requiredCapability = `transport.${payload.transport}`;
-    if (!this.negotiatedCapabilities.includes(requiredCapability)) {
-      throw new ControlConnectionError(
-        "INVALID_MESSAGE",
-        `Client selected unnegotiated transport: ${payload.transport}`
-      );
-    }
-    if (payload.transport === "relay") {
-      const rtc = tunnel.rtc;
-      tunnel.rtc = void 0;
-      tunnel.transport = "relay";
-      tunnel.transportMode = void 0;
-      await rtc?.close();
-      await this.resumePendingHandshake(tunnel);
-      return;
-    }
-    if (tunnel.rtc === void 0) {
-      throw new ControlConnectionError("INVALID_MESSAGE", "Client selected WebRTC before creating a data channel.");
-    }
-    tunnel.transport = payload.transport;
-    tunnel.transportMode = tunnel.rtc.selectedPathMode();
-    await this.resumePendingHandshake(tunnel);
-  }
-  canUseWebRtc() {
-    return this.negotiatedCapabilities.includes("transport.lan") || this.negotiatedCapabilities.includes("transport.p2p") || this.negotiatedCapabilities.includes("transport.turn");
-  }
-  sendRtcSignal(tunnel, signal) {
-    if (signal.type === "answer") {
-      this.sendControl("signal.answer", {
-        connectionId: tunnel.connectionId,
-        targetDeviceId: tunnel.peer.deviceId,
-        sdp: signal.sdp
-      });
-    } else if (signal.type === "ice") {
-      this.sendControl("signal.ice", {
-        connectionId: tunnel.connectionId,
-        targetDeviceId: tunnel.peer.deviceId,
-        candidate: signal.candidate
-      });
-    }
-  }
-  handleRtcOpened(tunnel, selected) {
-    if (this.tunnels.get(tunnel.connectionId) !== tunnel || tunnel.rtc === void 0) return;
-    const wireSelected = selected === "lan" && !this.negotiatedCapabilities.includes("transport.lan") && this.negotiatedCapabilities.includes("transport.p2p") ? "p2p" : selected;
-    const requiredCapability = wireSelected === "lan" ? "transport.lan" : wireSelected === "turn" ? "transport.turn" : "transport.p2p";
-    if (!this.negotiatedCapabilities.includes(requiredCapability)) {
-      const error = new Error(`WebRTC selected unnegotiated transport: ${selected}`);
-      if (!this.negotiatedCapabilities.includes("transport.relay")) {
-        void this.dropTunnel(tunnel.connectionId, "CONNECTION_FAILED");
-        return;
-      }
-      void this.handleRtcFailed(
-        tunnel,
-        tunnel.rtc,
-        error
-      );
-      return;
-    }
-    tunnel.transport = wireSelected;
-    tunnel.transportMode = tunnel.rtc.selectedPathMode();
-    this.sendTransportSelected(tunnel, wireSelected);
-    const diagnostics = rtcDiagnostics(tunnel.rtc);
-    this.logger.info("webrtc data channel ready", {
-      connectionId: shortId3(tunnel.connectionId),
-      peerDeviceId: shortId3(tunnel.peer.deviceId),
-      transport: tunnel.transportMode ?? wireSelected
-    });
-    if (diagnostics !== void 0) {
-      this.logger.debug("webrtc data channel diagnostics", {
-        connectionId: shortId3(tunnel.connectionId),
-        ...webrtcDiagnosticsLogFields2(diagnostics)
-      });
-    }
-    void this.resumePendingHandshake(tunnel).catch((error) => {
-      this.logger.warn("pending secure handshake failed", {
-        connectionId: shortId3(tunnel.connectionId),
-        reason: diagnosticReason3(error)
-      });
-      void this.dropTunnel(tunnel.connectionId, "SECURE_CHANNEL_FAILED");
-    });
-  }
-  async handleRtcFailed(tunnel, rtc, error) {
-    if (this.tunnels.get(tunnel.connectionId) !== tunnel || tunnel.rtc !== rtc) return;
-    const diagnostics = rtcDiagnostics(rtc);
-    if (tunnel.transport === "lan" || tunnel.transport === "p2p" || tunnel.transport === "turn") {
-      this.logger.warn("webrtc data channel failed; disconnecting peer", {
-        connectionId: shortId3(tunnel.connectionId),
-        reason: diagnosticReason3(error)
-      });
-      if (diagnostics !== void 0) {
-        this.logger.debug("webrtc data channel failure diagnostics", {
-          connectionId: shortId3(tunnel.connectionId),
-          ...webrtcDiagnosticsLogFields2(diagnostics)
-        });
-      }
-      await this.dropTunnel(tunnel.connectionId, "CONNECTION_FAILED");
-      return;
-    }
-    tunnel.rtc = void 0;
-    tunnel.transport = "relay";
-    await rtc.close();
-    this.logger.warn("webrtc negotiation failed; falling back to relay", {
-      connectionId: shortId3(tunnel.connectionId),
-      reason: diagnosticReason3(error)
-    });
-    if (diagnostics !== void 0) {
-      this.logger.debug("webrtc negotiation failure diagnostics", {
-        connectionId: shortId3(tunnel.connectionId),
-        ...webrtcDiagnosticsLogFields2(diagnostics)
-      });
-    }
-    await this.resumePendingHandshake(tunnel);
-  }
-  sendTransportSelected(tunnel, transport) {
-    this.sendControl("transport.selected", {
-      connectionId: tunnel.connectionId,
-      targetDeviceId: tunnel.peer.deviceId,
-      transport
-    });
-  }
-  async sendRelay(tunnel, ciphertext) {
-    const counter = Number(tunnel.noise.sendingCounter() - 1n);
-    if (!Number.isSafeInteger(counter) || counter < 0) throw new ControlConnectionError("FRAME_TOO_LARGE", "Noise transport counter overflowed.");
-    const socket = this.socket;
-    if (socket === void 0) throw new Error("Relay transport closed");
-    await waitForRelayCapacity(socket);
-    if (this.socket !== socket) throw new Error("Relay transport replaced");
-    this.sendControl("relay", {
-      connectionId: tunnel.connectionId,
-      targetDeviceId: tunnel.peer.deviceId,
-      counter,
-      ciphertext: toBase64Url2(ciphertext)
-    });
-  }
-  sendControl(type, payload) {
-    const socket = this.socket;
-    if (socket === void 0 || socket.readyState !== 1) throw new ControlConnectionError("CONNECTION_FAILED", "Server control socket is not open.");
-    socket.send(encodeControlFrame(createControlFrame(type, payload), this.controlFrameLimits));
-  }
-  async dropTunnels() {
-    const tunnels = [...this.tunnels.values()];
-    this.tunnels.clear();
-    await Promise.all(tunnels.map(async (tunnel) => {
-      if (tunnel.rtc !== void 0) await tunnel.rtc.close();
-      if (tunnel.channel !== void 0) await tunnel.channel.close();
-      else tunnel.noise.destroy();
-    }));
-    await this.connections.close();
-  }
-  async dropTunnel(connectionId, code) {
-    const tunnel = this.tunnels.get(connectionId);
-    if (tunnel === void 0) return;
-    this.tunnels.delete(connectionId);
-    try {
-      await tunnel.rtc?.close();
-    } catch (error) {
-      this.logger.warn("remote connection RTC cleanup failed", {
-        connectionId: shortId3(connectionId),
-        reason: diagnosticReason3(error)
-      });
-    }
-    if (tunnel.channel !== void 0) {
-      try {
-        const closed = await this.connections.closeConnection(connectionId, code);
-        if (!closed) await tunnel.channel.close(code);
-      } catch (error) {
-        await tunnel.channel.close(code).catch(() => void 0);
-        this.logger.warn("remote connection channel cleanup failed", {
-          connectionId: shortId3(connectionId),
-          reason: diagnosticReason3(error)
-        });
-      }
-    } else {
-      tunnel.noise.destroy();
-    }
-  }
-  waitBeforeRetry(baseDelay) {
-    const spread = baseDelay * this.config.reconnect.jitter;
-    const delay = Math.max(0, Math.round(baseDelay - spread + Math.random() * spread * 2));
-    return new Promise((resolve4) => {
-      const timer = setTimeout(() => {
-        this.retryWake = void 0;
-        resolve4();
-      }, delay);
-      this.retryWake = () => {
-        clearTimeout(timer);
-        resolve4();
-      };
-    });
-  }
-};
-var TERMINAL_AUTH_ERRORS = /* @__PURE__ */ new Set([
-  "CONNECTION_REPLACED",
-  "SERVER_CREDENTIALS_BUSY",
-  "ACCOUNT_AUTH_REQUIRED",
-  "AUTH_INVALID",
-  "DEVICE_OWNERSHIP_REQUIRED",
-  "DEVICE_REVOKED",
-  "TOKEN_EXPIRED"
-]);
-var ServerNoiseChannel = class {
-  constructor(tunnel, transmit, onClose, mode) {
-    this.tunnel = tunnel;
-    this.transmit = transmit;
-    this.onClose = onClose;
-    this.mode = mode;
-    this.security = {
-      protocol: "Noise_IK_25519_ChaChaPoly_SHA256",
-      connectionId: tunnel.connectionId,
-      membershipId: tunnel.membershipId
-    };
-    this.peerDeviceId = tunnel.peer.deviceId;
-    this.peerIdentityKey = tunnel.peer.publicKey;
-  }
-  sends = new SerialSend();
-  security;
-  peerDeviceId;
-  peerIdentityKey;
-  mode;
-  handlers = /* @__PURE__ */ new Set();
-  incoming = new SecureMessageCodec();
-  outgoing = new SecureMessageCodec();
-  closed = false;
-  async send(message) {
-    if (this.closed) throw new Error("secure channel is closed");
-    const encoded = encodeMessage(message);
-    try {
-      await this.sends.run(encoded.byteLength, async () => {
-        if (this.closed) throw new Error("Secure channel closed");
-        for (const plaintext of this.outgoing.encode(encoded)) await this.transmit(this.tunnel.noise.encrypt(plaintext));
-      });
-    } catch (error) {
-      await this.close().catch(() => void 0);
-      throw error;
-    }
-  }
-  onMessage(handler) {
-    this.handlers.add(handler);
-    return () => this.handlers.delete(handler);
-  }
-  receive(counter, ciphertext) {
-    if (this.closed) return;
-    if (counter !== void 0) {
-      const expected = Number(this.tunnel.noise.receivingCounter());
-      if (!Number.isSafeInteger(counter) || counter !== expected) {
-        throw new ControlConnectionError("INVALID_MESSAGE", "Relay counter is duplicated or out of order.");
-      }
-    }
-    const plaintext = this.incoming.decode(this.tunnel.noise.decrypt(ciphertext));
-    if (plaintext === void 0) return;
-    const message = decodeMessage(plaintext);
-    for (const handler of this.handlers) handler(message);
-  }
-  async close(_code) {
-    if (this.closed) return;
-    this.closed = true;
-    this.handlers.clear();
-    this.incoming.reset();
-    this.outgoing.reset();
-    this.tunnel.noise.destroy();
-    this.onClose();
-  }
-};
-var ControlConnectionError = class extends Error {
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-  }
-};
-function websocketUrl2(baseUrl) {
-  const url = new URL(baseUrl);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.pathname = `${url.pathname.replace(/\/$/, "")}/ws/v1/connect`;
-  return url.toString();
-}
-function decodeControl(data2, limits) {
-  if (typeof data2 !== "string") throw new ControlConnectionError("INVALID_MESSAGE", "Server control frames must be text JSON.");
-  try {
-    return decodeControlFrame(data2, limits);
-  } catch {
-    throw new ControlConnectionError("INVALID_MESSAGE", "Server sent an invalid control frame.");
-  }
-}
-function requireHelloAck(value) {
-  const payload = requireObject(value);
-  if (payload.protocol !== PROTOCOL_VERSION || typeof payload.serverVersion !== "string" || typeof payload.connectionSessionId !== "string" || !Number.isSafeInteger(payload.heartbeatIntervalMs) || !Number.isSafeInteger(payload.maxControlFrameBytes) || !Number.isSafeInteger(payload.maxRelayFrameBytes)) {
-    throw new ControlConnectionError("INVALID_MESSAGE", "hello.ack payload is invalid.");
-  }
-  return payload;
-}
-function requireConnectIncoming(value) {
-  const payload = requireObject(value);
-  if (typeof payload.connectionId !== "string" || typeof payload.clientDeviceId !== "string" || typeof payload.clientIdentityKey !== "string" || payload.authorization !== "account" || !Array.isArray(payload.preferredTransports)) {
-    throw new ControlConnectionError("INVALID_MESSAGE", "connect.incoming payload is invalid.");
-  }
-  return payload;
-}
-function requireHandshake(value) {
-  const payload = requireObject(value);
-  if (typeof payload.connectionId !== "string" || typeof payload.targetDeviceId !== "string" || !Number.isSafeInteger(payload.step) || typeof payload.data !== "string") {
-    throw new ControlConnectionError("INVALID_MESSAGE", "secure.handshake payload is invalid.");
-  }
-  return payload;
-}
-function requireRelay(value) {
-  const payload = requireObject(value);
-  if (typeof payload.connectionId !== "string" || typeof payload.targetDeviceId !== "string" || !Number.isSafeInteger(payload.counter) || typeof payload.ciphertext !== "string") {
-    throw new ControlConnectionError("INVALID_MESSAGE", "relay payload is invalid.");
-  }
-  return payload;
-}
-function requireSignal(value) {
-  const payload = requireObject(value);
-  if (typeof payload.connectionId !== "string" || typeof payload.targetDeviceId !== "string" || typeof payload.sdp !== "string" || payload.sdp.length === 0) {
-    throw new ControlConnectionError("INVALID_MESSAGE", "signal offer/answer payload is invalid.");
-  }
-  return payload;
-}
-function requireSignalIce(value) {
-  const payload = requireObject(value);
-  if (typeof payload.connectionId !== "string" || typeof payload.targetDeviceId !== "string" || typeof payload.candidate !== "object" || payload.candidate === null || Array.isArray(payload.candidate)) {
-    throw new ControlConnectionError("INVALID_MESSAGE", "signal.ice payload is invalid.");
-  }
-  return payload;
-}
-function requireTransportSelected(value) {
-  const payload = requireObject(value);
-  if (typeof payload.connectionId !== "string" || typeof payload.targetDeviceId !== "string" || payload.transport !== "lan" && payload.transport !== "p2p" && payload.transport !== "turn" && payload.transport !== "relay") {
-    throw new ControlConnectionError("INVALID_MESSAGE", "transport.selected payload is invalid.");
-  }
-  return payload;
-}
-function requireControlError(value) {
-  const payload = requireObject(value);
-  if (typeof payload.code !== "string" || typeof payload.message !== "string" || payload.connectionId !== void 0 && (typeof payload.connectionId !== "string" || payload.connectionId === "")) {
-    throw new ControlConnectionError("INVALID_MESSAGE", "error payload is invalid.");
-  }
-  return payload;
-}
-function requireObject(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new ControlConnectionError("INVALID_MESSAGE", "Control payload must be an object.");
-  }
-  return value;
-}
-function objectValue(value, key) {
-  return requireObject(value)[key];
-}
-function shortId3(value) {
-  return value.length <= 12 ? value : `${value.slice(0, 8)}\u2026${value.slice(-4)}`;
-}
-function asError2(error) {
-  return error instanceof Error ? error : new Error("Unknown Server connection error.");
-}
-function diagnosticReason3(error) {
-  const message = asError2(error).message.replace(/[\r\n]+/g, " ").slice(0, 160);
-  return message || "Unknown Server connection error.";
-}
-function webrtcDiagnosticsLogFields2(diagnostics) {
-  if (diagnostics === void 0) return {};
-  return {
-    rtcConnectionState: diagnostics.connectionState,
-    rtcIceConnectionState: diagnostics.iceConnectionState,
-    rtcIceGatheringState: diagnostics.iceGatheringState,
-    rtcLocalCandidates: diagnostics.localCandidates,
-    rtcRemoteCandidates: diagnostics.remoteCandidates,
-    rtcCandidatePairs: diagnostics.candidatePairs,
-    rtcFilteredLocalCandidates: diagnostics.filteredLocalCandidates,
-    rtcFilteredCandidatePairs: diagnostics.filteredCandidatePairs,
-    ...diagnostics.selectedPath === void 0 ? {} : { rtcSelectedPath: diagnostics.selectedPath }
-  };
-}
-function rtcDiagnostics(rtc) {
-  try {
-    const candidate = rtc;
-    return typeof candidate.diagnostics === "function" ? candidate.diagnostics() : void 0;
-  } catch {
-    return void 0;
-  }
-}
-function errorCode4(error) {
-  return error instanceof ServerApiError || error instanceof ControlConnectionError ? error.code : "CONNECTION_FAILED";
-}
-function isRetryable(error) {
-  return !TERMINAL_AUTH_ERRORS.has(errorCode4(error)) && (!(error instanceof ServerApiError) || error.retryable);
-}
-function closeCode(code) {
-  if (code === 4002) return "AUTH_INVALID";
-  if (code === 4003) return "CONNECTION_REPLACED";
-  if (code === 4004) return "DEVICE_REVOKED";
-  if (code === 4007) return "RATE_LIMITED";
-  if (code === 4011) return "UNSUPPORTED_VERSION";
-  return "CONNECTION_FAILED";
 }
 
 // src/remote-directory-browser.ts
