@@ -1605,9 +1605,10 @@ public class MainActivity extends Activity {
 
     /** 壳的界面底色：优先用页面实测底色，未取到（启动页/控制台）时用主题底色。 */
     private int chromeBg() {
-        // v1.24：只有「跟随页面」时才用网页实测底色；显式选了浅色/深色时，系统栏与页面底色
-        // 必须跟着选择走（否则选「浅色」后卡片变白、底色仍是网页的深色）。
-        if ("follow".equals(uiSchemePref()) && pageBgColor != 0) return pageBgColor;
+        // v1.24：**页面实测底色只在它与当前明暗一致时才用**（见 shellPageBg）——
+        // 显式选「浅色/深色」时系统栏必须跟着选择走，不能被页面的反向底色带跑。
+        int p = shellPageBg();
+        if (p != 0) return p;
         // v1.17.4：主题可指定状态栏/导航栏底色（缺省 auto = 跟随页面或主题底色）
         ConsoleTheme t = conTheme;
         if (t != null) {
@@ -1615,6 +1616,25 @@ public class MainActivity extends Activity {
             if (sb != 0) return sb;
         }
         return cBg();
+    }
+
+    /**
+     * v1.24（维护者报障）：**壳底色的唯一真源** —— 页面实测底色，且只在它能代表当前明暗时返回，
+     * 否则返回 0（调用方回落到壳内置的 shell_bg_light / shell_bg_dark）。
+     *
+     * 修的问题：「跟随页面」用页面实测色、「浅色」用 colors.xml 的 shell_bg_light ——
+     * 同一件事（"浅色底"）在代码里有两份来源，于是两种设置都是浅色、底色却差几个色阶。
+     * 模拟器实测：页面 #FFFFFF，壳内置浅色 #F7F8FB（维护者：「看起来很奇怪，说明代码写得不干净」）。
+     *
+     * 现在只有一条规则：页面实测底色的明暗 == 当前解析出的明暗 → 就用它
+     *（此时它就是"这个 App 现在的浅色底/深色底"，跟随页面与显式浅色/深色取到**同一个值**）；
+     * 不一致（例如显式选「浅色」但 DSH 页面是深色主题）→ 返回 0，交给壳内置的浅/深底色
+     *（v1.24 那条修正：显式选择必须压过页面）。
+     */
+    private int shellPageBg() {
+        int p = pageBgColor;
+        if (p == 0) return 0;
+        return conIsDarkColor(p) == conDark() ? p : 0;
     }
 
     private void applySystemBars(int barColor) {
@@ -1764,13 +1784,11 @@ public class MainActivity extends Activity {
     private int cBg() {
         // v1.21：DSH 页面底色已知时，壳底色**直接跟随它** —— 这是"壳与页面同一色调"的关键；
         // 主题里显式写过的 bg 仍然优先（conColor 内部保证"显式写过的值永远优先"）。
-        // v1.24 修正：**只在「跟随页面」时**才用页面实测底色。原实现无条件优先，
-        // 于是用户在 控制台 → 主题 → 界面外观 里选「浅色」后，卡片变白、整页底色却仍是网页的深色
-        // （维护者报的"浅色模式看起来很奇怪，只有引擎运行中这个卡片是白色的"）。
-        boolean follow = "follow".equals(uiSchemePref());
-        int def = (follow && pageBgColor != 0) ? pageBgColor
-                : getColor(conDark() ? R.color.shell_bg_dark : R.color.shell_bg_light);
-        return conColor("bg", def);
+        // v1.24 修正：**只在"页面底色与当前明暗一致"时才用它**（见 shellPageBg）。原实现无条件优先，
+        // 于是选「浅色」后卡片变白、整页底色却仍是网页的深色；而按「跟随页面」判断又让
+        // 「跟随页面 / 浅色」在页面为浅色时取到两个不同来源的浅色底（维护者报的"两种浅色差一点点"）。
+        int p = shellPageBg();
+        return conColor("bg", p != 0 ? p : cBgBuiltin(conDark()));
     }
     private int cCard() { return conCardsAlpha(conColor("card", getColor(conDark() ? R.color.shell_card_dark : R.color.shell_card_light))); }
     private int cText() { return conColor("text", getColor(conDark() ? R.color.text_on_dark : R.color.text_on_light)); }
