@@ -43,7 +43,7 @@ DSH 只有看到它在 bundles 里才会组合进插件树。
 
 | 插件 | 版本 | 来源 | 说明 |
 |---|---|---|---|
-| `ds-harness-remote` | 0.4.32 | 同源本地仓库 `github:blue-soda/ds-harness-remote` 的 `packages/plugin`（npm `@blue-soda/dsh-remote` 尚未发布到 0.4.32）| 端到端加密的远程访问（桌面/网页/安卓互连）。自带 `dist/index.js` + `dist/client.github.js`；运行时依赖 `qrcode`/`werift`/`ws`/`zod` 一并内置，`@deepseek-ai/schemastery` 由内核树嵌套路径提供、不内置。 |
+| `ds-harness-remote` | 0.4.32 | npm `@blue-soda/dsh-remote`（同源仓库 `github:blue-soda/ds-harness-remote` 的 `packages/plugin`）| 端到端加密的远程访问（桌面/网页/安卓互连）。自带 `dist/index.js` + `dist/client.github.js`；运行时依赖 `qrcode`/`werift`/`ws`/`zod` 一并内置，`@deepseek-ai/schemastery` 由内核树嵌套路径提供、不内置。 |
 
 ## 更新步骤（人工）
 
@@ -90,6 +90,12 @@ mkdir -p /tmp/npm && tar -xzf /tmp/dsh-remote.tgz -C /tmp/npm     # 解出 packa
 > `dist/` 已构建、`PLUGIN_VERSION = "0.4.32"`），`node_modules/` 原样保留（依赖清单逐项一致）。
 > 替换后做了字节核对：**237/237 文件 SHA-256 一致** ✅（脚本见 `.cache/verify-plugin-vendor.py`）。
 > 本版内含自动重连逻辑优化（快速重连不再把健康链路判定为故障）。
+>
+> **事后补记**：发布 APK 之后 registry 传播完成（`npm view @blue-soda/dsh-remote@0.4.32` → 0.4.32），
+> 于是又拉了官方 tarball 做**双向核对**：npm 包 vs 仓库 `vendor/` 副本 —— **237/237 文件 SHA-256 一致** ✅；
+> 并回读已发布 APK 内层 payload 的插件文件（`package.json` / `dsh-plugin.json` / `dist/index.js` /
+> `dist/client.js` / `dist/client.github.js`）—— **与 npm 发布产物逐字节一致** ✅。
+> 即：本次内置的就是官方 npm 0.4.32 产物，只是早了十几分钟拿到（走的同源本地构建）。
 
 ### 方式 B：GitHub 渠道（默认，含未发布提交）
 
