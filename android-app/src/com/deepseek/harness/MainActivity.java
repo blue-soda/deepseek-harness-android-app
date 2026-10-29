@@ -580,8 +580,17 @@ public class MainActivity extends Activity {
                  */
                 @android.webkit.JavascriptInterface
                 public void openExternal(String url) {
-                    final String u = url == null ? "" : url.trim();
+                    final String rawUrl = url == null ? "" : url.trim();
+                    final String u = rawUrl;
                     if (u.isEmpty()) return;
+                    // v1.27（实测：点登录弹出 about:blank）：空白类地址绝不能丢给浏览器 ——
+                    // 一旦浏览器被 about:blank 占住，随后真正的授权地址就无处可去。
+                    String low = u.toLowerCase(java.util.Locale.US);
+                    if (low.equals("about:blank") || low.equals("about:srcdoc")
+                            || low.startsWith("javascript:") || low.startsWith("data:")) {
+                        Log.i(TAG, "dshshell.openExternal 忽略空白地址: " + u);
+                        return;
+                    }
                     ui.post(new Runnable() { @Override public void run() {
                         Log.i(TAG, "dshshell.openExternal → " + u);
                         if (!openInSystemBrowser(u)) conToast("没有可用的浏览器，无法打开链接");
