@@ -421,40 +421,21 @@
         function hand(url) {
           try { window.dshshell.openExternal(String(url)); return true; } catch (e) { return false; }
         }
-        // v1.27 修复（实测：点「登录」弹出 about:blank）：
-        // 登录流程常常是 window.open('about:blank') 先占位，随后 tab.location = 授权地址。
-        // 旧 shim 把 about:blank 当成"有地址"交给系统浏览器 → 浏览器停在空白页 ✗，
-        // 真正的授权地址随后就无处可去（用户只能复制链接手动打开）。
-        // 现在：空白类地址一律返回假窗口，等 location 被赋成真实地址再交出去。
-        function isBlankUrl(u) {
-          var s = String(u == null ? '' : u).trim().toLowerCase();
-          return s === '' || s === 'about:blank' || s === 'about:srcdoc'
-              || s.indexOf('javascript:') === 0 || s.indexOf('data:') === 0;
-        }
         window.open = function (url, name, features) {
           try {
-            if (!isBlankUrl(url)) { hand(url); return null; }
+            if (url) { hand(url); return null; }
             var target = '';
             var fake = {
               closed: false, opener: null, name: name || '',
               close: function () { fake.closed = true; },
               focus: function () {}, blur: function () {}, postMessage: function () {}
             };
-            function go(v) {
-              target = String(v == null ? '' : v);
-              if (!isBlankUrl(target)) hand(target);
-            }
-            var loc = {
-              get href() { return target; },
-              set href(v) { go(v); },
-              assign: function (v) { go(v); },
-              replace: function (v) { go(v); },
-              toString: function () { return target; }
-            };
             Object.defineProperty(fake, 'location', {
-              get: function () { return loc; },
-              set: function (v) { go(v); },
-              configurable: true
+              get: function () { return target; },
+              set: function (v) {
+                target = String(v);
+                if (target && target !== 'about:blank') hand(target);
+              }
             });
             fake.document = { write: function () {}, close: function () {} };
             return fake;
