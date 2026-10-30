@@ -137,7 +137,7 @@ bash tools/build-apk.sh --help
 > **变体（v1.18）**：包名 / 端口 / 外部目录 / 显示名 / 默认密钥全部由 `android-app/variants.sh`
 > 这一份真源决定，构建期生成 `BuildVariant.java` 并改写 manifest（含 provider authorities），
 > 不需要手改源码。四个变体各自一段独立端口与独立 `/sdcard` 目录，**可同时安装同时运行**。
-> 详见 [android-app/README.md](android-app/README.md) 的「变体构建」一节。
+> 详见 [android-app/README.md](../android-app/README.md) 的「变体构建」一节。
 > `community` 变体使用仓库内**公开**的 `android-app/community.jks`（口令 `dsh-community`）；
 > 官方三变体仍用私有 `release.jks`。
 >
@@ -431,7 +431,7 @@ UPSTREAM_MD5="<新包 md5，发布页公布值>"
 
 | 想看什么 | 去哪 |
 |---|---|
-| 内核树来源与实测对照 | [android-app/kernel/README.md](android-app/kernel/README.md) |
-| 各补丁解决了什么问题 | [CHANGES.md](CHANGES.md) |
-| 开发环境结构、真机/模拟器调试 | [docs/开发指南.md](docs/开发指南.md) |
-| 贡献方式 | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| 内核树来源与实测对照 | [android-app/kernel/README.md](../android-app/kernel/README.md) |
+| 各补丁解决了什么问题 | [CHANGES.md](../CHANGES.md) |
+| 开发环境结构、真机/模拟器调试 | [docs/开发指南.md](legacy/dev-guide-2026-09.md) |
+| 贡献方式 | [CONTRIBUTING.md](../CONTRIBUTING.md) |

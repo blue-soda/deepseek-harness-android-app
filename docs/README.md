@@ -34,8 +34,7 @@
 |---|---|
 | [../CHANGES.md](../CHANGES.md) | 版本变更历史（最新在最上面） |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | 如何提 Issue / PR |
-| [../BUILD.md](../BUILD.md) | 历史构建笔记（含早期细节，**以 BUILD.md 之外的 docs/BUILD.md 为准**） |
-| [build-legacy.md](build-legacy.md) | 更早期的构建细节归档（可能过时，仅供考古） |
+| [build-legacy.md](build-legacy.md) | 早期构建笔记归档（可能过时，仅供考古；现役文档是 BUILD.md） |
 | [screenshots/](screenshots/) | 界面截图 |
 | [../plugins/README.md](../plugins/README.md) | 内置工具插件（`dsh-tool-*`）说明 |
 | [../vendor/README.md](../vendor/README.md) | 内置 remote 插件的来源与更新方式 |
