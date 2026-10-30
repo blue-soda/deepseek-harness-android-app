@@ -109,7 +109,7 @@ LF 闸门、Java 语法体检、产物签名校验。
    **`python tools/emu-arm64libs.py`**（把 node 需要的 10 个 arm64 库按 soname 推进 guest 目录，
    约 46 MB，幂等），随后引擎正常起来（实测 `engine token url captured` ✓，
    `node --version` → `v26.4.0` ✓）。**真机不受影响、也不需要这一步**；
-   详见 `BUILD.md` §6.1。
+   详见 `docs/BUILD.md`。
 2. **控制台镜像开关只有开关量没有 UI 行**：`mirrors_off` 偏好已生效（默认镜像开），
    控制台那一行属声明式主题树（`layout.pages[].children[]`），留待后续。
 3. **设备内从零构建链缺 `android.jar`**：SDK 许可不允许再分发，需用户自备

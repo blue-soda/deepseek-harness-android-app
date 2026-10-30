@@ -19,7 +19,7 @@
 - **日志**：
   - 崩溃日志：`/sdcard/DeepSeekHarness/crash.log`
   - 引擎日志：App 内部 `files/dsh-web.log`（需 adb 或 Root 查看）
-  - 启动失败排查见 [docs/开发指南.md](docs/开发指南.md) 第七节注意事项
+  - 启动失败排查见 [docs/legacy/dev-guide-2026-09.md](docs/legacy/dev-guide-2026-09.md) 第七节注意事项
 
 ### 功能建议
 
@@ -41,19 +41,19 @@
 | `plugins/` | 手机端 DSH 插件（shizuku / android） |
 | `dsh-patches/` | DSH 源码补丁 + overlay（升级 DSH 后需重新应用） |
 | `config/` | DSH 组合配置 cordis.patch.yml |
-| `docs/` | 开发指南 / 截图 |
+| `docs/` | 文档区（结构 / 构建 / 测试 / 运维 / 发版 / 排障，入口 `docs/README.md`） |
 
 ## 开发与构建
 
 - 完整开发环境（runtime / dshroot / build 工具链）**不在本仓库**，需自行准备：node 运行时、DSH 内核（`@deepseek-ai/dsh` 0.1.0-rc.6）、aapt/javac/d8/zipalign/apksigner
-- 打包：`cd android-app && sh build.sh`（需 `DSH_DEV_HOME`、`ANDROID_JAR`、`KEYSTORE_PASS` 等环境变量，详见 [android-app/README.md](android-app/README.md) 与 [docs/开发指南.md](docs/开发指南.md)）
-- **安装包自测**：从 APK 抽出 payload 实测引擎 HTTP 200（防 ERR_CONNECTION_REFUSED），方法见 [docs/开发指南.md](docs/开发指南.md) 第四节
+- 打包：`cd android-app && sh build.sh`（需 `DSH_DEV_HOME`、`ANDROID_JAR`、`KEYSTORE_PASS` 等环境变量，详见 [android-app/README.md](android-app/README.md) 与 [docs/legacy/dev-guide-2026-09.md](docs/legacy/dev-guide-2026-09.md)）
+- **安装包自测**：从 APK 抽出 payload 实测引擎 HTTP 200（防 ERR_CONNECTION_REFUSED），方法见 [docs/legacy/dev-guide-2026-09.md](docs/legacy/dev-guide-2026-09.md) 第四节
 - 构建产物（APK、payload.zip、android.jar）与签名密钥不入仓库，见 [.gitignore](.gitignore)
 
 ## 硬性要求
 
 1. **绝不提交密钥/凭证**：`release.jks`、API Key（`sk-` 开头）、`.credentials.yaml` 等严禁入仓库；提交前请自查
-2. **targetSdk 保持 28**：≥29 会导致 node 二进制 EACCES 起不来（详见开发指南）
+2. **targetSdk 保持 28**：≥29 会导致 node 二进制 EACCES 起不来（详见 `docs/DEVELOPMENT.md`）
 3. **保留署名**：合并社区贡献（如 @Suyi222 的 v1.1.1 稳定基线）时保留作者署名，并在 CHANGES.md 致谢
 4. 大二进制（APK、tar 分块）走 GitHub Release，不进仓库
 

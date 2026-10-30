@@ -30,7 +30,7 @@ android-app/
 - **工具链** —— JDK 17+ 与 Android SDK 的 `build-tools`（aapt/d8/zipalign/apksigner）+ 任一 `android.jar`；
 - **签名密钥** —— 默认用仓库内公开的 `community.jks`（`--keystore` 可换成你自己的）。
 
-统一通过 `DSH_DEV_HOME` 指向（结构见 `docs/开发指南.md`）。App 内实例：`/data/user/0/com.deepseek.harness.community/files/buildenv/devhome`。
+统一通过 `DSH_DEV_HOME` 指向（结构见 `docs/legacy/dev-guide-2026-09.md`）。App 内实例：`/data/user/0/com.deepseek.harness.community/files/buildenv/devhome`。
 
 ## 打包命令
 
@@ -86,4 +86,4 @@ bash android-app/build.sh      # 直接调也可以（变体表由 build.sh 自�
 
 - ⚠️ **targetSdk 必须保持 28**（≥29 时 Android 把私有目录挂 noexec，node 起不来）
 - 私有签名密钥（`release.jks`）与密码**绝不提交仓库**（.gitignore 已排除）
-- 安装包自测方法（防 ERR_CONNECTION_REFUSED）：抽出 payload 实测引擎 HTTP 200，见 `docs/开发指南.md` / `交接文档.md`
+- 安装包自测方法（防 ERR_CONNECTION_REFUSED）：抽出 payload 实测引擎 HTTP 200，见 `docs/legacy/dev-guide-2026-09.md` / `交接文档.md`

@@ -25,7 +25,7 @@ DSH 原生前端是桌面端设计，本目录的补丁把它适配到手机屏�
 - **设置页单栏适配**（导航横排可滚动 + 内容区可滚动）
 - **键盘防自动聚焦**：切换话题/新会话不弹键盘，只有点击输入框才弹（`pointerdown` 位置判断，mobile.js）
 
-> 窄屏**侧栏改造**（三条杠按钮 + 浮层侧栏 + 聊天区全宽）是**直接改核心源码** `dsh-client-ui-layout/lib/client.js`（AppFrame 组件），不在本目录——见 `docs/开发指南.md` 与 `CHANGES.md` v1.3.0/v1.3.1。
+> 窄屏**侧栏改造**（三条杠按钮 + 浮层侧栏 + 聊天区全宽）是**直接改核心源码** `dsh-client-ui-layout/lib/client.js`（AppFrame 组件），不在本目录——见 `docs/legacy/dev-guide-2026-09.md` 与 `CHANGES.md` v1.3.0/v1.3.1。
 
 ## 注意
 

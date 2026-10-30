@@ -38,7 +38,7 @@
 ## 已知限制
 
 - **ColorOS 上 `pm install` 报 binder 限制**：安装 APK 需用户手动点装；`pm clear / uninstall` 可用
-- Shizuku shell 权限上限（uid=2000）：不能读其他 App 私有数据、不能改 /system 分区（详见 `docs/开发指南.md` 第九节）
+- Shizuku shell 权限上限（uid=2000）：不能读其他 App 私有数据、不能改 /system 分区（详见 `docs/legacy/dev-guide-2026-09.md` 第九节）
 
 ## 开发提示
 

@@ -1,3 +1,5 @@
+> **历史归档（可能过时）**：排障与构建请以 `docs/BUILD.md`、`docs/TROUBLESHOOTING.md` 为准。
+
 # DeepSeek Harness 手机版 · 开发指南
 
 > **本文档截至 2026-09-16 的最新状态**，按实装代码与 Android 16（API 36）x86_64 模拟器实测逐条核对。

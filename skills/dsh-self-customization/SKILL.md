@@ -211,7 +211,7 @@ ls "$P/dshhome" >/dev/null 2>&1 && echo "payload 在位 ✓"
 
 ## 5. 想查证时的入口
 
-- 端口与变体：`android-app/variants.sh`、`docs/开发指南.md`（端口一览）
-- 定制存活面：`docs/开发指南.md`（"定制面：哪些改动能活下来"）
-- 构建：`BUILD.md`
+- 端口与变体：`android-app/variants.sh`、`docs/legacy/dev-guide-2026-09.md`（端口一览）
+- 定制存活面：`docs/legacy/dev-guide-2026-09.md`（"定制面：哪些改动能活下来"）
+- 构建：`docs/BUILD.md`
 - 内核补丁：`dsh-patches/README.md`

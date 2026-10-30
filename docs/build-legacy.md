@@ -1,3 +1,5 @@
+> **历史归档（可能过时）**：排障与构建请以 `docs/BUILD.md`、`docs/TROUBLESHOOTING.md` 为准。
+
 # 构建 APK
 
 一条命令，从零构建出可安装的 arm64 APK。
