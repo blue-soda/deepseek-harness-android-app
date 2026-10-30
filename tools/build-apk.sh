@@ -307,8 +307,15 @@ export DSH_KEYSTORE="$KEYSTORE"
 if [ "$DO_EMULATOR" = 1 ]; then
   X64="$CACHE/x64libs"
   if [ ! -f "$X64/libz.so" ]; then
-    die "--emulator 需要 x86_64 的 libz.so/libssl.so/libcrypto.so 放在 $X64/
-   （从模拟器取：adb pull /system/lib64/libz.so $X64/ 等三个；详见 BUILD.md 的模拟器一节）"
+    # v1.29：干净 clone 没有 .cache → 回退到仓库内已入库的 guest 库
+    X64_REPO="$REPO/android-app/emu-libs/x86_64"
+    if [ -f "$X64_REPO/libz.so" ]; then
+      X64="$X64_REPO"
+      echo "   x64 guest 库 : 使用仓库内 android-app/emu-libs/x86_64（.cache 里没有）"
+    else
+      die "--emulator 需要 x86_64 的 libz.so/libssl.so/libcrypto.so 放在 $CACHE/x64libs/
+   （从模拟器取：adb pull /system/lib64/libz.so 等；或放一份到 android-app/emu-libs/x86_64/）"
+    fi
   fi
   export DSH_X64_BARE_LIBS="$X64"
   # v1.21：模拟器包**不要**写成交付文件名 —— 曾因此把 x86_64 库带进交付 APK，
