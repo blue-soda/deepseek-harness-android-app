@@ -13521,7 +13521,7 @@ function normalizeServerUrl(value) {
 }
 
 // src/version.ts
-var PLUGIN_VERSION = "0.5.4";
+var PLUGIN_VERSION = "0.5.5";
 
 // src/server-api.ts
 var ENABLED_QR_PROVIDERS = ["github"];
@@ -14109,7 +14109,7 @@ var HostServerConnection = class {
         if (TERMINAL_AUTH_ERRORS.has(code)) {
           this.logger.warn(code === "CONNECTION_REPLACED" ? "Another instance is using this Host identity. Standing by: retrying in five minutes, and taking over as soon as it leaves." : code === "SERVER_CREDENTIALS_BUSY" ? "Credential refresh is locked. Stop other instances; after a crash, stop all instances before removing server-credentials.json.refresh-lock and authorizing again." : "Host authorization failed. Run /remote login or authorize this Host again in Remote settings.");
         }
-        if (code === "DEVICE_REVOKED") {
+        if (code === "DEVICE_REVOKED" || code === "AUTH_INVALID") {
           try {
             await this.api.clearAuthorization();
           } catch (clearError) {
@@ -21920,10 +21920,16 @@ var ClientModeRuntime = class {
   registerControl(connection, webServer) {
     return registerControlRoute(connection, (endpoint, payload, signal) => this.handleControl(endpoint, payload, signal), webServer);
   }
+  /** True while the plugin is exchanging DSH's DeepSeek credential for this device's Server credentials. */
+  authorizingWithDeepSeek = false;
+  /** Whether DSH held a DeepSeek session at the last reconciliation. */
+  hasDeepSeekSession = false;
   status() {
     const targetStatus = this.gatewaySwitch.supportsCarrier() ? this.gatewaySwitch.status() : this.proxySwitch?.status() ?? this.gatewaySwitch.status();
     return {
       available: this.config.serverUrl !== void 0,
+      authorizing: this.authorizingWithDeepSeek,
+      hasDeepSeekSession: this.hasDeepSeekSession,
       identityReady: this.identity !== void 0,
       deviceId: this.identity?.deviceId,
       deviceName: this.identity?.name,
@@ -22085,6 +22091,11 @@ var ClientModeRuntime = class {
   /** Re-read this device's credentials from disk, so a sign-in is picked up without a restart. */
   reloadCredentials() {
     this.server.reloadCredentials();
+  }
+  /** Whether this device holds Server credentials, i.e. the panel shows it as signed in. */
+  async hasServerAuthorization() {
+    if (this.server.hasStoredAuthorization === void 0) return false;
+    return await this.server.hasStoredAuthorization().catch(() => false);
   }
   async setHostAuthorization(enabled) {
     if (this.host === void 0) throw new ClientModeError("METHOD_NOT_ALLOWED", "This plugin is not running as a Host.");
@@ -25014,12 +25025,24 @@ var CodexRemoteDomain = class {
         idempotencyKey: call.params.idempotencyKey
       }));
     }
+    if (isRecord12(call.params) && typeof call.params.threadId === "string") {
+      const rowKey = call.params.threadId;
+      const separator = rowKey.indexOf("~");
+      if (separator > 0) call.params.threadId = rowKey.slice(0, separator);
+    }
     if (call.method === "thread/list") {
       const result = sanitizeThreadList(await this.callUpstream(call.method, call.params));
-      return filterThreadListByWorkspaceAuthority(
+      const authorized = filterThreadListByWorkspaceAuthority(
         result,
         await this.readWorkspaceAuthority(result.data)
       );
+      return {
+        ...authorized,
+        data: authorized.data.map((row, index) => ({
+          ...row,
+          id: `${String(row.id)}~${String(row.createdAt ?? "")}~${index}`
+        }))
+      };
     }
     if (call.method === "thread/start") {
       const cwd = await this.requireCodexWorkspacePath(call.params.cwd);
@@ -26228,7 +26251,6 @@ var PluginControlRuntime = class {
    *
    * `undefined` means no sign-in is in flight, which is also the state after a completed authorization.
    */
-  deepSeekSignIn;
   register(connection, webServer) {
     const statusStream = new ControlStatusStream(() => this.streamStatus());
     return registerControlRoute(
@@ -26337,15 +26359,13 @@ var PluginControlRuntime = class {
         throw new ClientModeError("METHOD_NOT_ALLOWED", "DeepSeek account sign-in is unavailable in this profile.");
       }
       const session = await this.deepseekSession.read();
-      const counted = session !== void 0 && this.deepSeekSignIn !== void 0;
-      if (!counted) {
+      if (session === void 0) {
         const started = await this.deepseekSession.startSignIn({
           callbackOrigin: typeof value.callbackOrigin === "string" ? value.callbackOrigin : "",
           loginSource: value.loginSource === "desktop" ? "desktop" : "web",
           locale: typeof value.locale === "string" ? value.locale : "en",
           timezoneOffsetSeconds: typeof value.timezoneOffsetSeconds === "number" ? value.timezoneOffsetSeconds : 0
         });
-        this.deepSeekSignIn = true;
         return {
           status: "deepseek-sign-in-required",
           ...started.authorizeUrl === void 0 ? {} : { authorizeUrl: started.authorizeUrl }
@@ -26358,7 +26378,6 @@ var PluginControlRuntime = class {
         this.verifiedDeepSeekToken = session.token;
         this.verifiedDeepSeekAuthorization = authorization;
       }
-      this.deepSeekSignIn = void 0;
     } else {
       if (typeof value.email !== "string" || typeof value.password !== "string") {
         throw new ClientModeError("INVALID_MESSAGE", "Email and password are required for account authorization.");
@@ -26371,7 +26390,8 @@ var PluginControlRuntime = class {
     if (this.host !== void 0 && !hostPaused) {
       try {
         this.host.reconnectHost?.();
-      } catch {
+      } catch (error) {
+        console.error(`[dsh-remote] reconcile failed ${JSON.stringify({ code: String(error?.code ?? "") })}`);
       }
     }
     await this.settings.replace(editableConfig(next));
@@ -26471,14 +26491,13 @@ var PluginControlRuntime = class {
     await this.settings.replace(editableConfig({ ...current, acp: { enabled: current.acp?.enabled ?? true, backends } }));
     return this.settingsView();
   }
-  async logout() {
+  async logout(options = {}) {
     if (this.settings === void 0) {
       throw new ClientModeError("SETTINGS_UNAVAILABLE", "DSH user settings are unavailable in this profile.");
     }
     const config = resolveConfig(this.settings.get());
     this.verifiedDeepSeekToken = void 0;
     this.verifiedDeepSeekAuthorization = void 0;
-    this.deepSeekSignIn = void 0;
     if (config.serverUrl !== void 0) {
       await Promise.all([
         this.client?.clearClientAuthorization(),
@@ -26487,11 +26506,13 @@ var PluginControlRuntime = class {
       const directory = await ensureDeviceDirectory(this.identityDirectory, config.serverUrl);
       await new ServerCredentialStore(directory).clear();
     }
+    if (this.client !== void 0) this.client.hasDeepSeekSession = false;
     let deepseekSignedOut = false;
     if (this.deepseekSession !== void 0) {
       try {
-        deepseekSignedOut = await this.deepseekSession.signOut();
-      } catch {
+        deepseekSignedOut = options.releaseDeepSeek === false ? false : await this.deepseekSession.signOut();
+      } catch (error) {
+        console.error(`[dsh-remote] reconcile failed ${JSON.stringify({ code: String(error?.code ?? "") })}`);
         deepseekSignedOut = false;
       }
     }
@@ -26522,7 +26543,49 @@ var PluginControlRuntime = class {
     }
     return this.client === void 0 ? this.hostOnlyStatus() : await this.client.status();
   }
+  /** Consecutive reconciliations without a DSH session: DSH refreshes its grant, so one empty read is not a sign-out. */
+  /** Guards against re-entry through configure(), which reads the settings view back. */
+  reconcilingWithDeepSeek = false;
+  /**
+   * Keep this device's Server credentials in step with DSH's DeepSeek session - that session is the credential, and
+   * the Server verifies it before issuing this device its own tokens.
+   *
+   * Three cases: DSH signed in and this device not authorized -> authorize; DSH signed out and this device authorized
+   * -> sign out; otherwise nothing. At most once per ten seconds, from the settings poll the panel already makes.
+   */
+  async reconcileWithDeepSeek() {
+    if (this.deepseekSession === void 0 || this.reconcilingWithDeepSeek) return;
+    this.reconcilingWithDeepSeek = true;
+    try {
+      const session = await this.deepseekSession.read();
+      if (this.client !== void 0) this.client.hasDeepSeekSession = session !== void 0;
+      const authorized = this.client === void 0 ? false : await this.client.hasServerAuthorization();
+      console.error(`[dsh-remote] reconcile ${JSON.stringify({ hasSession: session !== void 0, authorized })}`);
+      if (session === void 0 && authorized) {
+        await this.logout({ releaseDeepSeek: false });
+        return;
+      }
+      if (session === void 0 || authorized) return;
+      if (this.client !== void 0) this.client.authorizingWithDeepSeek = true;
+      void (async () => {
+        try {
+          await this.configure({ provider: "deepseek", serverUrl: this.config.serverUrl });
+        } catch (error) {
+          console.error(`[dsh-remote] reconcile failed ${JSON.stringify({ code: String(error?.code ?? "") })}`);
+        } finally {
+          if (this.client !== void 0) this.client.authorizingWithDeepSeek = false;
+        }
+      })();
+    } finally {
+      this.reconcilingWithDeepSeek = false;
+    }
+  }
+  /**
+   * Keeps the reconciliation alive without the panel: DSH can be signed in or out while the card is closed, and the
+   * plugin has to follow. Only local reads - the exchange itself is throttled to one per ten seconds.
+   */
   async settingsView() {
+    await this.reconcileWithDeepSeek();
     const config = this.settings === void 0 ? editableConfig(this.config) : editableConfig(resolveConfig(this.settings.get()));
     const associations = await this.associations(config);
     const association = associations.host;

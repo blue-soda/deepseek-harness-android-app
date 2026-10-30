@@ -1410,7 +1410,12 @@
         );
       }
       function RemoteWorkspaceAction(props) {
-        let { t } = props, [open, setOpen] = React.useState(!1), [status, setStatus] = React.useState(void 0), [devices, setDevices] = React.useState([]), [selectedHost, setSelectedHost] = React.useState(void 0), [connectingHost, setConnectingHost] = React.useState(void 0), [workspaces, setWorkspaces] = React.useState([]), [codexWorkspaces, setCodexWorkspaces] = React.useState([]), [codexNotice, setCodexNotice] = React.useState(void 0), [codexAvailable, setCodexAvailable] = React.useState(!1), codexProbeAvailable = React.useRef(!1), [codexOpen, setCodexOpen] = React.useState(!1), [workspaceBackend, setWorkspaceBackend] = React.useState("harness"), [codexWorkspaceId, setCodexWorkspaceId] = React.useState(void 0), [directory, setDirectory] = React.useState(void 0), [path, setPath] = React.useState(""), [addingWorkspace, setAddingWorkspace] = React.useState(!1), [showAllWorkspaces, setShowAllWorkspaces] = React.useState(!1), [showAllCodexWorkspaces, setShowAllCodexWorkspaces] = React.useState(!1), [devicesOpen, setDevicesOpen] = React.useState(!1), workspaceListId = "dsh-remote-workspace-list", codexWorkspaceHeadingId = "dsh-remote-codex-workspace-heading", codexWorkspaceListId = "dsh-remote-codex-workspace-list", [busy, setBusy] = React.useState(!1), [needsAuthorization, setNeedsAuthorization] = React.useState(!1), [authorizationResolved, setAuthorizationResolved] = React.useState(!1), [loginServerUrl, setLoginServerUrl] = React.useState(DEFAULT_REMOTE_SERVER_URL), [editingServerUrl, setEditingServerUrl] = React.useState(!1), [awaitingDeepSeek, setAwaitingDeepSeek] = React.useState(!1), [pendingAuthorizeUrl, setPendingAuthorizeUrl] = React.useState(void 0), [loginMethod] = React.useState(
+        let { t } = props, [open, setOpen] = React.useState(!1);
+        React.useEffect(() => {
+          open && props.control("settings.get").catch(() => {
+          });
+        }, [open]);
+        let [status, setStatus] = React.useState(void 0), [devices, setDevices] = React.useState([]), [selectedHost, setSelectedHost] = React.useState(void 0), [connectingHost, setConnectingHost] = React.useState(void 0), [workspaces, setWorkspaces] = React.useState([]), [codexWorkspaces, setCodexWorkspaces] = React.useState([]), [codexNotice, setCodexNotice] = React.useState(void 0), [codexAvailable, setCodexAvailable] = React.useState(!1), codexProbeAvailable = React.useRef(!1), [codexOpen, setCodexOpen] = React.useState(!1), [workspaceBackend, setWorkspaceBackend] = React.useState("harness"), [codexWorkspaceId, setCodexWorkspaceId] = React.useState(void 0), [directory, setDirectory] = React.useState(void 0), [path, setPath] = React.useState(""), [addingWorkspace, setAddingWorkspace] = React.useState(!1), [showAllWorkspaces, setShowAllWorkspaces] = React.useState(!1), [showAllCodexWorkspaces, setShowAllCodexWorkspaces] = React.useState(!1), [devicesOpen, setDevicesOpen] = React.useState(!1), workspaceListId = "dsh-remote-workspace-list", codexWorkspaceHeadingId = "dsh-remote-codex-workspace-heading", codexWorkspaceListId = "dsh-remote-codex-workspace-list", [busy, setBusy] = React.useState(!1), [needsAuthorization, setNeedsAuthorization] = React.useState(!1), authorizedOnce = React.useRef(!1), [authorizationResolved, setAuthorizationResolved] = React.useState(!1), [loginServerUrl, setLoginServerUrl] = React.useState(DEFAULT_REMOTE_SERVER_URL), [editingServerUrl, setEditingServerUrl] = React.useState(!1), [awaitingDeepSeek, setAwaitingDeepSeek] = React.useState(!1), [pendingAuthorizeUrl, setPendingAuthorizeUrl] = React.useState(void 0), [loginMethod] = React.useState(
           isEnabledQrProvider(props.preferredQrProvider) ? props.preferredQrProvider : defaultQrProvider
         ), [qrSession, setQrSession] = React.useState(void 0), [qrExpired, setQrExpired] = React.useState(!1), [progress, setProgress] = React.useState(void 0), progressRun = React.useRef(0), qrFlowRun = React.useRef(0), [notice, setNotice] = React.useState(void 0), [confirmingSignOut, setConfirmingSignOut] = React.useState(!1), [confirmingRevoke, setConfirmingRevoke] = React.useState(!1), [error, setError] = React.useState(void 0);
         React.useEffect(() => {
@@ -1476,7 +1481,7 @@
             polling || settled || (polling = !0, props.control("client.account.qr.poll", { qrId: qrSession.qrId }).then(async (result) => {
               if (!(!active || settled || run !== qrFlowRun.current))
                 if (result.status === "complete") {
-                  settled = !0, timer !== void 0 && window.clearInterval(timer), setBusy(!0), setError(void 0), setQrExpired(!1), setNeedsAuthorization(!1);
+                  settled = !0, timer !== void 0 && window.clearInterval(timer), setBusy(!0), setError(void 0), setQrExpired(!1), authorizedOnce.current = !0, setNeedsAuthorization(!1);
                   try {
                     let [nextDevices, nextStatus] = await Promise.all([
                       props.control("devices"),
@@ -1575,25 +1580,25 @@
           try {
             let nextStatus = await props.control("status");
             if (setStatus(nextStatus), !nextStatus.available) {
-              setDevices([]), setNeedsAuthorization(!1), setAuthorizationResolved(!0), setSelectedHost(void 0), setWorkspaces([]), setCodexWorkspaces([]), setShowAllWorkspaces(!1), setShowAllCodexWorkspaces(!1), setWorkspaceBackend("harness"), setCodexWorkspaceId(void 0), setPath(""), setAddingWorkspace(!1), setDirectory(void 0);
+              setDevices([]), authorizedOnce.current = !0, setNeedsAuthorization(!1), setAuthorizationResolved(!0), setSelectedHost(void 0), setWorkspaces([]), setCodexWorkspaces([]), setShowAllWorkspaces(!1), setShowAllCodexWorkspaces(!1), setWorkspaceBackend("harness"), setCodexWorkspaceId(void 0), setPath(""), setAddingWorkspace(!1), setDirectory(void 0);
               return;
             }
             let storedLocally;
             try {
               storedLocally = (await props.control("authorization.local"))?.stored === !0, setNeedsAuthorization(!storedLocally);
             } catch {
-              setNeedsAuthorization(!1);
+              authorizedOnce.current = !0, setNeedsAuthorization(!1);
             } finally {
               setAuthorizationResolved(!0);
             }
             try {
               let nextDevices = await props.control("devices");
-              if (setDevices(nextDevices), storedLocally !== void 0 && setNeedsAuthorization(authorizationStillNeeded(storedLocally, nextDevices.length)), selectedHost !== void 0) {
+              if (setDevices(nextDevices), !authorizedOnce.current && storedLocally !== void 0 && setNeedsAuthorization(authorizationStillNeeded(storedLocally, nextDevices.length)), selectedHost !== void 0) {
                 let nextSelectedHost = nextDevices.find((device) => device.deviceId === selectedHost.deviceId);
                 nextSelectedHost === void 0 ? (setSelectedHost(void 0), setWorkspaces([]), setCodexWorkspaces([]), setShowAllWorkspaces(!1), setShowAllCodexWorkspaces(!1), setWorkspaceBackend("harness"), setCodexWorkspaceId(void 0), setPath(""), setAddingWorkspace(!1), setDirectory(void 0)) : setSelectedHost(nextSelectedHost);
               }
             } catch {
-              setDevices([]), setNeedsAuthorization(!0), setSelectedHost(void 0), setWorkspaces([]), setCodexWorkspaces([]), setShowAllWorkspaces(!1), setShowAllCodexWorkspaces(!1), setWorkspaceBackend("harness"), setCodexWorkspaceId(void 0), setPath(""), setAddingWorkspace(!1), setDirectory(void 0);
+              setDevices([]), authorizedOnce.current = !1, setNeedsAuthorization(!0), setSelectedHost(void 0), setWorkspaces([]), setCodexWorkspaces([]), setShowAllWorkspaces(!1), setShowAllCodexWorkspaces(!1), setWorkspaceBackend("harness"), setCodexWorkspaceId(void 0), setPath(""), setAddingWorkspace(!1), setDirectory(void 0);
             }
             selectedHost !== void 0 && (await props.control("remote.session.recover").then((next) => setStatus(next)).catch(() => {
             }), await Promise.all([loadHarnessWorkspaces(selectedHost), loadCodexWorkspaces(selectedHost)]));
@@ -1604,6 +1609,17 @@
           }
         }, show = async () => {
           setShowAllWorkspaces(!1), setShowAllCodexWorkspaces(!1), setOpen(!0), await refreshRemote();
+          for (let attempt = 0; attempt < 10; attempt++) {
+            let list = await props.control("devices").catch(() => {
+            });
+            if (list !== void 0) {
+              setDevices(list), authorizedOnce.current = !0, setNeedsAuthorization(!1), setAuthorizationResolved(!0), await refreshRemote();
+              return;
+            }
+            await new Promise((resolve) => {
+              setTimeout(resolve, 1e3);
+            });
+          }
         };
         React.useEffect(() => {
           if (!(!open || selectedHost !== void 0))
@@ -1629,7 +1645,22 @@
         }, [open, selectedHost]);
         let chooseAnotherHost = () => {
           setSelectedHost(void 0), setWorkspaces([]), setCodexWorkspaces([]), setCodexNotice(void 0), setCodexAvailable(!1), codexProbeAvailable.current = !1, setShowAllWorkspaces(!1), setShowAllCodexWorkspaces(!1), setWorkspaceBackend("harness"), setCodexWorkspaceId(void 0), setDirectory(void 0), setPath(""), setAddingWorkspace(!1), setError(void 0);
-        }, requestDeepSeekSignIn = async () => {
+        }, signingIn = busy || status?.authorizing === !0 || needsAuthorization && status?.hasDeepSeekSession === !0;
+        React.useEffect(() => {
+          if (!signingIn) return;
+          let tries = 0, timer = window.setInterval(() => {
+            tries += 1, (async () => {
+              let next = await props.control("status").catch(() => {
+              });
+              next !== void 0 && setStatus(next);
+              let list = await props.control("devices").catch(() => {
+              });
+              list !== void 0 && (setDevices(list), authorizedOnce.current = !0, setNeedsAuthorization(!1), setAuthorizationResolved(!0));
+            })(), tries >= 5 && window.clearInterval(timer);
+          }, 1e3);
+          return () => window.clearInterval(timer);
+        }, [signingIn]);
+        let requestDeepSeekSignIn = async () => {
           let transport = globalThis.__DSH_TRANSPORT__, callbackOrigin = transport?.streamBaseUrl !== void 0 ? new URL(transport.streamBaseUrl).origin : window.location.origin, result = await props.control("settings.configure", {
             // No `role`: a device has one identity, and the control writes only the Server address plus this
             // sign-in. Sending a role here was the last thing that made one look like a runtime switch.
@@ -1667,7 +1698,7 @@
               if (state.pending) throw new Error(t("deepseekSignInTimeout"));
             } else
               tab?.close();
-            setDevices(await props.control("devices")), setStatus(await props.control("status")), setNeedsAuthorization(!1), setAuthorizationResolved(!0), setNotice(void 0);
+            setDevices(await props.control("devices")), setStatus(await props.control("status")), authorizedOnce.current = !0, setNeedsAuthorization(!1), setAuthorizationResolved(!0), setNotice(void 0);
           } catch (reason) {
             setError(remoteErrorMessage(reason, t));
           } finally {
@@ -1692,7 +1723,7 @@
         }, revokeRemote = async () => {
           setBusy(!0), setError(void 0), setNotice(void 0);
           try {
-            await props.control("client.device.revoke"), setDevices([]), setNeedsAuthorization(!0), setStatus(await props.control("status"));
+            await props.control("client.device.revoke"), setDevices([]), authorizedOnce.current = !1, setNeedsAuthorization(!0), setStatus(await props.control("status"));
           } catch (reason) {
             setError(remoteErrorMessage(reason, t));
           } finally {
@@ -1701,7 +1732,7 @@
         }, logoutRemote = async () => {
           setBusy(!0), setError(void 0), setNotice(void 0);
           try {
-            await props.control("settings.logout"), setDevices([]), setNeedsAuthorization(!0), setQrSession(void 0), setQrExpired(!1), setStatus(await props.control("status"));
+            await props.control("settings.logout"), setDevices([]), authorizedOnce.current = !1, setNeedsAuthorization(!0), setQrSession(void 0), setQrExpired(!1), setStatus(await props.control("status"));
           } catch (reason) {
             setError(remoteErrorMessage(reason, t));
           } finally {
@@ -1909,11 +1940,11 @@
                         onClick: () => setEditingServerUrl(!0)
                       }, loginServerUrl)
                     ),
-                    React.createElement(
-                      "button",
-                      { type: "button", disabled: busy || loginServerUrl.trim() === "", onClick: () => void signInClient() },
-                      t(busy ? "signingIn" : "deepseekSignIn")
-                    ),
+                    React.createElement("button", {
+                      type: "button",
+                      disabled: busy || signingIn || loginServerUrl.trim() === "",
+                      onClick: () => void signInClient()
+                    }, t(signingIn ? "signingIn" : "deepseekSignIn")),
                     awaitingDeepSeek ? React.createElement(
                       "p",
                       { className: "dshRemoteServiceAddress" },

@@ -421,24 +421,69 @@
         function hand(url) {
           try { window.dshshell.openExternal(String(url)); return true; } catch (e) { return false; }
         }
+        // v1.28 修复（用户实测：DSH 内置登录点「Sign in」只弹 about:blank / 只能复制链接）：
+        //
+        // DSH 前端的写法是：
+        //   this.popup = window.open("about:blank", "_blank");
+        //   if (this.popup && !this.popup.closed) this.popup.location.replace(authorizeUrl);
+        // —— 没有 null 兜底。而旧 shim 对任何 truthy url 都 `hand(url); return null;`
+        //    → "about:blank" 被丢给系统浏览器（白页）+ 返回 null
+        //    → this.popup 为 null → location.replace(授权地址) 永不执行。
+        //
+        // 新做法（对 "" / about:blank / about:srcdoc 这类“占位窗口”）：
+        //   ① 仍用原生 window.open 开一个真实空白窗口（保留 closed/focus 等真实语义，
+        //      也保留 App 侧 onCreateWindow 的隐藏 WebView 作为兜底）；
+        //   ② 返回**代理对象**：location.replace / href / assign 一律经 dshshell.openExternal
+        //      直接交系统浏览器 —— 不依赖隐藏 WebView 的导航时序（那一步曾被 Chromium 节流丢地址）；
+        //   ③ 交出真实地址后就关掉那个原生空白窗，避免多一个隐形窗口。
+        function isBlankUrl(u) {
+          var s = String(u == null ? '' : u).trim().toLowerCase();
+          return s === '' || s === 'about:blank' || s === 'about:srcdoc';
+        }
         window.open = function (url, name, features) {
           try {
-            if (url) { hand(url); return null; }
-            var target = '';
-            var fake = {
-              closed: false, opener: null, name: name || '',
-              close: function () { fake.closed = true; },
-              focus: function () {}, blur: function () {}, postMessage: function () {}
+            if (!isBlankUrl(url)) { hand(url); return null; }
+
+            var real = null;
+            try {
+              real = origOpen ? origOpen.call(window, 'about:blank', name || '_blank', features) : null;
+            } catch (e) { real = null; }
+
+            var target = 'about:blank';
+            var closedByUs = false;
+            var proxy = {
+              opener: null,
+              name: name || '',
+              get closed() { return closedByUs || (real ? !!real.closed : false); },
+              close: function () {
+                closedByUs = true;
+                try { if (real) real.close(); } catch (e) {}
+              },
+              focus: function () { try { if (real && real.focus) real.focus(); } catch (e) {} },
+              blur: function () { try { if (real && real.blur) real.blur(); } catch (e) {} },
+              postMessage: function () {}
             };
-            Object.defineProperty(fake, 'location', {
-              get: function () { return target; },
-              set: function (v) {
-                target = String(v);
-                if (target && target !== 'about:blank') hand(target);
-              }
+            function go(v) {
+              target = String(v == null ? '' : v);
+              if (isBlankUrl(target)) return;
+              hand(target);
+              try { if (real) real.close(); } catch (e) {}
+              closedByUs = true;
+            }
+            var loc = {
+              get href() { return target; },
+              set href(v) { go(v); },
+              assign: function (v) { go(v); },
+              replace: function (v) { go(v); },
+              toString: function () { return target; }
+            };
+            Object.defineProperty(proxy, 'location', {
+              get: function () { return loc; },
+              set: function (v) { go(v); },
+              configurable: true
             });
-            fake.document = { write: function () {}, close: function () {} };
-            return fake;
+            proxy.document = { write: function () {}, close: function () {} };
+            return proxy;
           } catch (e) {
             try { return origOpen ? origOpen.apply(window, arguments) : null; } catch (e2) { return null; }
           }

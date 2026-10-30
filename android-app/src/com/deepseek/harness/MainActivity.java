@@ -215,6 +215,12 @@ public class MainActivity extends Activity {
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/mobile.css",
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/mobile.js",
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html",
+        // v1.28 修复：上面三条路径多了一层 `dsh/node_modules`，与设备上真实布局不符
+        // （实际在 dshroot/lib/node_modules/@deepseek-ai/dsh-web-frontend/dist/）。
+        // 结果：mobile.js/css/index.html 的改动**从来没被覆盖到设备上** —— 改了 shim 也不生效。
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-web-frontend/dist/mobile.css",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-web-frontend/dist/mobile.js",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html",
         // v1.20：payload/bin/* 全部由 build.sh 生成（bash 包装、pnpm/python/npm/git 的 wrapper），
         // 属于「官方维护」文件。必须随 APK 覆盖：否则 internal-patch 同步只写缺失文件，
         // 老设备会一直留着旧版 bin/bash（踩过：终端因 mksh 不认 bash 长选项而退出(1)）。
