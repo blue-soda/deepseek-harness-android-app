@@ -13521,7 +13521,7 @@ function normalizeServerUrl(value) {
 }
 
 // src/version.ts
-var PLUGIN_VERSION = "0.5.5";
+var PLUGIN_VERSION = "0.5.6";
 
 // src/server-api.ts
 var ENABLED_QR_PROVIDERS = ["github"];
@@ -15512,7 +15512,7 @@ var CodexRemoteClient = class {
     if (!isRecord(result) || !Array.isArray(result.data))
       throw invalidResponse("thread list");
     return {
-      sessions: result.data.map(projectCodexThread).filter((value) => value !== void 0),
+      sessions: uniqueCodexThreadRows(result.data).map(projectCodexThread).filter((value) => value !== void 0),
       ...typeof result.nextCursor === "string" ? { nextCursor: result.nextCursor } : {}
     };
   }
@@ -15665,6 +15665,33 @@ function projectCodexThread(value) {
     ...typeof value.archived === "boolean" ? { archived: value.archived } : {},
     ...typeof value.isPinned === "boolean" ? { pinned: value.isPinned } : {}
   };
+}
+var THREAD_ID_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u;
+var LEGACY_ROW_KEY = /^([A-Za-z0-9][A-Za-z0-9._-]{0,255})~[^~]{0,64}~[0-9]{1,9}$/u;
+function codexThreadIdFromKey(key) {
+  if (THREAD_ID_KEY.test(key))
+    return key;
+  return LEGACY_ROW_KEY.exec(key)?.[1];
+}
+function rowFreshness(row) {
+  for (const field of ["updatedAt", "createdAt"]) {
+    const value = row[field];
+    if (typeof value === "number" && Number.isFinite(value))
+      return value;
+  }
+  return 0;
+}
+function uniqueCodexThreadRows(values) {
+  const byThread = /* @__PURE__ */ new Map();
+  for (const value of values) {
+    if (!isRecord(value) || typeof value.id !== "string" || value.id.length === 0)
+      continue;
+    const threadId = codexThreadIdFromKey(value.id) ?? value.id;
+    const current = byThread.get(threadId);
+    if (current === void 0 || rowFreshness(value) > rowFreshness(current))
+      byThread.set(threadId, value);
+  }
+  return [...byThread.values()];
 }
 function deriveCodexCwdWorkspaces(values) {
   const byPath = /* @__PURE__ */ new Map();
@@ -17540,6 +17567,17 @@ function record(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+// src/codex/session-id.ts
+var SESSION_PREFIX = "codex:";
+function parseCodexSessionId(value) {
+  if (typeof value !== "string" || !value.startsWith(SESSION_PREFIX)) return void 0;
+  const threadId = codexThreadIdFromKey(value.slice(SESSION_PREFIX.length));
+  return threadId === void 0 ? void 0 : { sessionId: value, threadId };
+}
+function resolveCodexThreadKey(key) {
+  return codexThreadIdFromKey(key) ?? key;
+}
+
 // src/codex/method-policy.ts
 var id2 = external_exports.string().min(1).max(256);
 var cursor = external_exports.string().min(1).max(4096).nullable().optional();
@@ -19411,7 +19449,7 @@ async function loadCatalog(client, signal, pendingThreads) {
       updatedAt: workspace.updatedAt
     }));
   }
-  const projected = threads.map((thread) => {
+  const projected = uniqueCodexThreadRows(threads).map((thread) => {
     const session = projectCodexThread(thread);
     return session === void 0 ? void 0 : { thread, session };
   }).filter((value) => value !== void 0);
@@ -20121,10 +20159,9 @@ function sessionIdFromAddress(address) {
   return requiredString(address.childSessionId, "childSessionId");
 }
 function nativeThreadId(sessionId) {
-  if (!sessionId.startsWith(CODEX_SESSION_PREFIX) || sessionId.length === CODEX_SESSION_PREFIX.length) {
-    throw new Error("The selected Session does not belong to CodeX.");
-  }
-  return sessionId.slice(CODEX_SESSION_PREFIX.length);
+  const parsed = parseCodexSessionId(sessionId);
+  if (parsed === void 0) throw new Error("The selected Session does not belong to CodeX.");
+  return parsed.threadId;
 }
 function activeTurnId(value) {
   if (!Array.isArray(value)) return void 0;
@@ -24679,8 +24716,9 @@ var CodexPeerBridge = class {
       method: "thread/read",
       params: { threadId: params.threadId, includeTurns: false }
     });
-    this.streams.set(params.streamId, params.threadId);
-    return { opened: true, streamId: params.streamId, threadId: params.threadId };
+    const threadId = resolveCodexThreadKey(params.threadId);
+    this.streams.set(params.streamId, threadId);
+    return { opened: true, streamId: params.streamId, threadId };
   }
   closeStream(input2) {
     const params = streamCloseSchema.parse(input2);
@@ -25026,9 +25064,7 @@ var CodexRemoteDomain = class {
       }));
     }
     if (isRecord12(call.params) && typeof call.params.threadId === "string") {
-      const rowKey = call.params.threadId;
-      const separator = rowKey.indexOf("~");
-      if (separator > 0) call.params.threadId = rowKey.slice(0, separator);
+      call.params.threadId = resolveCodexThreadKey(call.params.threadId);
     }
     if (call.method === "thread/list") {
       const result = sanitizeThreadList(await this.callUpstream(call.method, call.params));
@@ -25038,10 +25074,7 @@ var CodexRemoteDomain = class {
       );
       return {
         ...authorized,
-        data: authorized.data.map((row, index) => ({
-          ...row,
-          id: `${String(row.id)}~${String(row.createdAt ?? "")}~${index}`
-        }))
+        data: uniqueCodexThreadRows(authorized.data)
       };
     }
     if (call.method === "thread/start") {
@@ -26724,13 +26757,6 @@ function redact(value, key = "") {
   return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, redact(child, childKey)]));
 }
 
-// src/codex/session-id.ts
-function parseCodexSessionId(value) {
-  if (typeof value !== "string") return void 0;
-  const match = /^codex:([A-Za-z0-9][A-Za-z0-9._-]{0,255})$/.exec(value);
-  return match === null ? void 0 : { sessionId: value, threadId: match[1] };
-}
-
 // src/terminal-policy.ts
 var TERMINAL_CALLS = /* @__PURE__ */ new Set([
   "terminal/environment",
@@ -26744,6 +26770,7 @@ var TERMINAL_CALLS = /* @__PURE__ */ new Set([
 ]);
 var TERMINAL_STREAMS = /* @__PURE__ */ new Set(["terminal/follow", "terminal/retain"]);
 var id3 = external_exports.string().regex(/^[A-Za-z0-9_:-]{1,256}$/);
+var sessionKey = external_exports.string().regex(/^[A-Za-z0-9_:~-]{1,512}$/);
 var TerminalPolicy = class {
   constructor(enabled, deviceId, owners) {
     this.enabled = enabled;
@@ -26758,7 +26785,7 @@ var TerminalPolicy = class {
     );
     const args = external_exports.object({ args: external_exports.record(external_exports.unknown()) }).strict().parse(payload).args;
     const rawSessionId = args.agentId ?? args.sessionId;
-    const sessionId = id3.parse(rawSessionId);
+    const sessionId = sessionKey.parse(rawSessionId);
     const codexSession = parseCodexSessionId(sessionId);
     void codexSession;
     if (endpoint === "terminal/environment" || endpoint === "terminal/shells" || endpoint === "terminal/list") return {};
