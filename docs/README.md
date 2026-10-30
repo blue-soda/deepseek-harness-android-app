@@ -15,6 +15,19 @@
 | 6 | [DEVELOPMENT.md](DEVELOPMENT.md) | 常见改动的落点：Java / 插件 / 前端补丁 / 控制台 / 主题 |
 | 7 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | 用户可自助的排查步骤 + 开发侧已知坑 |
 
+## 常用脚本（都在 tools/，已入库）
+
+| 脚本 | 用途 |
+|---|---|
+| `tools/build-apk.sh` | 构建单个包（`--emulator` / `--original-look` / `--out`） |
+| `tools/build-release.sh` | 一次出三包（arm64 / arm64-original-look / x86_64） |
+| `tools/release-upload.sh` | 慢网用 curl 直传 Release 资产（`gh` 卡住时用） |
+| `tools/release-check.sh` | 核对 Release 是否已发布 + 资产列表 |
+| `tools/emu-start.sh` | 启动模拟器（带 guest 库补齐） |
+| `tools/emu-shizuku.sh` | 模拟器上拉起 Shizuku server |
+| `tools/emu-skip-setup.sh` | 跳过首次引导（仅测试用） |
+| `tools/java-syntax-sanity.py` | Java 括号/大括号体检 |
+
 ## 其它文档
 
 | 文档 | 说明 |

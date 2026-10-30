@@ -94,7 +94,7 @@ unzip -p android-app/DeepSeekHarness-community-1.21.2-arm64.apk AndroidManifest.
 ```bash
 git add -A
 git commit -m "release: 1.21.2-community（<一句话>）"
-git push blue-soda master
+git push origin master        # 本机历史上用的是 blue-soda 这个远端名
 ```
 
 ## 7. 注意

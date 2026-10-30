@@ -71,7 +71,8 @@ adb shell "su 0 grep -c '<新代码里的独特字符串>' \
 - 版本号只在 `android-app/AndroidManifest.xml`（`versionCode` / `versionName`）；
 - 提交信息用 `<type>(<scope>): <中文简述>`，例如
   `fix(overlay): 修「在 App 内不隐藏」——前台判定改用 IMPORTANCE_VISIBLE`；
-- 一次改动一个主题，便于回滚（`git revert <sha>`）。
+- 一次改动一个主题，便于回滚（`git revert <sha>`）；
+- 推送：`git push origin master`（本机历史远端名可能是 `blue-soda`，两者等价）。
 
 ## 6. 文档要求
 
