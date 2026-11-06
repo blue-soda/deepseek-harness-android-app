@@ -23,7 +23,7 @@ Continue DeepSeek Harness sessions and experimental Codex workspaces from anothe
 Add the current package version to the `web` profile, then restart Harness:
 
 ```sh
-dsh plugin --profile web add -w @blue-soda/dsh-remote@0.5.1
+dsh plugin --profile web add -w @blue-soda/dsh-remote@0.5.8
 ```
 
 ### dsh-TUI Host
@@ -31,7 +31,7 @@ dsh plugin --profile web add -w @blue-soda/dsh-remote@0.5.1
 Remote can also run as a Host in a terminal-only [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) profile:
 
 ```sh
-dsh plugin --profile dsh-tui add -w @blue-soda/dsh-remote@0.5.1
+dsh plugin --profile dsh-tui add -w @blue-soda/dsh-remote@0.5.8
 ```
 
 After starting dsh-TUI, manage Remote with `/remote`, `/remote login`, `/remote status`, and `/remote logout`.
@@ -44,17 +44,28 @@ After starting dsh-TUI, manage Remote with `/remote`, `/remote login`, `/remote 
 - Use the official workspace file tree and bounded read-only previews on supported Harness versions.
 - Use an optional Host-local terminal and authorized loopback development-service previews.
 - Open Host Codex projects in the existing Remote UI through the optional experimental Codex domain. It is **off by default** since 0.5.1: turn it on in the DeepSeek Remote settings card, which starts `codex app-server` on the Host and applies immediately.
+- Long Codex histories load tail-first: the Host indexes turn ids without full items, loads full items from the newest turns, and the client reuses its last page for 60 seconds. A real 136-turn thread opens from its 25 newest turns (a 50-message page) instead of reading the whole thread.
 - Reach the Host without opening a public listening port or configuring router port forwarding.
 
 ## Compatibility
 
-Plugin `0.4.29` targets DeepSeek Harness `dsh-v0.2.0-rc.2` and retains `dsh-v0.1.7-rc.1` compatibility; it also supports `dsh-v0.1.6-alpha.2` and earlier settings hosts. It supports:
+Plugin `0.5.8` targets DeepSeek Harness `dsh-v0.2.0-rc.2` and retains `dsh-v0.1.7-rc.1` compatibility; it also supports `dsh-v0.1.6-alpha.2` and earlier settings hosts. It supports:
 
 - `dsh-v0.1.1-rc.2` through the official legacy `ApiProxy`;
 - `dsh-v0.1.2-alpha.1` through `dsh-v0.1.2-rc.1` through the official Typert Remote Gateway;
 - `dsh-v0.1.5-rc.1`, `dsh-v0.1.6-alpha.1`, and `dsh-v0.2.0-rc.2` Session V3 through the official Typert Remote Gateway.
 
 The same package feature-detects the older settings registry and the `0.1.7-rc.1` and `0.2.0-rc.2` Volatile settings entry. Remote Web/Desktop and Android normalize released sessions that still report the retired `code` agent preset to `ptc`. The Host reads the running Harness version from the CLI entrypoint, or from the 0.2.0 Desktop shell's `@deepseek-ai/dsh-desktop-host` entrypoint when the Harness CLI package is only a sibling of that entrypoint inside `app.asar`.
+
+## Codex history diagnostics
+
+The Codex virtual harness runs in the DSH client's Node process. By default it writes **no** cache diagnostics file. To enable the optional metadata file, start the **client** with:
+
+```sh
+DSH_CODEX_HISTORY_STATS=1
+```
+
+It then writes `codex-history-cache-stats.json` under `$DSH_HOME` (default `~/.dsh`) on cache hits/misses. The file contains only cache metadata - `hits`/`misses`, TTL, session id, record count, cursor, first/last seq and age - never message text, tool output or event data. The switch is checked in the client Node process; it has no effect on the Host's history pages.
 
 ## Self-hosted Server
 

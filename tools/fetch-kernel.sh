@@ -43,7 +43,10 @@ K_VER=$(sed -n '/"node_modules\/@deepseek-ai\/dsh": {/,/"dependencies"/p' "$LOCK
         | sed -n 's/.*"version": "\([^"]*\)".*/\1/p' | head -1)
 N_REGISTRY=$(grep -c '"resolved": "https://registry.npmjs.org' "$LOCK" || true)
 echo "   lock: version 行 $N_ENTRIES · integrity $N_INTEG · registry tarball $N_REGISTRY · 内核 $K_VER"
-[ "$K_VER" = "0.2.1-rc.2" ] || { echo "!! 内核版本不是 0.2.1-rc.2：$K_VER" >&2; exit 1; }
+# 升级内核时只改 android-app/kernel/package.json + lock，这里以 pin 为准（不再写死版本号）
+K_PIN=$(sed -n 's/.*"@deepseek-ai\/dsh": "\([^"]*\)".*/\1/p' "$REPO/android-app/kernel/package.json" | head -1)
+[ -n "$K_PIN" ] || { echo "!! 读不到 android-app/kernel/package.json 的 @deepseek-ai/dsh pin" >&2; exit 1; }
+[ "$K_VER" = "$K_PIN" ] || { echo "!! lock 里的内核版本($K_VER) 与 package.json pin($K_PIN) 不一致" >&2; exit 1; }
 [ "$N_ENTRIES" -ge 600 ] || { echo "!! lock 条目过少（$N_ENTRIES），疑似被截断" >&2; exit 1; }
 [ "$N_INTEG" -ge 600 ] || { echo "!! integrity 覆盖不足（$N_INTEG）" >&2; exit 1; }
 [ "$N_REGISTRY" -ge 600 ] || { echo "!! 有 tarball 不是来自官方 registry（$N_REGISTRY）" >&2; exit 1; }
@@ -142,6 +145,6 @@ if [ "$N_PKG" -eq 0 ]; then
   N_PKG=$( (find "$OUT/node_modules" -name package.json 2>/dev/null || true) | wc -l | tr -d ' ')
 fi
 echo "   内核树: node_modules/@deepseek-ai/dsh（版本 $VER，依赖包 $N_PKG 个）"
-[ "$VER" = "0.2.1-rc.2" ] || { echo "!! 内核版本异常：$VER" >&2; exit 1; }
+[ "$VER" = "$K_PIN" ] || { echo "!! 内核版本异常：$VER（期望 $K_PIN）" >&2; exit 1; }
 [ "$N_PKG" -ge 450 ] || { echo "!! 依赖包数量异常：$N_PKG" >&2; exit 1; }
 echo "== fetch-kernel: OK =="
