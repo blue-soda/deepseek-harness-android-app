@@ -228,6 +228,30 @@ public class MainActivity extends Activity {
         // v1.15.9：dsh-app-boot 打了「插件 warn 落盘」补丁（$DSH_HOME/logs/plugins.log）。
         // 必须加白名单，否则同内核版本下 fast 同步不会覆盖它，补丁形同没打。
         "dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js",
+
+        // ── v1.29（真机血泪教训二）：上面的补丁面路径全是**嵌套布局**
+        //    （dshroot/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/…），
+        //    而 0.2.1 起 npm 改成 hoisted 扁平安装 —— 那些路径在设备上**根本不存在**，
+        //    于是"补丁随 APK 覆盖"全部静默失效：升级后设备仍是旧文件，
+        //    表现就是"升级到 0.2.2 后插件被判定 incompatible / 改了补丁没效果"。
+        //    这里补齐 hoisted 的真实路径（目录前缀，覆盖包内所有文件）。
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-attachment-local/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-subprocess-local/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-bash-local/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-fs-local/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-ptc-runtime-node/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-llm-deepseek/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-tool-accessibility/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-tool-android/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-tool-browser/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-tool-shizuku/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-tool-vscreen/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-tool-fs-search/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-storage-json/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-app-boot/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-client-ui-layout/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-client-ui-cordis/",
         "dshroot/lib/node_modules/@deepseek-ai/dsh/package.json"
     };
     // 外部 dshroot 解压完成标记（App 在 dshroot 补齐后写入；清空/重置时随目录删除）。

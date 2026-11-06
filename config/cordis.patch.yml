@@ -77,3 +77,18 @@
     # v1.19.0：AI 浏览器（结构化 DOM 快照 + 稳定 ref，不是截图 OCR）
     - id: tool-browser
       name: '@deepseek-ai/dsh-tool-browser'
+
+# ── v1.29（0.2.2 起）────────────────────────────────────────────────────────────
+# 0.2.2 的 agent preset 会启用 `tool-plugin-manager`（dsh-plugin-manager/tools），
+# 而它 inject 的 `pluginManager` 只在**有 profileContext 服务**时才启用
+# （dsh-base 里 `plugin-manager: disabled: !!js "!ctx.get('profileContext')"`）。
+# 我们这套是「APK 静态内置插件」的用法，没有 profileContext →
+#   pluginManager 永不启动 → tool-plugin-manager 永久 pending →
+#   新会话直接失败：`agent-preset/invalid: tool-plugin-manager … waiting for pluginManager`，
+#   同时「默认工作区不可用」。
+# 这里把它显式禁用（本文件是最后一层 patch，会覆盖 preset 的启用）。
+# 但"禁用工具"不够：agent preset 每次开会话都会把它重新启用 →
+# 正确做法是把**服务提供者** plugin-manager 打开（dsh-base 里它只在有 profileContext 时启用），
+# 这样 tool-plugin-manager 的注入有落点，会话不再报 agent-preset/invalid。
+- id: plugin-manager
+  disabled: false
