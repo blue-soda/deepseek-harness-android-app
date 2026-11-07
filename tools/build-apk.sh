@@ -387,7 +387,6 @@ if [ "$DO_VERIFY" = 1 ]; then
 @deepseek-ai/dsh-attachment-local/lib/sharp-shim.js:sharp
 @deepseek-ai/node-addon-system/lib/flock.js:noopBinding
 @deepseek-ai/dsh-storage-json/lib/index.js:fsyncDirectory
-@deepseek-ai/dsh-client-ui-layout/lib/client.js:dsh-mobile-menu-btn
 @deepseek-ai/dsh-app-boot/lib/index.js:DSH_ANDROID_PLUGIN_LOG
 @deepseek-ai/dsh-session-persistence-jsonl/lib/index.js:Android
 @deepseek-ai/dsh-tool-fs-search/lib/index.js:android

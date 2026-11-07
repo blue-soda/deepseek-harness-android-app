@@ -8006,9 +8006,9 @@ public class MainActivity extends Activity {
      */
     private static final String[][] SIMPLE_GROUPS = {
         {"", "extract"},
-        // v1.25（维护者要求）：功能组独立出来 —— 浏览器 / 悬浮窗 / 虚拟屏，全部移出「系统」
-        {"group.features", "browser", "overlaymsg", "vscreen"},
         {"group.system", "env", "perm", "plugins", "log", "theme"},
+        // v1.30（维护者要求）：功能组移到「系统」下方 —— 浏览器 / 悬浮窗 / 虚拟屏，全部移出「系统」
+        {"group.features", "browser", "overlaymsg", "vscreen"},
         {"group.diagnose", "selfcheck"},
         // v1.21（用户要求）：会话两行移到最后 —— 它们不是日常高频操作，
         // 原来排在最上面会挡住「启动引擎 / 权限 / 日志」这些常用入口。
@@ -8258,11 +8258,31 @@ public class MainActivity extends Activity {
         box.setOrientation(LinearLayout.VERTICAL);
         box.addView(cText(t("card.rescueDesc", "引擎起不来时，用安全模式跳过用户层启动（不丢数据）；也可以随时导出全部数据做备份。"),
                 11f, cSub(), false));
+        // v1.30（维护者要求）：页面与引擎的控制流断开后（前端不自动重连），
+        // 这里给一个手动兜底：重载 WebView 即可重新握手，会话/消息都不丢。
+        Button reconnect = cButton("重连页面", false);
+        reconnect.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                closeDialogOverlay();
+                try {
+                    if (webView != null) {
+                        webView.reload();          // 保留 token/会话，只重建页面与 WebSocket
+                        conToast("已重新加载页面");
+                    } else {
+                        loadHome();
+                        conToast("已重新打开主界面");
+                    }
+                } catch (Throwable th) {
+                    conToast("重连失败：" + th.getMessage());
+                }
+            }
+        });
+        box.addView(reconnect, cTop(cGap(12)));
         Button safe = cButton("安全模式启动", false);
         safe.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { closeDialogOverlay(); conSafeMode(); }
         });
-        box.addView(safe, cTop(cGap(12)));
+        box.addView(safe, cTop(cGap(8)));
         Button exp = cButton("导出全部数据", false);
         exp.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { closeDialogOverlay(); conBackupExport(); }

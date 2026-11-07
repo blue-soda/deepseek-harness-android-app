@@ -36,7 +36,7 @@
    - v1.20：右侧面板不再压住三条杠：三条杠抬到 z-index 80、隐藏面板 guide 里的冗余 "Start" 入口
    注意：类名是运行时插件动态注入的 CSS module 类名，改前先确认真实类名；
         且**不要**把这类哈希类名当选择器写死（会随前端版本静默失配）—— 只按
-        稳定标识匹配：自定义类名（.dsh-mobile-menu-btn）、data-* 属性
+        稳定标识匹配：data-* 属性
         （[data-slot="…"]、[data-cordis-badge]）。
    ============================================================ */
 
@@ -258,9 +258,6 @@ input[type="search"] {
 
 /* 兜底（同一件事不再重复一份阈值）：三条杠真的在 DOM 里就让位。
    老 WebView 不支持 :has 时整条规则被忽略，上面那条 1024 仍然生效。 */
-html:has(.dsh-mobile-menu-btn) .wSkVaW_header {
-  padding-left: 52px !important;
-}
 
 /* ============ 窄屏：三条杠按钮与会话标题**垂直居中** ============
    按钮是 36×36 的透明盒子（inline `top:8px; left:8px`），图标 22×22 居中；
@@ -274,9 +271,6 @@ html:has(.dsh-mobile-menu-btn) .wSkVaW_header {
    手机宽（360 CSS，dpr3）下 leading 同样是 10~50、按钮盒同样是 8~44，
    实测下移量一致，所以这一个值手机/平板通用。
    ⚠ 按钮的 top/left 是 React inline style，必须 !important 才盖得住。 */
-.dsh-mobile-menu-btn {
-  top: 13px !important;
-}
 
 /* ============ 窄屏：正文与输入框扩宽 ============
    桌面端为三列布局预留了大量左右内缩（消息区 padding 32px、
@@ -404,9 +398,6 @@ html:has(.dsh-mobile-menu-btn) .wSkVaW_header {
    面板关闭时照旧显示。打开状态由 mobile.js 判定并写到
    `html[data-dsh-right-panel]`（dockkit 活动 pane 宽度占视口一半以上 = 打开）。 */
 @media (max-width: 1024px) {
-  html[data-dsh-right-panel] .dsh-mobile-menu-btn {
-    display: none !important;
-  }
 }
 
 /* ============ 窄屏：后台任务菜单不超出屏幕 ============

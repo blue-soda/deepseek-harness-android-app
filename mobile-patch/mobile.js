@@ -610,3 +610,58 @@
   setTimeout(update, 400);
   setTimeout(update, 1500);
 })();
+
+/**
+ * v1.30：**断流自动重连**（维护者要求：只在断开时触发，不做轮询）。
+ *
+ * 背景：Android 上 WebView 进后台可能被系统冻结，页面与引擎之间的事件流
+ * （ws://127.0.0.1:3086/...）会断开；前端**不会自动重连**，表现为
+ * 「Deep diving…」卡住、停止按钮也失效（日志：control stream failed:
+ * The remote Harness stream transport closed）。重载页面即可恢复，会话不丢。
+ *
+ * 策略（尽量克制）：
+ *   · 只监听**本机引擎 3086** 的 WebSocket；
+ *   · 只在 close 事件且**非正常关闭**（1000/1001）时触发；
+ *   · 页面在后台（visibilityState=hidden）不刷，避免和系统冻结打架；
+ *   · 60 秒冷却 + 一次重载机会，防止重连风暴。
+ */
+(function () {
+  try {
+    if (window.__dshWsGuard) return;
+    window.__dshWsGuard = 1;
+    var OrigWS = window.WebSocket;
+    if (!OrigWS) return;
+    var KEY = 'dsh-ws-recover-at';
+    var COOLDOWN = 60000;
+
+    function isEngineStream(url) {
+      return /^wss?:\/\/127\.0\.0\.1:3086(\/|$)/.test(String(url || ''));
+    }
+    function recover(url) {
+      try {
+        if (!isEngineStream(url)) return;
+        if (document.visibilityState === 'hidden') return;
+        var last = 0;
+        try { last = Number(sessionStorage.getItem(KEY) || 0); } catch (e) {}
+        var now = Date.now();
+        if (last && now - last < COOLDOWN) return;
+        try { sessionStorage.setItem(KEY, String(now)); } catch (e) {}
+        setTimeout(function () { try { location.reload(); } catch (e) {} }, 1200);
+      } catch (e) {}
+    }
+
+    function Patched(url, protocols) {
+      var s = protocols === undefined ? new OrigWS(url) : new OrigWS(url, protocols);
+      try {
+        s.addEventListener('close', function (ev) {
+          if (ev && (ev.code === 1000 || ev.code === 1001)) return;   // 正常关闭
+          recover(url);
+        });
+      } catch (e) {}
+      return s;
+    }
+    Patched.prototype = OrigWS.prototype;
+    ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(function (k) { Patched[k] = OrigWS[k]; });
+    window.WebSocket = Patched;
+  } catch (e) {}
+})();
