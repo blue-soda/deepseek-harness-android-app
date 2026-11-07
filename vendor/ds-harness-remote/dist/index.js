@@ -4607,7 +4607,7 @@ async function waitForRelayCapacity(socket) {
   while ((socket.bufferedAmount ?? 0) > 512 * 1024) {
     if (socket.readyState !== 1 || Date.now() - started > 1e4)
       throw new Error("Relay consumer is too slow or disconnected");
-    await new Promise((resolve4) => setTimeout(resolve4, 10));
+    await new Promise((resolve5) => setTimeout(resolve5, 10));
   }
   if (socket.readyState !== 1)
     throw new Error("Relay transport closed");
@@ -5085,8 +5085,8 @@ var RtcDataChannelTransport = class {
     if (this.connectPromise !== void 0)
       return this.connectPromise;
     this.armAbort(signal);
-    this.connectPromise = new Promise((resolve4, reject) => {
-      this.openResolve = resolve4;
+    this.connectPromise = new Promise((resolve5, reject) => {
+      this.openResolve = resolve5;
       this.openReject = reject;
       this.negotiateTimer = setTimeout(() => {
         void this.failOpenAfterStats(new RtcConnectError("RTC_CONNECT_TIMEOUT", `WebRTC negotiation timed out after ${this.negotiateTimeoutMs}ms.`));
@@ -5301,9 +5301,9 @@ var RtcDataChannelTransport = class {
       if (this.closed || this.opened)
         return;
       this.opened = true;
-      const resolve4 = this.openResolve;
+      const resolve5 = this.openResolve;
       this.clearNegotiation();
-      void this.resolveSelectedTransport().then(() => resolve4?.());
+      void this.resolveSelectedTransport().then(() => resolve5?.());
     };
     channel.onmessage = (event) => {
       if (this.closed || !this.opened)
@@ -5697,7 +5697,7 @@ function asError(error) {
   return error instanceof Error ? error : new RtcConnectError("RTC_FAILED", "WebRTC negotiation failed.");
 }
 function sleep(ms) {
-  return new Promise((resolve4) => setTimeout(resolve4, ms));
+  return new Promise((resolve5) => setTimeout(resolve5, ms));
 }
 
 // ../webrtc/dist/adaptive-transport.js
@@ -5738,8 +5738,8 @@ var AdaptiveTransport = class extends BaseTransport {
     this.socket = new WebSocket(this.url);
     this.controlFrameLimits = {};
     this.socket.binaryType = "arraybuffer";
-    await new Promise((resolve4, reject) => {
-      this.readyResolve = resolve4;
+    await new Promise((resolve5, reject) => {
+      this.readyResolve = resolve5;
       this.readyReject = reject;
       this.handshakeTimer = setTimeout(() => this.failConnection(new Error("Adaptive control handshake timed out")), this.options.handshakeTimeoutMs ?? 15e3);
       const socket = this.socket;
@@ -13232,8 +13232,8 @@ function errorCode(error) {
   return typeof code === "string" ? code : void 0;
 }
 function sleep2(ms) {
-  return new Promise((resolve4) => {
-    setTimeout(resolve4, ms);
+  return new Promise((resolve5) => {
+    setTimeout(resolve5, ms);
   });
 }
 
@@ -13298,7 +13298,7 @@ var ServerCredentialStore = class {
         if (!(error instanceof Error) || !("code" in error) || error.code !== "EEXIST") throw error;
         if (await reclaimAbandonedRefreshLock(lock)) continue;
         if (Date.now() >= deadline) throw new ServerCredentialsBusyError();
-        await new Promise((resolve4) => setTimeout(resolve4, 50));
+        await new Promise((resolve5) => setTimeout(resolve5, 50));
       }
     }
     try {
@@ -13543,7 +13543,7 @@ function normalizeServerUrl(value) {
 }
 
 // src/version.ts
-var PLUGIN_VERSION = "0.5.8";
+var PLUGIN_VERSION = "0.5.9";
 
 // src/server-api.ts
 var ENABLED_QR_PROVIDERS = ["github"];
@@ -14166,7 +14166,7 @@ var HostServerConnection = class {
     this.controlFrameLimits = {};
     let acknowledged = false;
     let messageQueue = Promise.resolve();
-    await new Promise((resolve4, reject) => {
+    await new Promise((resolve5, reject) => {
       let settled = false;
       const helloTimer = setTimeout(() => socket.close(4001, "hello timeout"), 1e4);
       const finish = (error) => {
@@ -14175,7 +14175,7 @@ var HostServerConnection = class {
         clearTimeout(helloTimer);
         this.online = false;
         if (this.socket === socket) this.socket = void 0;
-        void this.dropTunnels().finally(() => error === void 0 ? resolve4() : reject(error));
+        void this.dropTunnels().finally(() => error === void 0 ? resolve5() : reject(error));
       };
       socket.onopen = () => {
         this.sendControl("hello", {
@@ -14735,14 +14735,14 @@ var HostServerConnection = class {
   waitBeforeRetry(baseDelay, exact = false) {
     const spread = exact ? 0 : baseDelay * this.config.reconnect.jitter;
     const delay = Math.max(0, Math.round(baseDelay - spread + Math.random() * spread * 2));
-    return new Promise((resolve4) => {
+    return new Promise((resolve5) => {
       const timer = setTimeout(() => {
         this.retryWake = void 0;
-        resolve4();
+        resolve5();
       }, delay);
       this.retryWake = () => {
         clearTimeout(timer);
-        resolve4();
+        resolve5();
       };
     });
   }
@@ -14753,8 +14753,8 @@ async function drainWithin(promise, ms) {
   try {
     await Promise.race([
       promise.catch(() => void 0),
-      new Promise((resolve4) => {
-        timer = setTimeout(resolve4, ms);
+      new Promise((resolve5) => {
+        timer = setTimeout(resolve5, ms);
         timer.unref?.();
       })
     ]);
@@ -15108,7 +15108,7 @@ var LoopbackHost = class {
         const response = handle.response;
         let chunk = response.read(Math.min(response.readableLength || LOOPBACK_CHUNK_BYTES, LOOPBACK_CHUNK_BYTES));
         if (chunk === null && !response.readableEnded && !response.destroyed) {
-          await new Promise((resolve4, reject) => {
+          await new Promise((resolve5, reject) => {
             const timer = setTimeout(() => finish(new Error("timeout")), 2e4);
             const ready = () => finish();
             const fail4 = () => finish(new Error("closed"));
@@ -15118,7 +15118,7 @@ var LoopbackHost = class {
               response.off("end", ready);
               response.off("close", ready);
               response.off("error", fail4);
-              error === void 0 ? resolve4() : reject(error);
+              error === void 0 ? resolve5() : reject(error);
             };
             response.once("readable", ready);
             response.once("end", ready);
@@ -15149,22 +15149,22 @@ var LoopbackHost = class {
           this.close(value.id);
           throw new RpcError("RATE_LIMITED", "Preview WebSocket buffer exceeded its limit.");
         }
-        await new Promise((resolve4, reject) => handle.socket.send(data2, { binary: value.binary }, (error) => error ? reject(new RpcError("LOOPBACK_CLOSED", "Preview socket closed.")) : resolve4()));
+        await new Promise((resolve5, reject) => handle.socket.send(data2, { binary: value.binary }, (error) => error ? reject(new RpcError("LOOPBACK_CLOSED", "Preview socket closed.")) : resolve5()));
         return { sent: true };
       }
       if (value.op === "ws.read") {
         if (handle.reading) throw new RpcError("REQUEST_CONFLICT", "Only one preview read may be pending.");
         handle.reading = true;
         try {
-          if (handle.messages.length === 0 && !handle.closed) await new Promise((resolve4) => {
+          if (handle.messages.length === 0 && !handle.closed) await new Promise((resolve5) => {
             const timer = setTimeout(() => {
               handle.wake = void 0;
-              resolve4();
+              resolve5();
             }, 2e4);
             handle.wake = () => {
               clearTimeout(timer);
               handle.wake = void 0;
-              resolve4();
+              resolve5();
             };
           });
           let bytes = 0;
@@ -15211,7 +15211,7 @@ var LoopbackHost = class {
   openHttp(value) {
     const body = value.body === void 0 ? void 0 : Buffer.from(value.body, "base64");
     if ((body?.length ?? 0) > LOOPBACK_MAX_BODY_BYTES) throw new Error("body limit");
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       const headers = Object.fromEntries(cleanHeaders(value.headers));
       let handle;
       const request = httpRequest({
@@ -15230,7 +15230,7 @@ var LoopbackHost = class {
         handle.response = response;
         response.on("error", () => void 0);
         clearTimeout(timer);
-        resolve4({ status: response.statusCode ?? 502, headers: cleanHeaders(headerPairs(response.headers)) });
+        resolve5({ status: response.statusCode ?? 502, headers: cleanHeaders(headerPairs(response.headers)) });
       });
       const timer = setTimeout(() => {
         request.destroy();
@@ -15246,7 +15246,7 @@ var LoopbackHost = class {
     });
   }
   openWs(value) {
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       const socket = new WebSocket2(`ws://127.0.0.1:${value.port}${value.path}`, value.protocols, {
         headers: Object.fromEntries(cleanHeaders(value.headers)),
         followRedirects: false,
@@ -15256,7 +15256,7 @@ var LoopbackHost = class {
       });
       const handle = { kind: "ws", port: value.port, socket, messages: [], bytes: 0, reading: false, closed: false, touched: Date.now() };
       this.handles.set(value.id, handle);
-      socket.once("open", () => resolve4({ protocol: socket.protocol }));
+      socket.once("open", () => resolve5({ protocol: socket.protocol }));
       socket.on("message", (data2, binary) => {
         if (handle.closed) return;
         const message = { data: Buffer.from(data2).toString("base64"), binary };
@@ -15315,7 +15315,7 @@ var LoopbackPreview = class {
       for (const client of running.ws.clients) client.terminate();
       running.ws.close();
       running.server.closeAllConnections();
-      await new Promise((resolve4) => running.server.close(() => resolve4()));
+      await new Promise((resolve5) => running.server.close(() => resolve5()));
     }
     this.servers.clear();
   }
@@ -15370,11 +15370,11 @@ var LoopbackPreview = class {
         void this.release(id4);
       });
     });
-    await new Promise((resolve4, reject) => {
+    await new Promise((resolve5, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => {
         server.off("error", reject);
-        resolve4();
+        resolve5();
       });
     });
     const address = server.address();
@@ -15440,10 +15440,10 @@ var LoopbackPreview = class {
       while (!signal.aborted) {
         const chunk = await this.client.rpc("loopback.call", { op: "http.read", id: id4 }, signal);
         if (chunk.data !== "" && !res.write(Buffer.from(chunk.data, "base64"))) {
-          await new Promise((resolve4, reject) => {
+          await new Promise((resolve5, reject) => {
             const ready = () => {
               cleanup();
-              resolve4();
+              resolve5();
             };
             const closed = () => {
               cleanup();
@@ -15503,7 +15503,7 @@ var LoopbackPreview = class {
           const result = await this.client.rpc("loopback.call", { op: "ws.read", id: id4 }, signal);
           for (const message of result.messages) {
             if (socket.bufferedAmount > 1024 * 1024) throw new Error("slow preview");
-            await new Promise((resolve4, reject) => socket.send(Buffer.from(message.data, "base64"), { binary: message.binary }, (error) => error ? reject(error) : resolve4()));
+            await new Promise((resolve5, reject) => socket.send(Buffer.from(message.data, "base64"), { binary: message.binary }, (error) => error ? reject(error) : resolve5()));
           }
           if (result.closed) break;
         }
@@ -16191,13 +16191,13 @@ var RemoteClientCore = class {
       throw rpcAbortedError(method, signal.reason);
     const timeoutMs = callTimeoutMs(this.timeoutMs, options);
     const request = createRpcRequest(method, params);
-    const result = new Promise((resolve4, reject) => {
+    const result = new Promise((resolve5, reject) => {
       const timer = setTimeout(() => {
         this.rejectPending(request.id, new RemoteClientError("RPC_TIMEOUT", `RPC ${method} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       const pending = {
         method,
-        resolve: resolve4,
+        resolve: resolve5,
         reject,
         timer
       };
@@ -16506,7 +16506,7 @@ var ClientSecureTransport = class {
   }
 };
 async function waitForResponder(inner, noise) {
-  await new Promise((resolve4, reject) => {
+  await new Promise((resolve5, reject) => {
     let settled = false;
     const timer = setTimeout(() => finish(new Error("Noise IK handshake timed out.")), 1e4);
     const unsubscribe = inner.onHandshake((step, data2) => {
@@ -16525,7 +16525,7 @@ async function waitForResponder(inner, noise) {
       settled = true;
       clearTimeout(timer);
       unsubscribe();
-      if (error === void 0) resolve4();
+      if (error === void 0) resolve5();
       else reject(error);
     };
     void inner.sendHandshake(1, noise.writeHandshake()).catch((error) => {
@@ -17121,7 +17121,7 @@ var AsyncFrameQueue = class {
         continue;
       }
       if (this.closed) return;
-      const next = await new Promise((resolve4) => this.waiters.push(resolve4));
+      const next = await new Promise((resolve5) => this.waiters.push(resolve5));
       if (next.done) return;
       yield next.value;
     }
@@ -17526,7 +17526,7 @@ var AsyncValueQueue = class {
         if (this.error !== void 0) throw this.error;
         return;
       }
-      const next = await new Promise((resolve4) => this.waiters.push(resolve4));
+      const next = await new Promise((resolve5) => this.waiters.push(resolve5));
       if (next.done) {
         if (this.error !== void 0) throw this.error;
         return;
@@ -19195,7 +19195,6 @@ var CodexVirtualHarness = class _CodexVirtualHarness {
     if (scope.window !== void 0) scope.window.__dshCodexHistoryCacheStats = inspector;
     this.historyCacheInspector = inspector;
     this.publishHistoryCacheStats();
-    scope.console?.info?.("[dsh-remote] codex history cache inspector ready; call __dshCodexHistoryCacheStats()");
   }
   publishHistoryCacheStats() {
     const stats = this.historyCacheStats();
@@ -19231,6 +19230,7 @@ var CodexVirtualHarness = class _CodexVirtualHarness {
     }
   }
   logHistoryCache(event, threadId, page, records, ageMs) {
+    if (!codexHistoryStatsFileEnabled()) return;
     const scope = globalThis;
     scope.console?.info?.("[dsh-remote] codex history page cache " + event, {
       threadId,
@@ -20467,7 +20467,7 @@ var AsyncValueQueue2 = class {
         continue;
       }
       if (this.closed) return;
-      const next = await new Promise((resolve4) => this.waiters.push(resolve4));
+      const next = await new Promise((resolve5) => this.waiters.push(resolve5));
       if (next.done) return;
       yield next.value;
     }
@@ -20489,7 +20489,13 @@ function normalizeByteResult2(endpoint, result) {
 
 // src/typert-gateway-switch.ts
 var REMOTE_COMMAND_METHODS = ["execute", "list"];
-var LOCAL_ONLY_NAMESPACES = /* @__PURE__ */ new Set(["dynamicCordisRunner"]);
+var LOCAL_ONLY_NAMESPACES = /* @__PURE__ */ new Set([
+  "account",
+  "dynamicCordisRunner",
+  "remoteAccess",
+  "schedule",
+  "web"
+]);
 var LOCAL_FALLBACK_NAMESPACES = /* @__PURE__ */ new Set(["$events", "settings", "credentials", "dynamicCordisRunner"]);
 var PEER_GONE_CODES = /* @__PURE__ */ new Set([
   "TRANSPORT_CLOSED",
@@ -21034,8 +21040,8 @@ var ExternalNativePeerConnection = class {
   request(method, payload) {
     if (this.closed) return Promise.reject(new Error("native rtc helper is closed"));
     const id4 = this.nextRequestId++;
-    const promise = new Promise((resolve4, reject) => {
-      this.pending.set(id4, { resolve: resolve4, reject });
+    const promise = new Promise((resolve5, reject) => {
+      this.pending.set(id4, { resolve: resolve5, reject });
     });
     this.write({ id: id4, method, payload });
     return promise;
@@ -21829,10 +21835,10 @@ function parseRouteTarget(value) {
 async function detectRouteHostIpv4(target2, timeoutMs) {
   const socket = createSocket("udp4");
   try {
-    return await new Promise((resolve4, reject) => {
+    return await new Promise((resolve5, reject) => {
       const timer = setTimeout(() => {
         cleanup();
-        resolve4(void 0);
+        resolve5(void 0);
       }, timeoutMs);
       const cleanup = () => {
         clearTimeout(timer);
@@ -21846,7 +21852,7 @@ async function detectRouteHostIpv4(target2, timeoutMs) {
       socket.connect(target2.port, target2.host, () => {
         cleanup();
         const address = socket.address();
-        resolve4(typeof address === "string" ? void 0 : address.address);
+        resolve5(typeof address === "string" ? void 0 : address.address);
       });
     });
   } finally {
@@ -23416,7 +23422,6 @@ var ClientModeRuntime = class {
     globalScope.__dshCodexHistoryCacheStats = inspect;
     if (scope.window !== void 0) scope.window.__dshCodexHistoryCacheStats = inspect;
     this.writeCodexHistoryCacheStats(inspect());
-    scope.console?.info?.("[dsh-remote] codex history cache inspector ready (client runtime)");
   }
   writeCodexHistoryCacheStats(stats) {
     if (!codexHistoryStatsFileEnabled() || process.env.VITEST !== void 0) return;
@@ -24030,8 +24035,8 @@ function failureCode(error) {
   return own ?? safeErrorCode(error);
 }
 function sleep3(ms) {
-  return new Promise((resolve4) => {
-    setTimeout(resolve4, ms);
+  return new Promise((resolve5) => {
+    setTimeout(resolve5, ms);
   });
 }
 function remoteHostFeatures(clientVersion) {
@@ -24082,7 +24087,7 @@ async function probeRemoteHostFeatures(client, clientVersion) {
 }
 async function waitForCodexFrames(stream, signal) {
   if (signal?.aborted) throw new ClientModeError("RPC_ABORTED", "The Codex event poll was cancelled.");
-  await new Promise((resolve4, reject) => {
+  await new Promise((resolve5, reject) => {
     const previousWake = stream.wake;
     const timer = setTimeout(done, 25e3);
     const onAbort = () => {
@@ -24096,7 +24101,7 @@ async function waitForCodexFrames(stream, signal) {
     }
     function done() {
       cleanup();
-      resolve4();
+      resolve5();
     }
     stream.wake = () => {
       previousWake();
@@ -24633,15 +24638,15 @@ var CodexAppServerClient = class {
     const child = this.process;
     this.process = void 0;
     if (child === void 0 || child.exitCode !== null || child.killed) return;
-    await new Promise((resolve4) => {
+    await new Promise((resolve5) => {
       const timer = setTimeout(() => {
         child.kill("SIGKILL");
-        resolve4();
+        resolve5();
       }, 2e3);
       timer.unref?.();
       child.once("exit", () => {
         clearTimeout(timer);
-        resolve4();
+        resolve5();
       });
       child.kill("SIGTERM");
     });
@@ -24697,13 +24702,13 @@ var CodexAppServerClient = class {
   }
   request(method, params, timeoutMs) {
     const id4 = this.nextId++;
-    const result = new Promise((resolve4, reject) => {
+    const result = new Promise((resolve5, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id4);
         reject(new CodexAppServerError("CODEX_REQUEST_TIMEOUT", "Codex App Server request timed out."));
       }, timeoutMs);
       timer.unref?.();
-      this.pending.set(id4, { resolve: resolve4, reject, timer });
+      this.pending.set(id4, { resolve: resolve5, reject, timer });
     });
     try {
       this.write({ id: id4, method, params });
@@ -28667,7 +28672,7 @@ function frameSessionId(frame) {
   return typeof payload.sessionId === "string" && payload.sessionId.length > 0 ? payload.sessionId : void 0;
 }
 function withTimeout(promise, ms, message) {
-  return new Promise((resolve4, reject) => {
+  return new Promise((resolve5, reject) => {
     const timer = setTimeout(() => {
       reject(new RpcError("TIMEOUT", message, void 0, true));
     }, ms);
@@ -28675,7 +28680,7 @@ function withTimeout(promise, ms, message) {
     promise.then(
       (value) => {
         clearTimeout(timer);
-        resolve4(value);
+        resolve5(value);
       },
       (error) => {
         clearTimeout(timer);
@@ -28706,7 +28711,7 @@ function concatChunks2(chunks, totalBytes) {
 
 // src/harness-remote-bridge.ts
 import { Buffer as Buffer5 } from "node:buffer";
-import { isAbsolute as isAbsolute4, join as join10, relative as relative2, sep } from "node:path";
+import { isAbsolute as isAbsolute4, join as join10, relative as relative2, resolve as resolve3, sep } from "node:path";
 var endpointSchema = external_exports.string().min(1).max(128).regex(/^(?:\$events(?:\/result)?|[A-Za-z0-9_$.-]+\/[A-Za-z0-9_$.-]+)$/);
 var callSchema3 = external_exports.object({ endpoint: endpointSchema, payload: external_exports.unknown() }).strict();
 var streamOpenSchema3 = external_exports.object({
@@ -28779,6 +28784,9 @@ var HARNESS_REMOTE_ALLOWLIST = [
   "goals/edit",
   "goals/pause",
   "goals/resume",
+  "job/follow",
+  "job/kill",
+  "job/list",
   "llm/discoverModels",
   "llm/listConfigurableProviders",
   "llm/listProviders",
@@ -28895,6 +28903,10 @@ var HarnessRemoteBridge = class {
       const nativePayload = normalizeWorkspaceRequestPayload(params.endpoint, params.payload, this.harnessVersion);
       const nativeResult = REMOTE_HISTORY_CALL_ENDPOINTS.has(params.endpoint) ? await this.dispatchHistoryPage(params.endpoint, nativePayload, signal) : params.endpoint === "commands/execute" ? await dispatchCommandForHost(this.gateway, params.payload, signal, this.harnessVersion) : await this.dispatchWorkspaceFile(params.endpoint, nativePayload, signal);
       const result = params.endpoint === "directoryPicker/list" && needsDirectoryFallback(nativeResult) ? await this.directoryList(params.payload, signal) : nativeResult;
+      if (params.endpoint === "workspace/create" && isInvalidWorkspacePath(result)) {
+        const recovered = await this.recoverWorkspaceCreate(params.payload, signal);
+        if (recovered !== void 0) return recovered;
+      }
       this.logger?.debug("harness remote call ok", {
         endpoint: params.endpoint,
         durationMs: Math.round(performance.now() - startedAt)
@@ -28902,6 +28914,10 @@ var HarnessRemoteBridge = class {
       return reservation === void 0 ? result : this.terminal.result(params.endpoint, params.payload, result, reservation);
     } catch (error) {
       if (reservation !== void 0) this.terminal.result(params.endpoint, params.payload, { ok: false, error: { code: "FAILED", message: "", details: {} } }, reservation);
+      if (params.endpoint === "workspace/create" && isInvalidWorkspacePath(error)) {
+        const recovered = await this.recoverWorkspaceCreate(params.payload, signal);
+        if (recovered !== void 0) return recovered;
+      }
       if (params.endpoint === "directoryPicker/list") {
         const result = await this.directoryList(params.payload, signal);
         this.logger?.debug("harness remote call ok", {
@@ -28926,6 +28942,43 @@ var HarnessRemoteBridge = class {
     const args = requestArgs(payload);
     const params = directoryListSchema2.parse(args);
     return { ok: true, value: await listRemoteDirectory(params.path, signal) };
+  }
+  /**
+   * Resolve an existing Workspace when `workspace/create` cannot realpath a
+   * deleted directory.
+   *
+   * DSH keeps a registered Workspace open after its directory disappears, but
+   * `workspace/create` canonicalizes the path first and fails with ENOENT. The
+   * Client can still open the Workspace it sees in the Host's list; resolve that
+   * list by lexical path and return the existing row instead of failing.
+   * @param payload - workspace/create request payload.
+   * @param signal - call lifetime.
+   * @returns an existing-workspace result, or undefined when none matches.
+   */
+  async recoverWorkspaceCreate(payload, signal) {
+    const path = requestArgs(payload).path;
+    if (typeof path !== "string" || path === "") return void 0;
+    let source;
+    try {
+      source = await this.gateway.open("workspace/follow", { args: {} }, signal);
+    } catch {
+      return void 0;
+    }
+    const iterator = source[Symbol.asyncIterator]();
+    let first;
+    try {
+      first = await iterator.next();
+    } catch {
+      return void 0;
+    } finally {
+      await iterator.return?.().catch(() => void 0);
+    }
+    const frame = isRecord14(first.value) ? first.value : {};
+    const baseline = isRecord14(frame.value) ? frame.value : frame;
+    const items = Array.isArray(baseline.items) ? baseline.items : [];
+    const target2 = workspacePathIdentity(path);
+    const workspace = items.find((item) => isRecord14(item) && typeof item.path === "string" && workspacePathIdentity(item.path) === target2);
+    return workspace === void 0 ? void 0 : { ok: true, value: { workspace, created: false } };
   }
   openTransfer(input2) {
     this.pruneTransfers();
@@ -29507,6 +29560,17 @@ function record6(value) {
 function isRecord14(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function workspacePathIdentity(path) {
+  const normalized = resolve3(path).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+function isInvalidWorkspacePath(input2) {
+  const error = isRecord14(input2) && input2.ok === false && isRecord14(input2.error) ? input2.error : input2;
+  if (!isRecord14(error)) return false;
+  const code = typeof error.code === "string" ? error.code : "";
+  const message = typeof error.message === "string" ? error.message : "";
+  return code === "workspace/invalid-path" || message.includes("cannot create a Workspace at") && message.includes("ENOENT");
+}
 
 // src/acp.ts
 import { spawn as spawn3 } from "node:child_process";
@@ -29596,7 +29660,7 @@ var StdioAcpAdapter = class {
     const c = this.ensure();
     const id4 = this.nextId++;
     c.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: id4, method, params }) + "\n");
-    return new Promise((resolve4, reject) => {
+    return new Promise((resolve5, reject) => {
       let buf = "";
       const onData = async (d) => {
         buf += d;
@@ -29607,7 +29671,7 @@ var StdioAcpAdapter = class {
             const m = JSON.parse(l);
             if (m.id === id4) {
               c.stdout.off("data", onData);
-              m.error ? reject(new Error(m.error.message ?? "ACP error")) : resolve4(m.result);
+              m.error ? reject(new Error(m.error.message ?? "ACP error")) : resolve5(m.result);
             } else if (m.method && onNotification) await onNotification(m.params);
           } catch {
           }
@@ -29625,7 +29689,7 @@ import { execFileSync as execFileSync2 } from "node:child_process";
 // src/codex-workspace-bridge.ts
 import { spawn as spawn4 } from "node:child_process";
 import { realpath as realpath2, lstat, readdir as readdir4, readFile as readFile5, stat as stat6, watch } from "node:fs/promises";
-import { isAbsolute as isAbsolute5, join as join11, relative as relative3, resolve as resolve3 } from "node:path";
+import { isAbsolute as isAbsolute5, join as join11, relative as relative3, resolve as resolve4 } from "node:path";
 var MAX_READ_BYTES = 4 * 1024 * 1024;
 var MAX_INPUT_BYTES = 64 * 1024;
 var MAX_COLS = 240;
@@ -29656,7 +29720,7 @@ var AsyncQueue = class {
     const value = this.values.shift();
     if (value !== void 0) return Promise.resolve({ done: false, value });
     if (this.ended) return Promise.resolve({ done: true, value: void 0 });
-    return new Promise((resolve4) => this.waiters.push(resolve4));
+    return new Promise((resolve5) => this.waiters.push(resolve5));
   }
   [Symbol.asyncIterator]() {
     return this;
@@ -29934,7 +29998,7 @@ var CodexWorkspaceBridge = class {
     }
   }
   async safePath(root, path, directory) {
-    const candidate = isAbsolute5(path) ? resolve3(path) : resolve3(root, path);
+    const candidate = isAbsolute5(path) ? resolve4(path) : resolve4(root, path);
     const rel = relative3(root, candidate);
     if (rel.startsWith("..") || isAbsolute5(rel)) throw new RpcError("CODEX_WORKSPACE_PATH_DENIED", "The requested workspace path is outside the CodeX workspace.");
     try {
@@ -29985,14 +30049,14 @@ function pipeTerminalSpawner() {
     child.stdout.on("data", (data2) => queue.push(Buffer.from(data2).toString("utf8")));
     child.stderr.on("data", (data2) => queue.push(Buffer.from(data2).toString("utf8")));
     child.on("error", () => queue.end());
-    const completed = new Promise((resolve4) => {
+    const completed = new Promise((resolve5) => {
       child.on("error", () => {
         queue.end();
-        resolve4({ exitCode: null });
+        resolve5({ exitCode: null });
       });
       child.on("exit", (code) => {
         queue.end();
-        resolve4({ exitCode: code });
+        resolve5({ exitCode: code });
       });
     });
     return {
@@ -30702,7 +30766,7 @@ function resolveDependencies(input2) {
     stdout: input2.stdout ?? process.stdout,
     stderr: input2.stderr ?? process.stderr,
     now: input2.now ?? Date.now,
-    wait: input2.wait ?? ((milliseconds) => new Promise((resolve4) => setTimeout(resolve4, milliseconds))),
+    wait: input2.wait ?? ((milliseconds) => new Promise((resolve5) => setTimeout(resolve5, milliseconds))),
     renderQr: input2.renderQr ?? renderTerminalQr,
     createIdentityStore: input2.createIdentityStore ?? ((options) => new IdentityStore(options)),
     createHostApi: input2.createHostApi ?? ((serverUrl, store) => new HostServerApi(serverUrl, store))
@@ -31151,7 +31215,7 @@ function errorCode6(error) {
   return "CONNECTION_FAILED";
 }
 function wait(milliseconds) {
-  return new Promise((resolve4) => setTimeout(resolve4, milliseconds));
+  return new Promise((resolve5) => setTimeout(resolve5, milliseconds));
 }
 
 // src/remote-file-content-provider.ts

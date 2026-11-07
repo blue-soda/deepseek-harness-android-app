@@ -653,6 +653,17 @@
     function Patched(url, protocols) {
       var s = protocols === undefined ? new OrigWS(url) : new OrigWS(url, protocols);
       try {
+        // 记录活着的引擎流，便于自测/诊断（window.__dshSockets）
+        if (isEngineStream(url)) {
+          (window.__dshSockets || (window.__dshSockets = [])).push(s);
+          s.addEventListener('close', function () {
+            try {
+              var a = window.__dshSockets || [];
+              var i = a.indexOf(s);
+              if (i >= 0) a.splice(i, 1);
+            } catch (e) {}
+          });
+        }
         s.addEventListener('close', function (ev) {
           if (ev && (ev.code === 1000 || ev.code === 1001)) return;   // 正常关闭
           recover(url);
