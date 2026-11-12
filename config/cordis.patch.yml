@@ -33,10 +33,6 @@
 # 会话日志导出按钮（右上角 session log，下载 ZIP）：移动端用不上，禁用留出空间
 - id: session-log-download
   disabled: true
-# 遥测（OTel）：Android 端不需要上报，且它是 0.1.5 树里最大的依赖块（@opentelemetry 全套）。
-# 禁用后可以整个删掉遥测包，显著减小 payload。
-- id: session-telemetry-otel
-  disabled: true
 # ⚠ 关于 0.1.5 新增包（dsh-webhook / dsh-webhook-github / dsh-http-proxy / dsh-acp-app /
 # dsh-sdk-app / dsh-sdk-minimal / dsh-hooks-claude-code / dsh-hooks-codex）：
 # 这些包虽然存在于内核树里，但 **未被 @deepseek-ai/dsh-base 或 dsh-web-app 的插件表注册**，
@@ -94,11 +90,6 @@
   disabled: false
 
 # ── v1.31（冷启动优化）────────────────────────────────────────────────────────
-# 依据设备实测（boot-timing）：模块加载间空档里，
-#   · `picomatch` 3.5 s 的耗尽点来自 `dsh-hmr`（文件热重载，Android 上用不到）；
-#   · `@opentelemetry/otlp-exporter-base` 2.8 s + `mime-types` 0.7 s 来自 OTel 导出链。
-# 两者对手机端功能没有贡献，直接禁用（session-telemetry-otel 早已禁用）。
-- id: hmr
-  disabled: true
-- id: otel
-  disabled: true
+# 维护者决定：**不禁用任何插件**（HMR 用于"手机上新装插件无需重启"；OTEL 上游默认
+# 只在用户显式反馈时上传会话日志前缀，FEEDBACK_ONLY）。启动时间的收益改由
+# 「锁文件去重 + 重库懒加载」承担，见 CHANGES v1.23.0。
