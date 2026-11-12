@@ -199,6 +199,7 @@
     serverUrlHint: "HTTPS origin used for account authorization and encrypted relay.",
     serverSaved: "Server address saved. Restart DSH to apply it.",
     codexRemote: "Codex Remote",
+    codexSettings: "Codex Settings",
     codexStatusLine: "Current state: {state}",
     codexControlAllow: "Allow other users to control Codex on this device",
     codexSaved: "Codex Remote setting saved. Restart DSH to apply it.",
@@ -473,6 +474,7 @@
     serverUrlHint: "\u7528\u4E8E\u8D26\u53F7\u6388\u6743\u548C\u52A0\u5BC6\u4E2D\u7EE7\u7684 HTTPS \u5730\u5740\u3002",
     serverSaved: "Server \u5730\u5740\u5DF2\u4FDD\u5B58\uFF0C\u91CD\u542F DSH \u540E\u751F\u6548\u3002",
     codexRemote: "Codex Remote",
+    codexSettings: "Codex\u8BBE\u7F6E",
     codexStatusLine: "\u5F53\u524D\u72B6\u6001\uFF1A{state}",
     codexControlAllow: "\u5141\u8BB8\u5176\u4ED6\u7528\u6237\u63A7\u5236\u672C\u8BBE\u5907Codex",
     codexSaved: "Codex Remote \u8BBE\u7F6E\u5DF2\u4FDD\u5B58\uFF0C\u91CD\u542F DSH \u540E\u751F\u6548\u3002",
@@ -863,10 +865,25 @@
   function connectionStatusClass(status) {
     return status?.online ? " isOnline" : status?.reconnecting ? " isReconnecting" : status === void 0 ? "" : " isOffline";
   }
+  function renderBodyPortal(portal, children) {
+    if (typeof portal != "function" || typeof document > "u" || document.body === null) return children;
+    try {
+      return portal(children, document.body);
+    } catch {
+      return children;
+    }
+  }
   window.__ModuleLoader__.load({
     id: clientModuleId,
     factory: (require2) => {
-      let module = { exports: {} }, React = require2("react"), inject = [
+      let module = { exports: {} }, React = require2("react"), portal = (() => {
+        try {
+          let reactDom = require2("react-dom");
+          return typeof reactDom.createPortal == "function" ? reactDom.createPortal.bind(reactDom) : void 0;
+        } catch {
+          return;
+        }
+      })(), inject = [
         "connection",
         "slots",
         "locale",
@@ -1840,14 +1857,14 @@
               { className: "dshRemoteSidebarLabel" },
               remoteLabel
             ) : null),
-            (status?.mode === "remote" || status?.fellBackToLocal === !0) && props.wide ? React.createElement("button", {
+            (status?.mode === "remote" || status?.reconnecting !== void 0) && props.wide ? React.createElement("button", {
               type: "button",
               className: "dshRemoteExitLink",
               disabled: busy,
               onClick: () => void openLocalWorkspaces()
             }, t("exitRemote")) : null
           ),
-          open ? React.createElement("div", {
+          open ? renderBodyPortal(portal, React.createElement("div", {
             className: "dshRemoteBackdrop",
             role: "presentation",
             onMouseDown: (event) => {
@@ -1898,7 +1915,7 @@
             React.createElement(
               "main",
               { className: "dshRemotePageBody" },
-              status?.mode === "remote" || status?.fellBackToLocal === !0 ? React.createElement("button", {
+              status?.mode === "remote" || status?.reconnecting !== void 0 ? React.createElement("button", {
                 type: "button",
                 className: "dshRemoteLocalLink",
                 disabled: busy,
@@ -1993,11 +2010,11 @@
                             disabled: busy,
                             // Match the "allow control" label exactly: 12px/18px in the secondary label colour, so it
                             // reads as the same kind of control instead of a page-level action.
-                            style: { fontWeight: "normal", fontSize: "12px", lineHeight: "18px", height: "auto", minWidth: "0", padding: "0 4px", color: "var(--dsw-alias-label-secondary)" },
-                            title: t("codexRemote"),
-                            "aria-label": t("codexRemote"),
+                            style: { fontWeight: "normal", fontSize: "12px", lineHeight: "24px", height: "24px", minWidth: "0", padding: "0 4px", color: "var(--dsw-alias-label-secondary)" },
+                            title: t("codexSettings"),
+                            "aria-label": t("codexSettings"),
                             onClick: () => setCodexOpen(!0)
-                          }, t("codexRemote"))
+                          }, t("codexSettings"))
                         ),
                         connectedMenu
                       )
@@ -2257,7 +2274,7 @@
               notice === void 0 ? null : React.createElement("p", { className: "dshRemoteNotice", role: "status" }, notice),
               error === void 0 || error === codexNotice ? null : React.createElement("p", { className: "dshRemoteError", role: "alert" }, error)
             )
-          )) : null
+          ))) : null
         );
       }
       function CodexConnectionFields(props) {
@@ -2637,6 +2654,7 @@
           ".dshRemotePageTitleRow{display:flex;align-items:center;gap:10px;min-width:0}.dshRemotePageTitleRow>strong{min-width:0;flex:0 1 auto}",
           ".dshRemoteSectionHeading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px}.dshRemoteSectionTitle{min-width:0;display:flex;align-items:center;gap:10px}.dshRemoteSectionTitle>strong{font-size:14px}.dshRemoteSectionActions{display:flex;align-items:center;gap:14px}.dshRemoteSectionActions>button{border:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;padding:5px 0;font-size:12px}.dshRemoteSectionActions>button:hover:not(:disabled){color:var(--dsw-alias-label-primary);text-decoration:underline}",
           ".dshRemoteSectionTitle{flex:1}.dshRemoteSectionTitle>.dshRemoteConnectedMenu{margin-left:auto}",
+          ".dshRemoteSectionHeading .dshRemoteSectionTitle>strong{display:inline-flex;align-items:center;height:24px;line-height:24px}.dshRemoteSectionHeading .dshRemoteHostControlToggle{height:24px;line-height:24px}.dshRemoteSectionHeading .dshRemoteHostControlToggle>span{display:inline-flex;align-items:center;height:24px;line-height:24px}.dshRemoteSectionHeading .dshRemotePageActions{height:24px}.dshRemoteSectionHeading .dshRemotePageActions>button{height:24px;line-height:24px;display:inline-flex;align-items:center;padding:0 4px}.dshRemoteSectionHeading .dshRemoteConnectedMenu{height:24px;display:flex;align-items:center}.dshRemoteSectionHeading .dshRemoteConnectedCount{height:24px;line-height:24px;display:inline-flex;align-items:center}",
           '.dshRemoteAcpSetting{display:block!important;width:100%;padding:0}.dshRemoteAcpSetting>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;cursor:pointer;list-style:none}.dshRemoteAcpSetting>summary::-webkit-details-marker{display:none}.dshRemoteAcpSetting>summary::after{content:"\u2304";color:var(--dsw-alias-label-secondary);transition:transform .18s ease-out}.dshRemoteAcpSetting[open]>summary::after{transform:rotate(180deg)}.dshRemoteAcpSummaryText{min-width:0}.dshRemoteAcpSummaryText strong{display:block}.dshRemoteAcpSummaryText p{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.4}.dshRemoteAcpCheckLink{grid-column:2;grid-row:1;color:var(--dsw-alias-brand-primary);font-size:12px;text-decoration:underline;text-underline-offset:3px}.dshRemoteAcpCheckLink:hover{color:var(--dsw-alias-label-primary)}.dshRemoteAcpCheckResult{grid-column:3;grid-row:1;font-size:11px;line-height:1.4;white-space:nowrap}.dshRemoteAcpCheckResult.isPassed{color:var(--dsw-alias-state-success-primary)}.dshRemoteAcpCheckResult.isFailed{color:var(--dsw-alias-state-danger-primary)}.dshRemoteAcpList{display:flex;flex-direction:column;gap:0;margin-top:12px;padding-top:0;border-top:0}.dshRemoteAcpList>.dshRemoteAuthorizationSetting{display:grid;width:100%;grid-template-columns:minmax(0,1fr) auto auto auto auto;align-items:center;column-gap:18px;line-height:1.4}.dshRemoteAcpList>.dshRemoteAuthorizationSetting>span:first-child{min-width:0;line-height:1.4}.dshRemoteAcpList>.dshRemoteAuthorizationSetting>input{grid-column:4;grid-row:1}',
           ".dshRemoteAcpAddLink{align-self:flex-start;margin-top:12px;color:var(--dsw-alias-brand-primary);font-size:12px;text-decoration:underline;text-underline-offset:3px}.dshRemoteAcpAddForm{display:grid;grid-template-columns:minmax(100px,.8fr) minmax(140px,1fr) minmax(100px,1fr) auto;gap:8px;margin-top:12px}.dshRemoteAcpAddForm input{min-width:0;height:34px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:inherit;padding:0 10px}.dshRemoteAcpAddForm button{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary);padding:0 12px;cursor:pointer;font:inherit;font-size:12px}.dshRemoteAcpAddForm button:hover{background:var(--dsw-alias-interactive-bg-hover)}.dshRemoteAcpRemoveLink{grid-column:3;grid-row:1;color:var(--dsw-alias-label-secondary);font-size:12px;text-decoration:underline;text-underline-offset:3px}.dshRemoteAcpRemoveLink:hover{color:var(--dsw-alias-state-danger-primary)}",
           ".dshRemoteAcpCheckResult.isPassed,.dshRemoteAcpCheckResult.isFailed{color:var(--dsw-alias-label-secondary)}",
@@ -2663,7 +2681,7 @@
           '.dshRemoteHostControlToggle{display:flex;align-items:center;gap:7px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;white-space:nowrap;cursor:default}.dshRemoteHostControlToggle>input{appearance:none;box-sizing:border-box;position:relative;width:32px;height:18px;flex:0 0 auto;margin:0;border:1px solid var(--dsw-alias-label-secondary);border-radius:999px;background:var(--dsw-alias-bg-layer-3);cursor:pointer;box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l2);transition:background .16s ease-out,border-color .16s ease-out,box-shadow .16s ease-out}.dshRemoteHostControlToggle>input::after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--dsw-alias-label-secondary);transition:transform .16s ease-out,background .16s ease-out}.dshRemoteHostControlToggle>input:checked{border-color:var(--dsw-alias-state-success-primary);background:var(--dsw-alias-state-success-primary);box-shadow:none}.dshRemoteHostControlToggle>input:checked::after{transform:translateX(14px);background:var(--dsw-alias-bg-layer-1)}.dshRemoteHostControlToggle>input:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}.dshRemoteHostControlToggle>input:disabled{opacity:.5;cursor:default}@media(prefers-reduced-motion:reduce){.dshRemoteHostControlToggle>input,.dshRemoteHostControlToggle>input::after{transition:none}}',
           ".dshRemoteAccountFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:14px;color:var(--dsw-alias-label-secondary);font-size:12px}.dshRemoteAccountExit{flex:0 0 auto;border:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;padding:5px 0;font-size:12px;line-height:1.5;white-space:nowrap}.dshRemoteAccountExit:hover:not(:disabled){color:var(--dsw-alias-label-primary);text-decoration:underline}.dshRemoteAccountExit:disabled{opacity:.5;cursor:default;text-decoration:none}",
           ".dshRemoteLocalLink{align-self:flex-start;border:0;background:transparent;color:var(--dsw-alias-label-secondary);padding:4px 0;cursor:pointer}.dshRemoteLocalLink:hover{color:var(--dsw-alias-label-primary)}",
-          "@keyframes dshRemotePageIn{from{opacity:0;transform:translateY(6px) scale(.99)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.dshRemotePage{animation:none}}@media(max-width:620px){.dshRemoteBackdrop{padding:12px}.dshRemotePage{max-height:calc(100vh - 24px)}.dshRemotePageHeader{gap:8px;padding:12px 16px}.dshRemotePage.hasSelectedHost .dshRemotePageBack{max-width:112px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dshRemoteSectionHeading{align-items:flex-start;flex-direction:column;gap:8px}.dshRemoteWorkspaceHeading{align-items:center;flex-direction:row}.dshRemoteSectionActions{width:100%;justify-content:space-between}.dshRemotePageBody{padding:20px 16px}.dshRemoteOpenBar{align-items:flex-end}.dshRemoteOpenBar>button{min-height:48px}}",
+          "@keyframes dshRemotePageIn{from{opacity:0;transform:translateY(6px) scale(.99)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.dshRemotePage{animation:none}}@media(max-width:620px){.dshRemoteBackdrop{padding:12px}.dshRemotePage{max-height:calc(100vh - 24px)}.dshRemotePageHeader{gap:8px;padding:12px 16px}.dshRemotePage.hasSelectedHost .dshRemotePageBack{max-width:112px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dshRemoteSectionHeading{align-items:stretch;flex-direction:column;gap:8px}.dshRemoteSectionTitle{width:100%}.dshRemoteWorkspaceHeading{align-items:center;flex-direction:row}.dshRemoteSectionActions{width:100%;justify-content:space-between}.dshRemotePageBody{padding:20px 16px}.dshRemoteOpenBar{align-items:flex-end}.dshRemoteOpenBar>button{min-height:48px}}",
           ".dshRemoteBackdrop{position:fixed;inset:0;z-index:1000;background:var(--dsw-alias-bg-mask-3);display:grid;place-items:center;padding:20px}",
           ".dshRemoteDialog{width:min(460px,100%);max-height:80vh;overflow:auto;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:14px;padding:18px;display:grid;gap:12px;box-shadow:var(--dsw-shadow-lv2)}",
           ".dshRemoteDialog button,.dshRemoteDialog input{font:inherit;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:9px 10px;background:transparent;color:inherit}",

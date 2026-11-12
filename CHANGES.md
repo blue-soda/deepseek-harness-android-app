@@ -1,3 +1,66 @@
+## v1.23.0（2026-11-12）
+
+> **一句话**：冷启动优化落地 —— **锁文件去重**（zod 58 份 → 1 份）+ **两处重库懒加载**
+> （turndown/domino、libreoffice-kit）。干净安装实测：**冷启动 56 s → 32 s（−43%）**，
+> **APK 217 MB → 113 MB（−48%）**。versionCode **66**，内核 DSH **0.2.2-rc.1**，
+> 内置 remote 插件升到 **0.6.0**。
+
+### 一、冷启动（模拟器 community，干净安装，同场 A/B 各 2 次）
+
+| 指标 | 优化前 | 优化后 |
+|---|---|---|
+| App 冷启动（点图标 → 引擎就绪） | 56 s | **32 s** |
+| 引擎 spawn → 端口就绪 | 51 / 48 s | **31 / 30 s** |
+| 启动期模块加载次数 | 5078 | **1354**（−73%）|
+| 设备树 `.js` 文件数 | 12,363 | **6,357**（−49%）|
+| APK 体积 | 217 MB | **113 MB**（−48%）|
+
+### 二、做了什么
+
+- **锁文件去重（最大单项收益）**：几乎所有 `@deepseek-ai/dsh-*` 都写死 `zod: "4.4.3"`（精确版本），
+  而顶层是另一个包要的 `4.6.7` → npm 判定"不满足" → **给 57 个包各塞一份 3 MB 副本**（合计 96 MB、
+  约 3600 次模块加载）。`npm dedupe --package-lock-only` 后 zod 条目 **58 → 1**，所有需求范围
+  （`4.4.3` / `^4.4.3` / `^4.2.0`）都由 4.6.7 满足，语义不变。
+- **懒加载 turndown / domino**：`dsh-tool-web` 原来在**模块级**静态 import 并立刻构造转换器，
+  启动即付 ~1.2 s（53 个文件），而它只在 `web_fetch` 真要把 HTML 转 Markdown 时才用。
+  改为 `ensureTurndown()`（幂等 memo）→ `web_fetch.execute` 里与网络抓取**并行预热** →
+  同步 `renderBody` 未就绪时**沿用原有兜底文案**，绝不抛错。
+- **懒加载 libreoffice-kit**：`dsh-office-to-pdf` 静态 import 其入口（83 KB，实测 ~1.2 s），
+  改为 `ensureKit()` 惰性 memo；创建转换器本就在首次转换时进行，语义不变。
+- **配套**：两个包进 overlay（48 文件）+ 强制覆盖白名单（hoisted 路径）+ 构建闸门特征串（16 条）；
+  overlay 与 mobile 文件统一 LF。
+- **禁用 `hmr` / `otel`**：`hmr`（文件热重载，Android 上无使用场景）拉 `picomatch`（启动空档 3.5 s）；
+  `otel` 拉 `@opentelemetry/otlp-exporter-base`（2.8 s）+ `mime-types`（0.7 s）。两者对手机端功能无贡献。
+  合计少 357 次加载。
+- **`NODE_COMPILE_CACHE`（保留但收益≈0）**：引擎环境注入（缓存目录 `files/node-compile-cache`）。
+  微基准：`import zod` 2.68→2.39 s、`dsh-app-boot` 1.93→1.65 s、`cordis` 162→71 ms；
+  但整体墙钟无可见改善（77/78 s vs 82 s，噪声内）—— **字节码缓存覆盖不到顶层求值**，如实记录。
+
+### 三、工具与维护机制（新增）
+
+- `tools/boot-timing/`：从 `perf/startup-timing` 分支搬回并适配 0.2.2 —— `boot-run.sh`（plain/prof/hooks/
+  profhooks/sync 五种模式）、`preload.mjs`（同线程 `module.registerHooks` 打点）、`analyze.py`（按包聚合 +
+  空档归因）、`bench-import.mjs`、`bench-cache.mjs`（缓存收益微基准）。
+- `tools/boot-timing/lazy-candidates.yml`：**"偶然使用"白名单**（不是重包黑名单）。
+- `tools/boot-timing/lazy-scan.py`：扫 hooks 日志 → 打"启动期最重的包 + 判定（候选/已懒加载/必需）"，
+  并列出"本版未加载 → 可从清单删除"的条目。**每版 5 分钟复核**，补丁失效由构建闸门 + stale 检查提示。
+- `tools/diag/bench-boot.sh`、`.cache/ab-coldstart.sh`（冷启动 A/B 脚本）。
+
+### 四、验证
+
+- 端到端（不经模型）驱动修补后的 `dsh-tool-web`：`execute 2650 ms, status=200, kind=html`，
+  `formatFetchOutput` 产出正确 Markdown（标题/粗体/GFM 表格），**未走兜底**。
+- 冒烟：两个补丁文件 `import` 正常（导出项完整）。
+- 引擎健康：`failed to import` **0**，`incompatible` **0**。
+- ⚠️ 未验证：真实会话里由模型调用 `web_fetch`；Excel→PDF（`libreoffice-kit` 需要 LibreOffice 二进制，
+  Android 上本来就没有，改动前后一致为"工具不可用"）。
+
+### 五、已知问题
+
+- 控制流断开（`session-controller: control stream failed`）后前端不自动重连 —— 已在 1.22.0 加入
+  "断流自动重载（仅断开触发、60 s 冷却）+ 救援页「重连页面」"作为兜底，根治仍需上游能力。
+- 模拟器测量噪声大（同一配置不同时段 51–86 s），所有结论以**同场 A/B** 与**加载次数**为准。
+
 ## v1.19.3（未发布 · 2026-10-14）
 
 > **一句话**：构建流程收敛成**一条可复现路径**（内核来自官方 npm registry + 冻结 lock、运行时来自

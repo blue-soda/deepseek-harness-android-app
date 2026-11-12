@@ -13543,7 +13543,7 @@ function normalizeServerUrl(value) {
 }
 
 // src/version.ts
-var PLUGIN_VERSION = "0.5.9";
+var PLUGIN_VERSION = "0.6.0";
 
 // src/server-api.ts
 var ENABLED_QR_PROVIDERS = ["github"];
@@ -20574,7 +20574,7 @@ var TypertGatewaySwitch = class {
       signal,
       ...rest.length === 0 ? this.peerArguments() : rest
     ));
-    const open = this.localOpen ?? (async (endpoint, payload, signal) => {
+    const open2 = this.localOpen ?? (async (endpoint, payload, signal) => {
       if (this.localStream === void 0) throw new Error("The local Harness Gateway does not support Remote streams.");
       return this.localStream(requestFromCarrier(endpoint, payload, signal));
     });
@@ -20582,7 +20582,7 @@ var TypertGatewaySwitch = class {
       invoke: this.localInvoke,
       ...this.localStream === void 0 ? {} : { stream: this.localStream },
       dispatch,
-      open,
+      open: open2,
       failure: (error) => this.failure(error),
       supportsCarrier: this.localDispatch !== void 0 && this.localOpen !== void 0
     };
@@ -20622,15 +20622,15 @@ var TypertGatewaySwitch = class {
       ).then((result) => normalizeByteResult3(endpoint, result));
     }
     if (previousOpen !== void 0) {
-      const open = previousOpen;
-      const rc1 = usesRc1Arity(open);
+      const open2 = previousOpen;
+      const rc1 = usesRc1Arity(open2);
       this.runtime.openWireStream = (...callArgs) => {
         const endpoint = callArgs[0];
         if (forwards(endpoint)) {
-          return rc1 ? Reflect.apply(open, this.runtime, callArgs) : open.call(this.runtime, endpoint, callArgs[1], callArgs[2]);
+          return rc1 ? Reflect.apply(open2, this.runtime, callArgs) : open2.call(this.runtime, endpoint, callArgs[1], callArgs[2]);
         }
         if (!this.routesToRemote(endpoint)) {
-          return rc1 ? Reflect.apply(open, this.runtime, callArgs) : open.call(this.runtime, endpoint, callArgs[1], callArgs[2]);
+          return rc1 ? Reflect.apply(open2, this.runtime, callArgs) : open2.call(this.runtime, endpoint, callArgs[1], callArgs[2]);
         }
         const signal = rc1 ? callArgs[4] : callArgs[2];
         if (!rc1) {
@@ -20639,7 +20639,7 @@ var TypertGatewaySwitch = class {
         return this.withLocalFallback(
           endpoint,
           () => this.remoteTarget.open(endpoint, callArgs[1], signal ?? new AbortController().signal),
-          () => Reflect.apply(open, this.runtime, callArgs)
+          () => Reflect.apply(open2, this.runtime, callArgs)
         );
       };
     }
@@ -20741,8 +20741,8 @@ var TypertGatewaySwitch = class {
     return { code, message: source.message, details };
   }
 };
-function usesRc1Arity(open) {
-  return open.length >= 5;
+function usesRc1Arity(open2) {
+  return open2.length >= 5;
 }
 function endedUplink() {
   return {
@@ -20758,9 +20758,9 @@ function linkControl(signal) {
   return control;
 }
 function createLocalOpen(gateway, runtime, peer = () => void 0) {
-  const open = runtime.openWireStream;
-  if (open !== void 0) {
-    return usesRc1Arity(open) ? (endpoint, payload, signal) => open.call(runtime, endpoint, payload, endedUplink(), peer(), signal, linkControl(signal)) : (endpoint, payload, signal) => open.call(runtime, endpoint, payload, signal);
+  const open2 = runtime.openWireStream;
+  if (open2 !== void 0) {
+    return usesRc1Arity(open2) ? (endpoint, payload, signal) => open2.call(runtime, endpoint, payload, endedUplink(), peer(), signal, linkControl(signal)) : (endpoint, payload, signal) => open2.call(runtime, endpoint, payload, signal);
   }
   const wire = gateway.wireStream;
   if (wire === void 0) return void 0;
@@ -20948,10 +20948,10 @@ function isUsableExternalNode(candidate, requireFrom) {
 }
 function isExecutableFile(candidate) {
   try {
-    const stat8 = statSync(candidate);
-    if (!stat8.isFile()) return false;
+    const stat9 = statSync(candidate);
+    if (!stat9.isFile()) return false;
     if (process.platform === "win32") return true;
-    return (stat8.mode & 73) !== 0;
+    return (stat9.mode & 73) !== 0;
   } catch {
     return false;
   }
@@ -22189,6 +22189,8 @@ var ClientModeRuntime = class {
       this.server.bindIdentity(identity);
       authorization = await this.server.authorizeWithAccount(identity, email, password);
     }
+    this.server.reloadCredentials();
+    this.host?.reloadCredentials?.();
     this.logger.info("Client account authorized");
     return authorization;
   }
@@ -22266,6 +22268,10 @@ var ClientModeRuntime = class {
   async hasServerAuthorization() {
     if (this.server.hasStoredAuthorization === void 0) return false;
     return await this.server.hasStoredAuthorization().catch(() => false);
+  }
+  /** How this device was authorized, so a DSH sign-out only clears a DeepSeek grant. */
+  async authorizationMethod() {
+    return (await this.server.currentAuthorization())?.method;
   }
   async setHostAuthorization(enabled) {
     if (this.host === void 0) throw new ClientModeError("METHOD_NOT_ALLOWED", "This plugin is not running as a Host.");
@@ -24228,7 +24234,7 @@ import { execFileSync } from "node:child_process";
 // src/identity-store.ts
 import { existsSync as existsSync2 } from "node:fs";
 import { createHash } from "node:crypto";
-import { chmod as chmod3, cp, mkdir as mkdir3, readFile as readFile4, rm as rm3, stat as stat3, writeFile as writeFile3 } from "node:fs/promises";
+import { chmod as chmod3, cp, mkdir as mkdir3, open, readFile as readFile4, rm as rm3, stat as stat3, writeFile as writeFile3 } from "node:fs/promises";
 import { homedir as homedir3 } from "node:os";
 import { dirname as dirname4, join as join8 } from "node:path";
 var identitySchema = external_exports.object({
@@ -24265,6 +24271,14 @@ var IdentityStore = class {
   async loadOrCreate(deviceName) {
     await mkdir3(this.directory, { recursive: true, mode: 448 });
     await chmod3(this.directory, 448);
+    const release = await this.acquireCreationLock();
+    try {
+      return await this.loadOrCreateLocked(deviceName);
+    } finally {
+      await release();
+    }
+  }
+  async loadOrCreateLocked(deviceName) {
     const devicePath = join8(this.directory, "device.json");
     const keyPath = join8(this.directory, "device.key");
     const [hasDevice, hasKey] = await Promise.all([exists2(devicePath), exists2(keyPath)]);
@@ -24296,6 +24310,40 @@ var IdentityStore = class {
     } catch (error) {
       if (error instanceof IdentityInvalidError) throw error;
       throw new IdentityInvalidError(`device identity is invalid: ${safeErrorMessage(error)}`);
+    }
+  }
+  async acquireCreationLock() {
+    const lockPath = join8(this.directory, ".identity.lock");
+    const deadline = Date.now() + 3e4;
+    for (; ; ) {
+      try {
+        const handle = await open(lockPath, "wx", 384);
+        try {
+          await handle.writeFile(`${process.pid}
+`);
+        } finally {
+          await handle.close();
+        }
+        return async () => {
+          await rm3(lockPath, { force: true });
+        };
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+        try {
+          const info = await stat3(lockPath);
+          if (Date.now() - info.mtimeMs > 6e4) {
+            await rm3(lockPath, { force: true });
+            continue;
+          }
+        } catch (statError) {
+          if (isNodeError(statError) && statError.code === "ENOENT") continue;
+          throw statError;
+        }
+        if (Date.now() >= deadline) {
+          throw new IdentityInvalidError("device identity creation is locked by another DSH process");
+        }
+        await new Promise((resolve5) => setTimeout(resolve5, 20));
+      }
     }
   }
   current() {
@@ -26022,6 +26070,15 @@ var CodexRemoteDomain = class {
     }
     if (message.method === "thread/closed" && threadId !== void 0) this.permissionPresets.delete(threadId);
     if (message.method === "turn/completed" && threadId !== void 0) this.turnOwners.delete(threadId);
+    if (message.method === "thread/status/changed" && threadId !== void 0 && isTerminalThreadStatus(message.params)) {
+      this.turnOwners.delete(threadId);
+      for (const [handle, approval] of this.approvals) {
+        if (approval.threadId !== threadId) continue;
+        this.approvals.delete(handle);
+        void this.appServer?.respond(approval.upstreamId, { decision: "decline" }).catch(() => void 0);
+      }
+      this.scheduleApprovalExpiry();
+    }
     if (message.method === "turn/started" && threadId !== void 0) {
       const owner = this.turnOwners.get(threadId);
       const turnId = extractTurnId(message.params);
@@ -26475,9 +26532,8 @@ function bundledWindowsCodex(userHome) {
 function bundledWindowsCodexAt(localAppData) {
   const bin = join9(localAppData, "OpenAI", "Codex", "bin");
   try {
-    const newest = readdirSync2(bin, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join9(bin, entry.name, "codex.exe")).filter((candidate2) => existsSync3(candidate2)).map((candidate2) => ({ candidate: candidate2, modified: statSync2(candidate2).mtimeMs })).sort((left, right) => right.modified - left.modified);
-    const candidate = newest[0]?.candidate;
-    return candidate === void 0 ? [] : [candidate];
+    const newest = readdirSync2(bin, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join9(bin, entry.name, "codex.exe")).filter((candidate) => existsSync3(candidate)).map((candidate) => ({ candidate, modified: statSync2(candidate).mtimeMs })).sort((left, right) => right.modified - left.modified);
+    return newest.map((entry) => entry.candidate);
   } catch {
     return [];
   }
@@ -26730,6 +26786,10 @@ function isRecord12(value) {
 }
 function isActiveWriterMessage(message) {
   return message.toLowerCase().includes("active writer");
+}
+function isTerminalThreadStatus(params) {
+  if (!isRecord12(params) || !isRecord12(params.status) || typeof params.status.type !== "string") return false;
+  return params.status.type !== "active";
 }
 
 // src/control-runtime.ts
@@ -27081,7 +27141,8 @@ var PluginControlRuntime = class {
       const session = await this.deepseekSession.read();
       if (this.client !== void 0) this.client.hasDeepSeekSession = session !== void 0;
       const authorized = this.client === void 0 ? false : await this.client.hasServerAuthorization();
-      if (session === void 0 && authorized) {
+      const authorizationMethod = this.client === void 0 ? void 0 : await this.client.authorizationMethod?.();
+      if (session === void 0 && authorized && authorizationMethod === "deepseek") {
         await this.logout({ releaseDeepSeek: false });
         return;
       }
@@ -28711,7 +28772,8 @@ function concatChunks2(chunks, totalBytes) {
 
 // src/harness-remote-bridge.ts
 import { Buffer as Buffer5 } from "node:buffer";
-import { isAbsolute as isAbsolute4, join as join10, relative as relative2, resolve as resolve3, sep } from "node:path";
+import { lstat, realpath as realpath2, stat as stat6 } from "node:fs/promises";
+import { dirname as dirname6, isAbsolute as isAbsolute4, join as join10, parse as parse2, relative as relative2, resolve as resolve3, sep } from "node:path";
 var endpointSchema = external_exports.string().min(1).max(128).regex(/^(?:\$events(?:\/result)?|[A-Za-z0-9_$.-]+\/[A-Za-z0-9_$.-]+)$/);
 var callSchema3 = external_exports.object({ endpoint: endpointSchema, payload: external_exports.unknown() }).strict();
 var streamOpenSchema3 = external_exports.object({
@@ -28762,6 +28824,8 @@ var INLINE_TRANSFER_RESPONSE_BYTES3 = 2 * 1024 * 1024;
 var STREAM_FRAME_ENVELOPE_BYTES = 4 * 1024;
 var RESPONSE_ENVELOPE_BYTES2 = 8 * 1024;
 var WORKSPACE_FILE_ENDPOINTS = /* @__PURE__ */ new Set(["workspaceFiles/stat", "workspaceFiles/read", "workspaceFiles/readBytes", "workspaceFiles/list"]);
+var WORKSPACE_FILE_READ_ENDPOINTS = /* @__PURE__ */ new Set(["workspaceFiles/stat", "workspaceFiles/read", "workspaceFiles/readBytes", "workspaceFiles/readAll", "workspaceFiles/list"]);
+var MAX_WORKSPACE_READ_BYTES = 4 * 1024 * 1024;
 var REMOTE_HISTORY_CALL_ENDPOINTS = /* @__PURE__ */ new Set(["session/page", "session/history"]);
 var REMOTE_HISTORY_STREAM_ENDPOINTS = /* @__PURE__ */ new Set(["session/follow"]);
 var MAX_CACHED_HISTORY_PAGES = 64;
@@ -28901,7 +28965,8 @@ var HarnessRemoteBridge = class {
     const signal = AbortSignal.timeout(6e4);
     try {
       const nativePayload = normalizeWorkspaceRequestPayload(params.endpoint, params.payload, this.harnessVersion);
-      const nativeResult = REMOTE_HISTORY_CALL_ENDPOINTS.has(params.endpoint) ? await this.dispatchHistoryPage(params.endpoint, nativePayload, signal) : params.endpoint === "commands/execute" ? await dispatchCommandForHost(this.gateway, params.payload, signal, this.harnessVersion) : await this.dispatchWorkspaceFile(params.endpoint, nativePayload, signal);
+      const guardedPayload = this.sessionHeaderCwd !== void 0 && WORKSPACE_FILE_READ_ENDPOINTS.has(params.endpoint) ? await this.assertNativeWorkspaceFileCall(params.endpoint, nativePayload, signal) : nativePayload;
+      const nativeResult = REMOTE_HISTORY_CALL_ENDPOINTS.has(params.endpoint) ? await this.dispatchHistoryPage(params.endpoint, guardedPayload, signal) : params.endpoint === "commands/execute" ? await dispatchCommandForHost(this.gateway, params.payload, signal, this.harnessVersion) : await this.dispatchWorkspaceFile(params.endpoint, guardedPayload, signal);
       const result = params.endpoint === "directoryPicker/list" && needsDirectoryFallback(nativeResult) ? await this.directoryList(params.payload, signal) : nativeResult;
       if (params.endpoint === "workspace/create" && isInvalidWorkspacePath(result)) {
         const recovered = await this.recoverWorkspaceCreate(params.payload, signal);
@@ -28942,6 +29007,100 @@ var HarnessRemoteBridge = class {
     const args = requestArgs(payload);
     const params = directoryListSchema2.parse(args);
     return { ok: true, value: await listRemoteDirectory(params.path, signal) };
+  }
+  /**
+   * Prove a native workspace read stays inside the Session's workspace.
+   *
+   * DSH's workspace-file endpoints are also reachable from the local UI, but
+   * this bridge is the trust boundary for a remote peer: a client-controlled
+   * absolute path, `..`, or symlink must never leave the Session cwd.
+   * @param endpoint - allowlisted native workspace read endpoint.
+   * @param payload - original endpoint payload.
+   * @param signal - call lifetime.
+   * @returns the payload with a canonical, workspace-relative locator.
+   */
+  async assertNativeWorkspaceFileCall(endpoint, payload, signal) {
+    const rootPayload = isRecord14(payload) ? payload : {};
+    const args = requestArgs(payload);
+    const sessionId = typeof args.workspaceFileScopeId === "string" ? args.workspaceFileScopeId : typeof args.sessionId === "string" ? args.sessionId : typeof args.agentId === "string" ? args.agentId : void 0;
+    if (sessionId === void 0) {
+      throw new RpcError("WORKSPACE_UNAVAILABLE", "The workspace identifier is missing.");
+    }
+    const cwd = this.sessionHeaderCwd?.(sessionId);
+    if (cwd === void 0) throw new RpcError("WORKSPACE_UNAVAILABLE", "The workspace is unavailable.");
+    let root;
+    try {
+      root = await realpath2(cwd);
+      if (!(await stat6(root)).isDirectory()) throw new Error("not a directory");
+    } catch {
+      return payload;
+    }
+    signal.throwIfAborted();
+    const options = isRecord14(args.options) ? args.options : void 0;
+    const rawBaseFile = options !== void 0 && "baseFile" in options ? options.baseFile : args.baseFile;
+    if (rawBaseFile !== void 0 && typeof rawBaseFile !== "string") {
+      throw new RpcError("WORKSPACE_PATH_DENIED", "The requested workspace path is outside the workspace.");
+    }
+    const path = typeof args.path === "string" ? args.path : ".";
+    if (rawBaseFile !== void 0) {
+      const baseCandidate = isAbsolute4(rawBaseFile) ? resolve3(rawBaseFile) : resolve3(root, rawBaseFile);
+      await this.verifyWorkspacePathContainment(root, baseCandidate, "workspaceFiles/stat");
+      const target2 = isAbsolute4(path) ? resolve3(path) : resolve3(dirname6(baseCandidate), path);
+      await this.verifyWorkspacePathContainment(root, target2, endpoint);
+      return payload;
+    }
+    const safeRel = await this.verifyWorkspacePathContainment(root, path, endpoint);
+    const nextArgs = isRecord14(rootPayload.args) ? { ...rootPayload.args, path: safeRel } : { ...rootPayload, path: safeRel };
+    return isRecord14(rootPayload.args) ? { ...rootPayload, args: nextArgs } : nextArgs;
+  }
+  async verifyWorkspacePathContainment(root, path, endpoint) {
+    const candidate = isAbsolute4(path) ? resolve3(path) : resolve3(root, path);
+    if (process.platform === "win32" && parse2(root).root.toLowerCase() !== parse2(candidate).root.toLowerCase()) {
+      throw new RpcError("WORKSPACE_PATH_DENIED", "The requested workspace path is outside the workspace.");
+    }
+    const relativeToRoot = relative2(root, candidate);
+    if (isPathOutside(relativeToRoot)) {
+      throw new RpcError("WORKSPACE_PATH_DENIED", "The requested workspace path is outside the workspace.");
+    }
+    try {
+      const rootInfo = await lstat(root);
+      if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+        throw new RpcError("WORKSPACE_PATH_DENIED", "The workspace root is invalid or a symlink.");
+      }
+      const segments = relativeToRoot.split(sep).filter((segment) => segment.length > 0 && segment !== ".");
+      let current = root;
+      for (const segment of segments.slice(0, -1)) {
+        current = join10(current, segment);
+        if (isPathOutside(relative2(root, current))) {
+          throw new RpcError("WORKSPACE_PATH_DENIED", "The requested workspace path is outside the workspace.");
+        }
+        const info2 = await lstat(current);
+        if (info2.isSymbolicLink() || !info2.isDirectory()) {
+          throw new RpcError("WORKSPACE_PATH_DENIED", "An ancestor directory is invalid or a symlink.");
+        }
+      }
+      const target2 = await lstat(candidate);
+      if (target2.isSymbolicLink()) {
+        throw new RpcError("WORKSPACE_PATH_DENIED", "The requested workspace path is not a regular file.");
+      }
+      const canonical = await realpath2(candidate);
+      if (isPathOutside(relative2(root, canonical))) {
+        throw new RpcError("WORKSPACE_PATH_DENIED", "The requested workspace path is outside the workspace.");
+      }
+      const info = await stat6(canonical);
+      const directoryAllowed = endpoint === "workspaceFiles/stat" || endpoint === "workspaceFiles/list";
+      if (!directoryAllowed && !info.isFile()) {
+        throw new RpcError("WORKSPACE_PATH_DENIED", "The requested workspace path is not a regular file.");
+      }
+      if (endpoint === "workspaceFiles/readAll" && info.size > MAX_WORKSPACE_READ_BYTES) {
+        throw new RpcError("WORKSPACE_TOO_LARGE", "The requested workspace file is too large.");
+      }
+      const safeRel = relativeToRoot === "" ? "." : relativeToRoot;
+      return process.platform === "win32" ? safeRel.replaceAll("\\", "/") : safeRel;
+    } catch (error) {
+      if (error instanceof RpcError) throw error;
+      throw new RpcError("WORKSPACE_PATH_DENIED", "The requested workspace path is unavailable.");
+    }
   }
   /**
    * Resolve an existing Workspace when `workspace/create` cannot realpath a
@@ -29560,6 +29719,9 @@ function record6(value) {
 function isRecord14(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+function isPathOutside(relativePath) {
+  return relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute4(relativePath);
+}
 function workspacePathIdentity(path) {
   const normalized = resolve3(path).replace(/[\\/]+$/, "");
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
@@ -29688,7 +29850,7 @@ import { execFileSync as execFileSync2 } from "node:child_process";
 
 // src/codex-workspace-bridge.ts
 import { spawn as spawn4 } from "node:child_process";
-import { realpath as realpath2, lstat, readdir as readdir4, readFile as readFile5, stat as stat6, watch } from "node:fs/promises";
+import { realpath as realpath3, lstat as lstat2, readdir as readdir4, readFile as readFile5, stat as stat7, watch } from "node:fs/promises";
 import { isAbsolute as isAbsolute5, join as join11, relative as relative3, resolve as resolve4 } from "node:path";
 var MAX_READ_BYTES = 4 * 1024 * 1024;
 var MAX_INPUT_BYTES = 64 * 1024;
@@ -29777,13 +29939,13 @@ var CodexWorkspaceBridge = class {
         const result = [];
         for (const entry of entries.slice(0, 500)) {
           const item = join11(target2, entry.name);
-          const info2 = await lstat(item);
+          const info2 = await lstat2(item);
           if (info2.isSymbolicLink()) continue;
           result.push({ name: entry.name, type: info2.isDirectory() ? "directory" : info2.isFile() ? "file" : "other", ...info2.isFile() ? { size: info2.size } : {} });
         }
         return { ok: true, value: { path, entries: result, truncated: entries.length > 500 } };
       }
-      const info = await stat6(target2);
+      const info = await stat7(target2);
       const absolutePath = target2;
       const version = `${info.mtimeMs}:${info.size}`;
       if (endpoint === "workspaceFiles/stat") {
@@ -29989,8 +30151,8 @@ var CodexWorkspaceBridge = class {
     const cwd = await this.resolveCwd(parsed.threadId, signal);
     if (!cwd) throw new RpcError("CODEX_WORKSPACE_UNAVAILABLE", "The CodeX thread has no available workspace.");
     try {
-      const root = await realpath2(cwd);
-      const info = await stat6(root);
+      const root = await realpath3(cwd);
+      const info = await stat7(root);
       if (!info.isDirectory()) throw new Error();
       return root;
     } catch {
@@ -30002,9 +30164,9 @@ var CodexWorkspaceBridge = class {
     const rel = relative3(root, candidate);
     if (rel.startsWith("..") || isAbsolute5(rel)) throw new RpcError("CODEX_WORKSPACE_PATH_DENIED", "The requested workspace path is outside the CodeX workspace.");
     try {
-      const info = await lstat(candidate);
+      const info = await lstat2(candidate);
       if (info.isSymbolicLink()) throw new Error();
-      const canonical = await realpath2(candidate);
+      const canonical = await realpath3(candidate);
       const canonicalRel = relative3(root, canonical);
       if (canonicalRel.startsWith("..") || isAbsolute5(canonicalRel)) throw new Error();
       if (directory && !info.isDirectory()) throw new Error();
@@ -30430,7 +30592,12 @@ var HostPluginRuntime = class {
       throw new ServerApiError("SERVER_NOT_CONFIGURED", "Configure serverUrl before signing in.", false);
     }
     const result = await this.serverApi.authorizeWithAccount(this.currentIdentity(), email, password);
-    if (!this.paused) this.serverConnection?.resume();
+    this.serverApi.reloadCredentials();
+    await this.serverConnection?.stop();
+    if (this.identity !== void 0) {
+      this.serverConnection = this.createServerConnection(this.identity);
+      if (!this.paused) this.serverConnection.start();
+    }
     this.logger.info("Host account authorized");
     return result;
   }
@@ -30439,7 +30606,11 @@ var HostPluginRuntime = class {
       throw new ServerApiError("SERVER_NOT_CONFIGURED", "Configure serverUrl before entering a Host registration code.", false);
     }
     const result = await this.serverApi.authorizeHostWithCode(this.currentIdentity(), code);
-    if (!this.paused) this.serverConnection?.resume();
+    this.serverApi.reloadCredentials();
+    if (!this.paused) {
+      this.serverConnection?.resume();
+      this.serverConnection?.reconnect();
+    }
     this.logger.info("Host registration code authorized");
     return result;
   }
@@ -30601,7 +30772,7 @@ function isPlainRecord(value) {
 }
 
 // src/cli.ts
-import { stat as stat7 } from "node:fs/promises";
+import { stat as stat8 } from "node:fs/promises";
 import { hostname as hostname3 } from "node:os";
 import { join as join12 } from "node:path";
 var QR_POLL_INTERVAL_MS = 2e3;
@@ -30855,7 +31026,7 @@ function terminalLink(url, target2) {
 }
 async function exists3(path) {
   try {
-    await stat7(path);
+    await stat8(path);
     return true;
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;

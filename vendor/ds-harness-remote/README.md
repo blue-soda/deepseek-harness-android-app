@@ -23,7 +23,7 @@ Continue DeepSeek Harness sessions and experimental Codex workspaces from anothe
 Add the current package version to the `web` profile, then restart Harness:
 
 ```sh
-dsh plugin --profile web add -w @blue-soda/dsh-remote@0.5.9
+dsh plugin --profile web add -w @blue-soda/dsh-remote@0.6.0
 ```
 
 ### dsh-TUI Host
@@ -31,7 +31,7 @@ dsh plugin --profile web add -w @blue-soda/dsh-remote@0.5.9
 Remote can also run as a Host in a terminal-only [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) profile:
 
 ```sh
-dsh plugin --profile dsh-tui add -w @blue-soda/dsh-remote@0.5.9
+dsh plugin --profile dsh-tui add -w @blue-soda/dsh-remote@0.6.0
 ```
 
 After starting dsh-TUI, manage Remote with `/remote`, `/remote login`, `/remote status`, and `/remote logout`.
@@ -46,12 +46,14 @@ After starting dsh-TUI, manage Remote with `/remote`, `/remote login`, `/remote 
 - Use an optional Host-local terminal and authorized loopback development-service previews.
 - Open Host Codex projects in the existing Remote UI through the optional experimental Codex domain. It is **off by default** since 0.5.1: turn it on in the DeepSeek Remote settings card, which starts `codex app-server` on the Host and applies immediately.
 - Open a Host Workspace even after its directory was deleted: its registered Sessions remain reachable over Remote, matching what the Host itself can open.
+- Native `workspaceFiles/*` reads are now confined to the Session workspace: `..`, client absolute paths, symlink escapes and symlinked targets are rejected, the canonical target is re-checked, and `readAll` is capped at 4 MiB.
+- The Remote dialog renders through a body portal, so it is no longer squeezed into a transformed mobile sidebar. The Host controls share one line box, the Codex entry reads **Codex设置 / Codex Settings**, and the sidebar **退出** link disappears after a final fallback to local.
 - Long Codex histories load tail-first: the Host indexes turn ids without full items, loads full items from the newest turns, and the client reuses its last page for 60 seconds. A real 136-turn thread opens from its 25 newest turns (a 50-message page) instead of reading the whole thread.
 - Reach the Host without opening a public listening port or configuring router port forwarding.
 
 ## Compatibility
 
-Plugin `0.5.9` targets DeepSeek Harness `dsh-v0.2.2-rc.1` and retains `dsh-v0.2.0-rc.2` / `dsh-v0.1.7-rc.1` compatibility; it also supports `dsh-v0.1.6-alpha.2` and earlier settings hosts. It supports:
+Plugin `0.6.0` targets DeepSeek Harness `dsh-v0.2.2-rc.1` and retains `dsh-v0.2.0-rc.2` / `dsh-v0.1.7-rc.1` compatibility; it also supports `dsh-v0.1.6-alpha.2` and earlier settings hosts. It supports:
 
 - `dsh-v0.1.1-rc.2` through the official legacy `ApiProxy`;
 - `dsh-v0.1.2-alpha.1` through `dsh-v0.1.2-rc.1` through the official Typert Remote Gateway;
@@ -79,6 +81,7 @@ This repository includes a self-hosted, Relay-only Server in [`apps/server`](htt
 - Account membership and the Host's locally pinned device identity must both authorize a connection.
 - The Host creates outbound connections only; it does not listen on a public port.
 - Remote does not expose general tool RPC, remote desktop, or file-mutation APIs.
+- Native workspace-file reads are path-confined before dispatch: absolute paths outside the workspace, `..`, symlinked ancestors/targets and oversized `readAll` requests are refused.
 - Interactive terminals are enabled by default and can be disabled in the Host-local Remote settings; they run as the Host user independently of Agent approvals.
 
 ## Documentation
