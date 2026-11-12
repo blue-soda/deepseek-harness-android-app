@@ -92,3 +92,13 @@
 # 这样 tool-plugin-manager 的注入有落点，会话不再报 agent-preset/invalid。
 - id: plugin-manager
   disabled: false
+
+# ── v1.31（冷启动优化）────────────────────────────────────────────────────────
+# 依据设备实测（boot-timing）：模块加载间空档里，
+#   · `picomatch` 3.5 s 的耗尽点来自 `dsh-hmr`（文件热重载，Android 上用不到）；
+#   · `@opentelemetry/otlp-exporter-base` 2.8 s + `mime-types` 0.7 s 来自 OTel 导出链。
+# 两者对手机端功能没有贡献，直接禁用（session-telemetry-otel 早已禁用）。
+- id: hmr
+  disabled: true
+- id: otel
+  disabled: true

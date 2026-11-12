@@ -1,0 +1,6 @@
+dsh web: http://127.0.0.1:3099/?token=dsqsrMvyoZDGBeYrdinS_u-gSwpkYS47nyWLwbuMj7Q
+[dsh-remote] host identity ready {"deviceId":"01a1118e…33b3","fingerprint":"EC9F A923 E9AF","server":"https://sakakibara.ink:8443"}
+[dsh-remote] Codex App Server communication failed {"code":"CODEX_BINARY_UNAVAILABLE"}
+[dsh-remote] Codex Remote domain unavailable {"code":"CODEX_BINARY_UNAVAILABLE"}
+[dsh-remote] client remote-mode identity ready {"deviceId":"01a1118e…38c1","fingerprint":"4264 9CE5 0A74"}
+[dsh-remote] host runtime stopped

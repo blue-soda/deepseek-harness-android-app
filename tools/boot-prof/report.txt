@@ -1,0 +1,129 @@
+
+######## boot-hooks-hooks.log ########
+== 模块加载总览（hooks 日志）==
+  加载次数        : 1519（内置 141 / 文件 1378）
+  文件源码合计    : 14.5 MB
+  load 钩子耗时合计(read+transform): 944 ms
+  首个→末个加载跨度 : 29386 ms  ← 模块加载阶段的下限（不含之后的初始化/监听）
+
+== 按包聚合：时间跨度最大的 15 个（跨度≈该包被逐文件加载+编译的整段墙钟）==
+  包                                        文件      KB    跨度ms   read合计ms
+  @deepseek-ai/dsh-plugin-manager           3     146   19776          5
+  chokidar                                  4     106   17817          4
+  readdirp                                  2      23   17795          2
+  @deepseek-ai/dsh-host-plugin-inventory    2       9   17394          5
+  @deepseek-ai/dsh-llm                      3     143   15712          1
+  @deepseek-ai/dsh-user-questions           2      77   14704          2
+  @deepseek-ai/dsh-subagent                 3     202   14390          2
+  @deepseek-ai/dsh-tool-subagent            2      37   13814          2
+  @deepseek-ai/dsh-tool-cordis              5     609   12622          4
+  @opentelemetry/resources                 51     124   12204          9
+  @deepseek-ai/dsh-api-session-controller    2     307   12184          2
+  @deepseek-ai/dsh-commands                 3      70   11858          3
+  @deepseek-ai/dsh-permission-presets       2      58   11835          2
+  @deepseek-ai/dsh-command-feedback         2      11   11788          2
+  @deepseek-ai/dsh-goal                     2      98   11776          3
+
+== 主线程空档 Top 12（相邻两次加载之间的间隔——那段时间在解析/编译/求值/初始化）==
+    2424 ms  加载完 @mixmark-io/domino               → 下一个 @deepseek-ai/dsh-host-directory-picker-browse
+    2264 ms  加载完 brotli                           → 下一个 node:events
+    2137 ms  加载完 @deepseek-ai/dsh-cmdline         → 下一个 node:internal
+    1622 ms  加载完 node:internal                    → 下一个 @deepseek-ai/dsh-plugin-manager
+     905 ms  加载完 @deepseek-ai/dsh-agent-preset-registry → 下一个 @deepseek-ai/dsh-api-session-controller
+     851 ms  加载完 node:crypto                      → 下一个 node:path
+     819 ms  加载完 picomatch                        → 下一个 node:worker_threads
+     808 ms  加载完 mime-types                       → 下一个 @opentelemetry/api-logs
+     525 ms  加载完 @opentelemetry/otlp-exporter-base → 下一个 @deepseek-ai/dsh-llm
+     439 ms  加载完 node:http                        → 下一个 byte-counter
+     396 ms  加载完 node:crypto                      → 下一个 picocolors
+     382 ms  加载完 commander                        → 下一个 semver
+  ≥50ms 的空档合计 17747 ms（这些就是模块加载之外的 CPU 工作）
+
+######## boot-hooks-profhooks.log ########
+== 模块加载总览（hooks 日志）==
+  加载次数        : 1519（内置 141 / 文件 1378）
+  文件源码合计    : 14.5 MB
+  load 钩子耗时合计(read+transform): 1029 ms
+  首个→末个加载跨度 : 30932 ms  ← 模块加载阶段的下限（不含之后的初始化/监听）
+
+== 按包聚合：时间跨度最大的 15 个（跨度≈该包被逐文件加载+编译的整段墙钟）==
+  包                                        文件      KB    跨度ms   read合计ms
+  @deepseek-ai/dsh-plugin-manager           3     146   21399          6
+  @deepseek-ai/dsh-host-plugin-inventory    2       9   19460          4
+  chokidar                                  4     106   19387          4
+  readdirp                                  2      23   19363          2
+  @deepseek-ai/dsh-llm                      3     143   17668          2
+  @deepseek-ai/dsh-user-questions           2      77   16460          2
+  @deepseek-ai/dsh-subagent                 3     202   15273          8
+  @deepseek-ai/dsh-tool-subagent            2      37   14614          3
+  @opentelemetry/resources                 51     124   13365         12
+  @deepseek-ai/dsh-tool-cordis              5     609   13346          4
+  @deepseek-ai/dsh-commands                 3      70   13257          2
+  @deepseek-ai/dsh-permission-presets       2      58   13243          1
+  @deepseek-ai/dsh-command-feedback         2      11   13151          1
+  @deepseek-ai/dsh-goal                     2      98   13126          3
+  @deepseek-ai/dsh-api-session-controller    2     307   12846          3
+
+== 主线程空档 Top 12（相邻两次加载之间的间隔——那段时间在解析/编译/求值/初始化）==
+    2574 ms  加载完 brotli                           → 下一个 node:events
+    2452 ms  加载完 @mixmark-io/domino               → 下一个 @deepseek-ai/dsh-host-directory-picker-browse
+    2088 ms  加载完 @deepseek-ai/dsh-cmdline         → 下一个 node:internal
+    1625 ms  加载完 node:internal                    → 下一个 @deepseek-ai/dsh-plugin-manager
+     957 ms  加载完 mime-types                       → 下一个 @opentelemetry/api-logs
+     862 ms  加载完 node:crypto                      → 下一个 node:path
+     787 ms  加载完 picomatch                        → 下一个 node:worker_threads
+     696 ms  加载完 @deepseek-ai/dsh-agent-preset-registry → 下一个 @deepseek-ai/dsh-api-session-controller
+     578 ms  加载完 @opentelemetry/otlp-exporter-base → 下一个 @deepseek-ai/dsh-llm
+     509 ms  加载完 node:http                        → 下一个 byte-counter
+     431 ms  加载完 node:crypto                      → 下一个 picocolors
+     294 ms  加载完 @deepseek-ai/dsh-api-session-controller → 下一个 @deepseek-ai/dsh-persona
+  ≥50ms 的空档合计 18091 ms（这些就是模块加载之外的 CPU 工作）
+
+== boot-summary-hooks.json ==
+  node=v26.4.0 钩子模式=registerHooks(sync, 同线程) 结束方式=SIGTERM
+    t+     0 ms  preload-imported
+    t+     7 ms  hooks-mode:registerHooks(sync, 同线程)
+    t+ 32268 ms  signal:SIGTERM
+    t+ 32269 ms  end:SIGTERM
+
+== boot-summary-profhooks.json ==
+  node=v26.4.0 钩子模式=registerHooks(sync, 同线程) 结束方式=SIGTERM
+    t+     0 ms  preload-imported
+    t+     8 ms  hooks-mode:registerHooks(sync, 同线程)
+    t+ 33889 ms  signal:SIGTERM
+    t+ 33890 ms  end:SIGTERM
+
+== CPU profile: CPU.20261007.040150.4407.0.001.cpuprofile ==
+  采样总时长（含采样间隙）: 36429 ms
+  按类别：
+    node 内部（其他）                         13808 ms   37.9%
+    @deepseek-ai/cordis                  4788 ms   13.1%
+    文件 I/O                               3746 ms   10.3%
+    (native)                             1785 ms    4.9%
+    @deepseek-ai/cordis-plugin-loader     1550 ms    4.3%
+    @deepseek-ai/dsh-app-boot            1442 ms    4.0%
+    js-yaml                               953 ms    2.6%
+    V8 解析/编译                              794 ms    2.2%
+    @deepseek-ai/schemastery              775 ms    2.1%
+    @deepseek-ai/dsh-tools                727 ms    2.0%
+    zod                                   645 ms    1.8%
+    ds-harness-remote                     521 ms    1.4%
+  自耗时 Top 18（包/函数）：
+        2589 ms  node:internal                     compileSourceTextModule
+        1415 ms  @deepseek-ai/cordis               get
+        1141 ms  node:internal                     compileForInternalLoader
+        1003 ms  node:internal                     wrapSafe
+         922 ms  node:internal                     
+         910 ms  (native)                          (garbage collector)
+         855 ms  @deepseek-ai/cordis-plugin-loader entries
+         708 ms  node:internal                     getPackageScopeConfig
+         688 ms  node:internal                     get
+         602 ms  node:internal                     URL
+         502 ms  node:fs                           realpathSync
+         445 ms  @deepseek-ai/cordis               
+         395 ms  node:internal                     deserializePackageJSON
+         358 ms  node:internal                     syncLink
+         341 ms  node:internal                     read
+         339 ms  (native)                          (program)
+         329 ms  node:internal                     finalizeResolution
+         294 ms  node:fs                           readFileSync

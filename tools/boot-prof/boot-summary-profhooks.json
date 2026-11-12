@@ -1,0 +1,42 @@
+{
+ "t0": 1791345712617,
+ "pid": 4407,
+ "node": "v26.4.0",
+ "argv": [
+  "/data/user/0/com.deepseek.harness.community/files/payload/runtime/bin/node",
+  "/data/user/0/com.deepseek.harness.community/files/payload/dshroot/lib/node_modules/@deepseek-ai/dsh/lib/bin.js",
+  "web",
+  "--host",
+  "127.0.0.1",
+  "--port",
+  "3099",
+  "--no-open"
+ ],
+ "execArgv": [
+  "--cpu-prof",
+  "--cpu-prof-dir=/data/local/tmp/prof",
+  "--import",
+  "/data/local/tmp/boot-preload.mjs",
+  "--expose-internals"
+ ],
+ "hooksMode": "registerHooks(sync, 同线程)",
+ "endTag": "SIGTERM",
+ "marks": [
+  {
+   "name": "preload-imported",
+   "t": 0
+  },
+  {
+   "name": "hooks-mode:registerHooks(sync, 同线程)",
+   "t": 8
+  },
+  {
+   "name": "signal:SIGTERM",
+   "t": 33889
+  },
+  {
+   "name": "end:SIGTERM",
+   "t": 33890
+  }
+ ]
+}
