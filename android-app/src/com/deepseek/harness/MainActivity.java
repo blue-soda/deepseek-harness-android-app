@@ -252,6 +252,9 @@ public class MainActivity extends Activity {
         "dshroot/lib/node_modules/@deepseek-ai/dsh-app-boot/",
         "dshroot/lib/node_modules/@deepseek-ai/dsh-client-ui-layout/",
         "dshroot/lib/node_modules/@deepseek-ai/dsh-client-ui-cordis/",
+        // v1.33：懒加载补丁的两个包（否则老设备升级后仍用旧文件 → 优化不生效）
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-tool-web/",
+        "dshroot/lib/node_modules/@deepseek-ai/dsh-office-to-pdf/",
         "dshroot/lib/node_modules/@deepseek-ai/dsh/package.json"
     };
     // 外部 dshroot 解压完成标记（App 在 dshroot 补齐后写入；清空/重置时随目录删除）。

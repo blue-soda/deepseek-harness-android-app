@@ -390,6 +390,8 @@ if [ "$DO_VERIFY" = 1 ]; then
 @deepseek-ai/dsh-app-boot/lib/index.js:DSH_ANDROID_PLUGIN_LOG
 @deepseek-ai/dsh-session-persistence-jsonl/lib/index.js:Android
 @deepseek-ai/dsh-tool-fs-search/lib/index.js:android
+@deepseek-ai/dsh-tool-web/lib/index.js:ensureTurndown
+@deepseek-ai/dsh-office-to-pdf/lib/index.js:ensureKit
 @deepseek-ai/dsh-llm-deepseek/lib/index.js:attachment layer
 @deepseek-ai/dsh-bash-local/lib/index.js:sandboxMode
 # 本 fork 的补丁（v1.20 起）：

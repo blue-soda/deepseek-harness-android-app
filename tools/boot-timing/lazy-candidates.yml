@@ -1,0 +1,18 @@
+# 懒加载候选清单（"偶然使用"白名单）—— 不是"重包黑名单"。
+#
+# 判据（三条全满足才登记）：
+#   1. 启动期**不需要**（引擎起来、界面能用都不依赖它）；
+#   2. 只在某个工具/功能被**显式调用**时才用到；
+#   3. 纯计算库：无全局副作用、不注册服务、不启动 worker/定时器。
+#
+# 维护方式：每版跑一次 `python tools/boot-timing/lazy-scan.py <hooks日志>`，
+#   它会标出「已登记候选 / 已懒加载 / 本版未加载（可删）」。
+#   发现新的"又重又只需偶尔用"的包时，在这里加一行并评估 import 成本。
+#
+# 格式：`包名: 说明`（检测器只认这种一行一条，保持简单）
+
+turndown: 已懒加载 · web_fetch 把 HTML 转 Markdown 才用（+domino 52 文件，实测 ~1.2s）
+@mixmark-io/domino: 已懒加载 · turndown 的 DOM 实现，随 turndown 一起按需加载
+@joplin/turndown-plugin-gfm: 已懒加载 · turndown 的 GFM 表格/删除线插件
+@deepseek-ai/libreoffice-kit: 已懒加载 · Office→PDF 转换才用（入口 83KB，实测 ~1.2s）
+fflate: 已懒加载 · libreoffice-kit 的依赖，随其一并延迟
